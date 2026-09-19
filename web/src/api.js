@@ -4,6 +4,12 @@ export const setToken = t => {
   token = t; localStorage.setItem('dm_token', t)
   dispatchEvent(new Event('dm-auth'))          // 通知导航栏刷新登录状态
 }
+// 401：凭据失效（服务重启/换密码/旧 token），清掉本地 token 再回登录页
+export const unauthorized = () => {
+  token = ''; localStorage.removeItem('dm_token')
+  dispatchEvent(new Event('dm-auth'))
+  if (!location.hash.startsWith('#/login')) location.hash = '#/login'
+}
 
 export async function api(path, opts = {}) {
   const r = await fetch(`/api${path}`, {
@@ -12,7 +18,7 @@ export async function api(path, opts = {}) {
                ...(token && { Authorization: `Bearer ${token}` }), ...opts.headers },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
-  if (r.status === 401) { location.hash = '#/login'; throw new Error('未授权') }
+  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
   if (!r.ok) {
     let detail = r.statusText
     try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 响应兜底 */ }
@@ -38,7 +44,7 @@ export const resmon = () => api('/resmon')
 export async function downloadLog(id) {
   const r = await fetch(`/api/logs/${id}/download`,
                         { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-  if (r.status === 401) { location.hash = '#/login'; throw new Error('未授权') }
+  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
   if (!r.ok) throw new Error('下载失败')
   const b = await r.blob(), u = URL.createObjectURL(b)
   const a = Object.assign(document.createElement('a'),

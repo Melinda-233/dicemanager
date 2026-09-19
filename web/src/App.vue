@@ -27,5 +27,6 @@ onUnmounted(() => removeEventListener('dm-auth', onAuth))
 const page = computed(() => hash.value.startsWith('#/logs') ? LogCenter
   : hash.value.startsWith('#/wizard') ? Wizard
   : hash.value.startsWith('#/login') ? Login
-  : Overview)
+  : token.value ? Overview
+  : Login)                            // 未登录时默认落在登录页，而不是先报一堆 401
 </script>
