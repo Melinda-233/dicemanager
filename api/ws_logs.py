@@ -1,4 +1,7 @@
-"""通道 2：日志 tail（历史回放 + 实时行 + 暂停跟随 + 关键字过滤 + 错误标记）"""
+"""通道 2：日志 tail（历史回放 + 实时行 + 暂停跟随 + 关键字过滤 + 错误标记）
+
+回放与实时行用 ring 的 (seq, line) 对去重：先注册 hook、再读快照，
+回放完冲刷队列时跳过 seq ≤ 快照尾的重复——消除了「快照后注册 hook 前」的丢行窗口。"""
 import asyncio, re
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from api.context import ctx
@@ -17,23 +20,31 @@ async def ws_logs(ws: WebSocket, inst_id: str):
     await ws.accept()
     proc = ctx.pm.get(inst_id)
     loop = asyncio.get_running_loop()
-    paused, seq = False, 0
+    paused = False
     filter_re = None
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    def hook(line: str):
+    def hook(pair: tuple):
         """tail 线程 → 事件循环：asyncio.Queue 非线程安全，必须经 call_soon_threadsafe；
-        队列满时丢最旧，保证不阻塞 tail 线程。"""
+        队列满时丢最旧，保证不阻塞 tail 线程。投递 (seq, line) 对。"""
         def _put():
             if queue.full(): queue.get_nowait()
-            queue.put_nowait(line)
+            queue.put_nowait(pair)
         loop.call_soon_threadsafe(_put)
 
-    for line in list(proc.ring):        # 历史回放（重启不丢）
-        seq += 1
-        await ws.send_json({"type": "line", "seq": seq, "text": line,
+    async def send_line(s: int, line: str):
+        await ws.send_json({"type": "line", "seq": s, "text": line,
                             "error": bool(ERROR_RE.search(line))})
-    proc.on_line(hook)
+
+    proc.on_line(hook)                  # 先注册 hook，再取快照（顺序不能反，否则丢行）
+    snapshot = list(proc.ring)          # 历史回放（重启不丢）
+    max_seq = snapshot[-1][0] if snapshot else -1
+    for s, line in snapshot:
+        await send_line(s, line)
+    while True:                         # 回放期间 hook 已投递的行：去重后补发真新行
+        try: s, line = queue.get_nowait()
+        except asyncio.QueueEmpty: break
+        if s > max_seq: await send_line(s, line)
 
     get_task = None                     # 持久任务：避免每轮重建 receive/get 造成的悬挂与丢消息
     recv_task = None
@@ -53,12 +64,10 @@ async def ws_logs(ws: WebSocket, inst_id: str):
                 elif msg.startswith("filter:"):
                     filter_re = compile_filter(msg.split(":", 1)[1] or None)
             if get_task in done:
-                line = get_task.result()
+                s, line = get_task.result()
                 get_task = None
-                seq += 1
                 if not paused and (filter_re is None or filter_re.search(line)):
-                    await ws.send_json({"type": "line", "seq": seq, "text": line,
-                                        "error": bool(ERROR_RE.search(line))})
+                    await send_line(s, line)
     except (WebSocketDisconnect, asyncio.CancelledError, RuntimeError):
         pass                            # 断开 / send-after-close（RuntimeError）都算正常退出
     finally:

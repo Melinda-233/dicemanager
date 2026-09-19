@@ -9,9 +9,8 @@ class NapCatAdapter(BaseAdapter):
         return [str(Path(instance.dir) / self.m["exe"])]       # 无 CLI 快速登录参数
 
     def configure_login(self, instance, credentials) -> dict:
-        if credentials.get("qq"):
-            self.reg_qq = credentials["qq"]
-        return {"ok": True}                                    # 二维码经 /ws/login 推送
+        return {"ok": True}                # 二维码经 /ws/login 推送；qq 由 REST 落盘，勿存 self
+                                           # （适配器实例被 ctx 缓存跨请求共享，写 self 线程不安全）
 
     def _webui(self, instance):
         wf = Path(instance.dir) / "webui.json"
@@ -50,7 +49,7 @@ class NapCatAdapter(BaseAdapter):
                 "WebUI API 不可达：请在 NapCat WebUI「网络配置」手动创建后回填")
 
     def get_actual_port(self, lines) -> int | None:
-        for line in lines:
+        for _, line in lines:              # ring 为 (seq, line) 对
             m = re.search(r"\[WebUI\].*?:(\d{4,5})/webui", line)   # 占用+1 由 NapCat 自行处理
             if m: return int(m.group(1))
         return None

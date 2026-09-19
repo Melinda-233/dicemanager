@@ -11,6 +11,7 @@ from api import ws_overview, ws_logs, ws_login
 async def lifespan(app: FastAPI):
     from api.auth import auth
     print(f"[auth] 本次管理密码: {auth.admin_password}")
+    ctx.registry.purge_tombstones()                     # 兑现「墓碑保留 30 天」承诺
     for inst in ctx.registry.resume_pending():          # 启动恢复：中间态扫描
         print(f"[resume] 实例 {inst.id} 停留在 {inst.state}，可经向导继续或回滚")
     yield

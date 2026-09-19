@@ -1,4 +1,7 @@
-"""通道 3：登录推送（qrcode/verify/completed；refresh/skip_login）"""
+"""通道 3：登录推送（qrcode/verify/completed；refresh/skip_login）
+
+回放与实时事件用 ring 的 (seq, line) 对去重：先注册 hook、再读快照，
+回放完冲刷队列时跳过 seq ≤ 快照尾的重复——消除了「快照后注册 hook 前」的丢行窗口。"""
 import asyncio
 from fastapi import WebSocket, WebSocketDisconnect, APIRouter
 from api.context import ctx
@@ -21,21 +24,27 @@ async def ws_login(ws: WebSocket, inst_id: str):
     EXTRACTORS = (("qrcode", adapter.extract_qrcode),
                   ("verify", adapter.extract_verify))
 
-    def hook(line: str):
+    def hook(pair: tuple):
         """tail 线程 → 事件循环：线程安全投递（asyncio.Queue 非线程安全）。"""
         def _put():
             for tag, fn in EXTRACTORS:
-                if item := fn(line):
+                if item := fn(pair[1]):
                     if queue.full(): queue.get_nowait()
-                    queue.put_nowait({"type": tag, "payload": item})
+                    queue.put_nowait((pair[0], {"type": tag, "payload": item}))
         loop.call_soon_threadsafe(_put)
 
     proc = ctx.pm.get(inst_id)
-    for line in list(proc.ring):        # 回放历史
+    proc.on_line(hook)                  # 先注册 hook，再取快照（顺序不能反，否则丢行）
+    snapshot = list(proc.ring)          # 回放历史
+    max_seq = snapshot[-1][0] if snapshot else -1
+    for _, line in snapshot:
         for tag, fn in EXTRACTORS:
             if item := fn(line):
                 await ws.send_json({"type": tag, "payload": item})
-    proc.on_line(hook)
+    while True:                         # 回放期间 hook 已投递的事件：去重后补发
+        try: s, ev = queue.get_nowait()
+        except asyncio.QueueEmpty: break
+        if s > max_seq: await ws.send_json(ev)
 
     def _mark_configured():
         try:
@@ -64,7 +73,8 @@ async def ws_login(ws: WebSocket, inst_id: str):
                     _mark_configured()
                     await ws.send_json({"type": "skipped"})
             if get_task in done:
-                await ws.send_json(get_task.result())
+                _, ev = get_task.result()
+                await ws.send_json(ev)
                 get_task = None
 
             if recv_task is not None and not recv_task.done() and \

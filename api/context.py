@@ -1,4 +1,5 @@
 """AppContext：依赖注入容器 + 适配器实例缓存（模块级单例，import 即初始化）"""
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from core.registry import Registry
@@ -8,8 +9,9 @@ from services.wizard import Wizard
 from services.login import LoginService
 from adapters import load_registry
 
-STATE_DIR = Path("/var/lib/dicemanager")
-LOG_DIR = Path("/var/log/dicemanager")
+# 默认 Linux 生产路径；Windows 开发 / 非 root 运行可用 DM_STATE_DIR / DM_LOG_DIR 覆盖
+STATE_DIR = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager"))
+LOG_DIR = Path(os.environ.get("DM_LOG_DIR", "/var/log/dicemanager"))
 
 @dataclass
 class AppContext:

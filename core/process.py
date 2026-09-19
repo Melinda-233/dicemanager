@@ -1,8 +1,12 @@
-"""进程管理：Popen 管道 + 环形缓冲 + 日志双限滚动 + 崩溃自动重启（滑动窗口）"""
+"""进程管理：Popen 管道 + 环形缓冲(seq,line) + 日志双限滚动 + 崩溃自动重启（滑动窗口）
+ring 存 (seq, line) 对：WS 历史回放与实时 hook 用 seq 去重，消除「快照后 hook 前」丢行窗口。"""
+import itertools
 import os, shutil, signal, subprocess, threading, time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+
+_POSIX = os.name == "posix"
 
 LOG_RETENTION_DAYS = 7
 LOG_MAX_BYTES = 50 * 1024 * 1024
@@ -16,7 +20,8 @@ class ManagedProcess:
     def __init__(self, inst_id: str, log_dir: Path):
         self.id = inst_id
         self.log_path = Path(log_dir) / f"{inst_id}.log"
-        self.ring = deque(maxlen=RING_MAX)
+        self.ring: deque = deque(maxlen=RING_MAX)     # (seq, line) 对，seq 单调递增
+        self._seq = itertools.count()
         self._tail_listeners: list = []
         self._proc: subprocess.Popen | None = None
         self._t: threading.Thread | None = None
@@ -36,7 +41,7 @@ class ManagedProcess:
         copy = self.log_path.with_suffix(".log.1")
         if copy.exists():
             for line in copy.read_text("utf-8", errors="replace").splitlines()[-RING_MAX:]:
-                self.ring.append(line)
+                self.ring.append((next(self._seq), line))
 
     def start(self, cmd: list[str], cwd: str, env: dict | None = None):
         with self._lock:
@@ -46,24 +51,29 @@ class ManagedProcess:
             self._proc = subprocess.Popen(
                 cmd, cwd=cwd, env={**os.environ, **(env or {})},
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, start_new_session=True)
+                text=True, start_new_session=_POSIX)   # Windows 本地开发/测试可运行
             self.started_at = time.time()
             self._stop_flag.clear()
             self._t = threading.Thread(target=self._tail, daemon=True)
             self._t.start()
 
     def _tail(self):
-        """tail 线程：行回调 + 日志写入 + 滑动窗口自动重启。"""
+        """tail 线程：行回调 + 日志写入 + 滑动窗口自动重启。
+
+        重启必须 return：start() 会再起一个新的 tail 线程接管新进程，
+        旧线程若继续循环会与新线程同抢一条 stdout，线程数每次崩溃翻倍、
+        restarts 计数 +2，导致 5 次/5 分钟熔断被提前误触发。"""
         backoff = 1
         while not self._stop_flag.is_set():
             p = self._proc
             if not p or p.stdout is None: break
             for line in p.stdout:
                 line = line.rstrip("\n")
-                self.ring.append(line)
+                seq = next(self._seq)
+                self.ring.append((seq, line))
                 self._append_log(line)
                 for cb in list(self._tail_listeners):
-                    try: cb(line)
+                    try: cb(seq, line)
                     except Exception: pass
             rc = p.wait()
             if self._stop_flag.is_set(): break
@@ -80,6 +90,7 @@ class ManagedProcess:
             time.sleep(min(backoff, RESTART_COOLDOWN)); backoff *= 2
             self._append_log(f"[manager] 进程退出 rc={rc}，第 {self.restarts} 次重启")
             self.start(self._last_cmd, self._last_cwd)
+            return                        # 新 tail 线程已由 start() 接管，旧线程必须退出
 
     def _append_log(self, line: str):
         with self._lock:
@@ -108,10 +119,16 @@ class ManagedProcess:
     def stop(self):
         self._stop_flag.set()
         if self._proc and self._proc.poll() is None:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            if _POSIX:                    # killpg 仅 POSIX；Windows 本地测试走 terminate
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            else:
+                self._proc.terminate()
             try: self._proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+                if _POSIX:
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+                else:
+                    self._proc.kill()
         with self._lock:
             if self._log_fp:
                 self._log_fp.close(); self._log_fp = None
@@ -124,7 +141,9 @@ class ManagedProcess:
     def is_alive(self) -> bool:
         return bool(self._proc and self._proc.poll() is None)
 
-    def on_line(self, cb):  self._tail_listeners.append(cb)
+    def on_line(self, cb):
+        """cb 签名 cb(seq, line)：seq 与 ring 中一致，供回放/实时去重。"""
+        self._tail_listeners.append(cb)
     def off_line(self, cb):
         if cb in self._tail_listeners: self._tail_listeners.remove(cb)
 

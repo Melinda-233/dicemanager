@@ -39,7 +39,8 @@ class BaseAdapter(ABC):
         return "ok"
 
     def _download(self, instance):
-        """流式落盘再解压：避免整包读入内存（大安装包动辄上百 MB）。"""
+        """流式落盘再解压：避免整包读入内存（大安装包动辄上百 MB）。
+        manifest 提供可选 sha256 时做完整性校验（供应链防篡改）。"""
         url = mirror_url(self._resolve_download())
         target = Path(instance.dir)
         target.mkdir(parents=True, exist_ok=True)
@@ -48,7 +49,17 @@ class BaseAdapter(ABC):
             with urllib.request.urlopen(url, timeout=600) as resp, \
                     open(tmp, "wb") as f:
                 shutil.copyfileobj(resp, f)
-            zipfile.ZipFile(tmp).extractall(target)
+            expected = self.m.get("sha256")
+            if expected:
+                import hashlib
+                h = hashlib.sha256()
+                with open(tmp, "rb") as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b""):
+                        h.update(chunk)
+                if h.hexdigest() != expected.lower():
+                    raise RuntimeError(f"下载包 sha256 校验失败（期望 {expected[:12]}…）")
+            with zipfile.ZipFile(tmp) as zf:
+                zf.extractall(target)
         finally:
             tmp.unlink(missing_ok=True)
 

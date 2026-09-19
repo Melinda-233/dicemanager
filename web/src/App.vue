@@ -22,11 +22,15 @@ import { getToken } from './api'
 const token = ref(getToken())
 const hash = ref(location.hash)
 const onAuth = () => (token.value = getToken())
+const onHash = () => (hash.value = location.hash)
 onMounted(() => {
-  addEventListener('hashchange', () => (hash.value = location.hash))
+  addEventListener('hashchange', onHash)
   addEventListener('dm-auth', onAuth)
 })
-onUnmounted(() => removeEventListener('dm-auth', onAuth))
+onUnmounted(() => {
+  removeEventListener('hashchange', onHash)
+  removeEventListener('dm-auth', onAuth)
+})
 const page = computed(() => hash.value.startsWith('#/logs') ? LogCenter
   : hash.value.startsWith('#/wizard') ? Wizard
   : hash.value.startsWith('#/login') ? Login

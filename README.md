@@ -20,7 +20,7 @@
 - **日志中心**：实时 tail + 历史回放（进程重启不丢日志）、关键字过滤、错误行高亮、暂停跟随、复制与下载。
 - **端口管理**：按角色批量分配（webui/ob11/milky/satori），默认端口占用自动 +1 重试，实例删除时整体释放；文件锁 + 原子写保证多进程安全。
 - **进程守护**：自动重启（5 次 / 5 分钟退避），双限日志滚动（50MB 或 7 天）。
-- **安全**：随机管理密码 + Bearer token（恒定时间比较），WS 经查询参数鉴权；启动命令一律后端构建，杜绝任意命令执行；首次启动密码打印在控制台，凭据持久化到本地。
+- **安全**：随机管理密码（PBKDF2 哈希存储，登录失败限速）+ Bearer token（恒定时间比较），WS 经查询参数鉴权；启动命令一律后端构建，杜绝任意命令执行；首次启动密码打印在控制台，凭据持久化到本地；manifest 可选 `sha256` 字段校验安装包完整性。
 
 ## 技术栈
 
@@ -97,6 +97,15 @@ resmon_warn  = 0.80                        # 部署前预估 ≥80% 黄牌提示
 ```
 
 程序安装根目录由 manifests 的 `install_root` 决定，默认 `/opt`。
+Windows 开发 / 非 root 运行可用环境变量覆盖路径：`DM_STATE_DIR`（默认 `/var/lib/dicemanager`）、
+`DM_LOG_DIR`（默认 `/var/log/dicemanager`）。
+
+## 开发与测试
+
+```bash
+pip install pytest && pytest tests/   # 进程守护回归测试（自动重启线程/计数/seq 一致性）
+python tests/smoke_local.py           # Windows 可跑的本地冒烟（fcntl 自动打桩）
+```
 
 ## 常见问题
 

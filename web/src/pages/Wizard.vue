@@ -176,6 +176,7 @@ const create = () => guard(async () => {
 
 const doStep = async (n, payload) => {
   const r = await wizardStep(instanceId, n, payload)
+  if (r.result === 'error') throw new Error(r.message || '操作失败')   // 如双击启动的竞态提示
   if (r.result === 'conflict') {
     conflict.value = true; conflictDir.value = r.dir || r.message || ''; return
   }

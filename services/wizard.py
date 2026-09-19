@@ -8,10 +8,13 @@ class Wizard:
     def __init__(self, registry, adapter_registry, ports, processes, log_dir):
         self.reg = registry; self.adapters = adapter_registry
         self.ports = ports; self.pm = processes; self.log_dir = Path(log_dir)
+        self._adapter_cache: dict = {}     # 与 ctx.get_adapter 同语义：实例复用、勿存请求态
 
     def get_adapter(self, name: str):
-        manifest, cls = self.adapters[name]
-        return cls(manifest)
+        if name not in self._adapter_cache:
+            manifest, cls = self.adapters[name]
+            self._adapter_cache[name] = cls(manifest)
+        return self._adapter_cache[name]
 
     def create_instance(self, dice, arch, login_ref=None, confirm_dir=False) -> str:
         if dice not in self.adapters:
@@ -55,6 +58,8 @@ class Wizard:
                 result = adapter.deploy(inst)
                 if result == "conflict":
                     return {"result": "conflict", "dir": inst.dir}
+                if inst.warnings:          # 适配器只改副本，必须显式落盘（OlivaDice 缺件告警）
+                    self.reg.update(instance_id, warnings=list(inst.warnings))
                 self.reg.transition(instance_id, State.AWAIT_LOGIN)
                 return {"result": "ok"}
 
@@ -89,9 +94,12 @@ class Wizard:
                     self.reg.transition(instance_id, State.RUNNING)
                     return {"result": "ok", "already_running": True}
                 cmd = adapter.build_start_cmd(inst)
-                proc.start(cmd, inst.dir)
-                actual = adapter.get_actual_port(proc.ring)
-                self.reg.update(instance_id, actual_port=actual)
+                try:
+                    proc.start(cmd, inst.dir)
+                except RuntimeError as e:                      # 竞态下刚好被启动：友好返回而非 500
+                    return {"result": "error", "message": str(e)}
+                # actual_port 不在此回读：启动瞬间进程还没打印端口（恒为 None）。
+                # 由 ws_overview 周期从 ring 提取并回填（actual_port 变化才写盘）。
                 self.reg.transition(instance_id, State.RUNNING)
                 return {"result": "ok"}
         return {"result": "unknown_step"}

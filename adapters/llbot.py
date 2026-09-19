@@ -49,7 +49,7 @@ class LLBotAdapter(BaseAdapter):
         return WriteResult(ok=True)
 
     def get_actual_port(self, lines) -> int | None:
-        for line in reversed(list(lines)[-200:]):
+        for _, line in reversed(list(lines)[-200:]):
             m = re.search(r"[Oo]b11.*?端口[:：]?\s*(\d{4,5})", line)
             if m: return int(m.group(1))
         return None
