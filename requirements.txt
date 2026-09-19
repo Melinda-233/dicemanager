@@ -1,5 +1,8 @@
-fastapi>=0.110
-uvicorn>=0.29
+# 上限锁定：fastapi 0.141 / starlette 1.6 起 WebSocket 路由在
+#「静态文件挂载于 /」场景下会被吞掉（实测 /ws/* 返回 404），故限制在已验证组合内。
+fastapi>=0.110,<0.116
+starlette>=0.40,<0.42
+uvicorn>=0.29,<0.33
 psutil>=5.9
 PyYAML>=6.0
 json5>=0.9

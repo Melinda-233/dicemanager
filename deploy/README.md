@@ -104,3 +104,17 @@ certbot --nginx -d 你的域名          # 自动改 nginx 配置，WebSocket �
 - `core/locks.py` 用 `fcntl` 文件锁，**仅 Linux 可用**（Windows 本地调试会报错，属预期行为）。
 - 管理器监听 `127.0.0.1:8765`，不经 Nginx 直接暴露端口是访问不到的。
 - 前端未构建时后端仍能启动（打印 warning），但打开页面会是空白 —— 需先 `npm run build`。
+
+### 依赖版本必须锁上限（踩过的坑）
+
+`requirements.txt` 里 fastapi / starlette / uvicorn **带上限**是必要的，不要随意 `pip install -U`：
+
+- fastapi 0.141 + starlette 1.6 之后，前端静态资源挂载在 `/` 时会吞掉 WebSocket 路由，
+  `/ws/overview`、`/ws/logs/{id}`、`/ws/login/{id}` 全部返回 **404**，页面能打开但总览空白、日志不滚动、扫码登录无响应。
+- 已验证可用组合：`fastapi 0.115.6` + `starlette 0.41.3` + `uvicorn 0.32.1`。
+- 排错命令：`journalctl -u dicemanager | grep -i websocket`；用 Nginx 时确认反代带 `Upgrade` / `Connection` 头。
+
+### 端口被占用时的做法
+
+若 80 端口已被其他站点占用（常见：宝塔默认站或其他反代），不要抢同一个 `server_name`，
+另起一个端口即可（本项目实测部署在 **8888**，记得同时在阿里云安全组与 ufw 放行该端口）。
