@@ -1,0 +1,22 @@
+[Unit]
+Description=DiceManager - QQ 骰子程序统一管理面板
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/dicemanager
+ExecStart=/opt/dicemanager/venv/bin/python -m api.app
+Restart=always
+RestartSec=5
+
+Environment="PYTHONUNBUFFERED=1"
+# 国内服务器拉取 GitHub 慢/失败时，取消下一行注释以走镜像（也可改 HTTPS_PROXY 走你自己的代理）
+# Environment="DM_GITHUB_MIRROR=https://ghfast.top"
+# Environment="HTTPS_PROXY=http://127.0.0.1:7890"
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

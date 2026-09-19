@@ -31,7 +31,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
-import { opInstance, delInstance, resmon } from '../api'
+// 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
+import { opInstance, delInstance } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 let sock

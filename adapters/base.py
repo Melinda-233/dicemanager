@@ -1,10 +1,20 @@
 """适配器基类与公共契约（终检后统一签名）"""
 import json, re, shutil, socket, urllib.request, zipfile
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 from core.locks import program_dir_lock
+
+# 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
+# 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
+# 也可指向自建反代；留空则直连。
+GITHUB_MIRROR = os.environ.get("DM_GITHUB_MIRROR", "").strip().rstrip("/")
+
+def mirror_url(url: str) -> str:
+    """需要访问 GitHub 时统一走这里，便于在国内服务器切换到镜像/代理。"""
+    return f"{GITHUB_MIRROR}/{url}" if GITHUB_MIRROR else url
 
 @dataclass
 class WriteResult:
@@ -30,7 +40,7 @@ class BaseAdapter(ABC):
 
     def _download(self, instance):
         """流式落盘再解压：避免整包读入内存（大安装包动辄上百 MB）。"""
-        url = self._resolve_download()
+        url = mirror_url(self._resolve_download())
         target = Path(instance.dir)
         target.mkdir(parents=True, exist_ok=True)
         tmp = target / ".dm_download.zip"
@@ -52,7 +62,8 @@ class BaseAdapter(ABC):
             req = urllib.request.Request(
                 f"https://api.github.com/repos/{repo}/releases/latest",
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "DiceManager"})
-            assets = json.load(urllib.request.urlopen(req, timeout=30))["assets"]
+            mreq = urllib.request.Request(mirror_url(req.full_url), headers=req.headers)
+            assets = json.load(urllib.request.urlopen(mreq, timeout=30))["assets"]
             suffix = self.m.get("asset_suffix", ".zip")
             for a in assets:
                 if a["name"].endswith(suffix):
