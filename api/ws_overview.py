@@ -35,7 +35,10 @@ async def overview_loop(ws: WebSocket):
         try:
             await ws.send_json({"type": "overview", "payload": {
                 "nodes": nodes, "edges": edges,
+                # 字段需与 REST /api/resmon 对齐：总览页要显示 used_mb / total_mb
                 "resmon": {"ratio": vm.used / vm.total,
+                           "total_mb": vm.total // 1048576,
+                           "used_mb": vm.used // 1048576,
                            "alert": vm.used / vm.total >= ctx.resmon_alert}}})
         except (RuntimeError, WebSocketDisconnect):
             break                                          # 客户端已断开，退出推送循环

@@ -1,9 +1,12 @@
 <template>
   <div class="app">
     <nav>
-      <a href="#/overview">总览</a> | <a href="#/logs">日志中心</a> |
-      <a href="#/wizard">新建骰子</a>
-      <template v-if="!token"> | <a href="#/login">登录</a></template>
+      <span class="brand">DiceManager</span>
+      <a href="#/overview" :class="{ on: !token || hash.startsWith('#/overview') || !hash }">总览</a>
+      <a href="#/logs" :class="{ on: hash.startsWith('#/logs') }">日志中心</a>
+      <a href="#/wizard" :class="{ on: hash.startsWith('#/wizard') }">新建骰子</a>
+      <a v-if="!token" href="#/login" :class="{ on: hash.startsWith('#/login') }">登录</a>
+      <span v-else class="spacer"/>
     </nav>
     <component :is="page" />
   </div>

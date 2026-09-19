@@ -1,10 +1,14 @@
 <template>
   <div class="overview">
     <div class="resmon">
-      <span>内存 {{ resmon.used_mb }} / {{ resmon.total_mb }} MB</span>
+      <span>内存 {{ resmon.used_mb ?? '-' }} / {{ resmon.total_mb ?? '-' }} MB</span>
       <div class="bar"><div class="fill" :class="{alert: resmon.alert}"
         :style="{width: ((resmon.ratio||0)*100).toFixed(1) + '%'}"/></div>
     </div>
+    <p v-if="!nodes.length && !connected" class="hint">正在连接服务端…</p>
+    <p v-else-if="!nodes.length" class="hint">
+      还没有骰子实例 —— 点上方「新建骰子」开始，或直接访问 <code>#/wizard</code>。
+    </p>
     <svg viewBox="0 0 800 400" class="topo">
       <line v-for="e in edges" :key="e.src+e.dst"
             :x1="pos(e.src).x" :y1="pos(e.src).y"
@@ -35,6 +39,7 @@ import { connectWS } from '../ws'
 import { opInstance, delInstance } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
+const connected = ref(false)             // WS 是否已连上：用于区分「连接中」与「真的没有实例」
 let sock
 const pos = id => {
   const i = nodes.value.findIndex(n => n.id === id)
@@ -47,7 +52,7 @@ onMounted(() => {
     if (m.type !== 'overview') return
     nodes.value = m.payload.nodes; edges.value = m.payload.edges
     resmon.value = m.payload.resmon
-  })
+  }, () => (connected.value = true))
 })
 onUnmounted(() => sock?.close())
 
