@@ -1,0 +1,14 @@
+// manifests/shiki.json
+{
+  "name": "shiki", "arch": "allinone", "multi_account": false,
+  "exe": "Dice", "install_root": "/opt",
+  "login_type": "account",
+  "recommended_protocols": ["ANDROID_PAD", "ANDROID_WATCH"],
+  "protocols": ["ANDROID_PAD", "ANDROID_WATCH", "ANDROID_PHONE"],
+  "version_markers": { "new": "config/Console/AutoLogin.yml", "legacy": "config.txt" },
+  "save_keep_dir": true,
+  "release_page": "https://github.com/Dice-Developer-Team/Dice/releases",
+  "release_page_legacy": "https://github.com/w4123/Dice/releases",
+  "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",
+  "required_files": []
+}

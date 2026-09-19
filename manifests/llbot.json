@@ -1,0 +1,14 @@
+// manifests/llbot.json
+{
+  "name": "llbot", "arch": "standalone", "multi_account": false,
+  "exe": "LLBot-CLI", "install_root": "/opt",
+  "login_type": "qrcode", "auth_token_conditional": true,
+  "compatible_login": ["builtin"],
+  "webui_default_port": 3080, "ob11_default_port": 3001,
+  "milky_default_port": 3010, "satori_default_port": 5600,
+  "config_path": "bin/llbot/default_config.json",
+  "release_page": "https://github.com/LLOneBot/LuckyLilliaBot/releases",
+  "download": "https://github.com/LLOneBot/LuckyLilliaBot/releases/latest/download/LLBot-CLI-linux-x64.zip",
+  "download_strategy": "direct",
+  "post_start_action": "--update", "required_files": []
+}

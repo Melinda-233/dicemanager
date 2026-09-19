@@ -1,0 +1,14 @@
+// manifests/olivadice.json
+{
+  "name": "olivadice", "arch": "allinone", "multi_account": false,
+  "exe": "OlivOS.exe", "install_root": "/opt",
+  "login_type": "none", "compatible_login": ["builtin"],
+  "opk_dir": "plugin/app",
+  "opk_modules": ["OlivaDiceCore", "OlivaDiceJoy", "OlivaDiceLogger",
+                   "OlivaDiceMaster", "OlivaDiceOdyssey", "ChanceCustom"],
+  "download_opk_pattern": "https://github.com/OlivOS-Team/{mod}/releases/latest/download/{mod}.opk",
+  "release_page": "https://github.com/OlivOS-Team/OlivaDiceCore/releases",
+  "download_strategy": "olivos_bundle_or_opk",
+  "framework_repo": "https://github.com/OlivOS-Team/OlivOS",
+  "required_files": ["OlivaDiceCore.opk"]
+}

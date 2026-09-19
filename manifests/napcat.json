@@ -1,0 +1,12 @@
+// manifests/napcat.json
+{
+  "name": "napcat", "arch": "standalone", "multi_account": false,
+  "exe": "NapCat.sh", "install_root": "/opt",
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "webui_default_port": 6099, "webui_port_bump_limit": 100,
+  "onebot_config": "config/onebot11_{qq}.json",
+  "prerequisite": "linuxqq-deb",
+  "release_page": "https://github.com/NapNeko/NapCatQQ/releases",
+  "download": "https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.zip",
+  "download_strategy": "direct", "required_files": []
+}

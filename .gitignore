@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / 前端构建产物
+web/node_modules/
+web/dist/
+
+# 运行时与本地环境（不应入库）
+.workbuddy/
+*.log
+*.log.1
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
