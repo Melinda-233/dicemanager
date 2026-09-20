@@ -15,6 +15,7 @@
         <span>{{ p.dice }} · {{ p.id }}{{ p.qq ? ' (QQ ' + p.qq + ')' : '' }}
           — 下一步：{{ STEP_NAMES[Math.min(p.next_step, 5) - 1] }}</span>
         <button class="primary" :disabled="busy" @click="resume(p)">继续</button>
+        <button class="danger" :disabled="busy" @click="stopPending(p)">停止并删除</button>
       </div>
     </div>
 
@@ -160,7 +161,7 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
-         deletePackage, createInstance, wizardStep } from '../api'
+         deletePackage, createInstance, wizardStep, delInstance } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']
 const STEP_COUNT = STEP_NAMES.length
@@ -265,6 +266,12 @@ const resume = p => {
   step.value = Math.min(p.next_step || 1, 5)
   if (step.value === 3 && loginType.value === 'qrcode') openLoginWS()
 }
+
+// 停止并删除未完成实例（如下载失败卡在部署中的）：未完成实例无存档，目录一并清理
+const stopPending = p => guard(async () => {
+  await delInstance(p.id, true, true, false)
+  await refreshLists()
+})
 
 const guard = async fn => {                    // 统一转圈 + 报错，避免失败后界面无反馈卡死
   busy.value = true; err.value = ''
