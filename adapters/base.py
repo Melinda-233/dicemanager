@@ -1,10 +1,16 @@
 """适配器基类与公共契约（终检后统一签名）"""
-import json, re, shutil, socket, urllib.request, zipfile
+import json
 import os
+import re
+import shutil
+import socket
+import urllib.request
+import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+
 from core.locks import program_dir_lock
 
 # 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
@@ -18,9 +24,14 @@ def mirror_url(url: str) -> str:
 
 @dataclass
 class WriteResult:
-    """write_conn_config 统一返回值：manual 非空 = 需人工回填（NapCat 兜底）。"""
+    """write_conn_config 统一返回值。
+
+    ok=False 表示写入失败；manual 非空表示有需要用户知晓的提示（成功时的重启说明、
+    失败时的人工兜底指引都走这里）；path 为实际写入的配置文件路径，便于前端展示。
+    """
     ok: bool = True
     manual: str | None = None
+    path: str | None = None
 
 class BaseAdapter(ABC):
     def __init__(self, manifest: dict):
@@ -90,6 +101,21 @@ class BaseAdapter(ABC):
     @abstractmethod
     def build_start_cmd(self, instance) -> list[str]: ...
 
+    def prepare_start(self, instance, runner=None) -> bool:
+        """启动前的准备动作（默认无）。
+
+        runner: 形如 run(cmd, cwd, label) 的可调用对象，用于执行同步命令并把输出汇入
+        该实例的日志流（LLBot 首启 --update 用它）。
+        返回值=True 表示执行了只应做一次的动作，由调用方落盘 instance.first_run_done。
+        """
+        return False
+
+    @staticmethod
+    def gen_token(n: int = 16) -> str:
+        """互联令牌：OneBot 两端的 token 必须一致，由后端生成避免空 token。"""
+        import secrets
+        return secrets.token_urlsafe(n)
+
     # ---------- 登录与互联 ----------
     @abstractmethod
     def configure_login(self, instance, credentials: dict) -> dict: ...
@@ -112,6 +138,14 @@ class BaseAdapter(ABC):
                 "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
 
     def get_actual_port(self, lines) -> int | None:
+        return None
+
+    def get_webui_token(self, lines) -> str | None:
+        """从启动日志回读 WebUI 令牌（NapCat 等）；不需要的适配器返回 None。"""
+        return None
+
+    def detect_account(self, instance) -> str | None:
+        """从日志/配置文件回读已登录的 QQ 号；无法识别返回 None。"""
         return None
 
     # ---------- 登录页推送提取 ----------

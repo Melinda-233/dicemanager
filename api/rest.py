@@ -1,11 +1,13 @@
 """REST 端点：向导 / 实例操作 / 快照查询 / 二次确认删除"""
 import shutil
 from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from api.context import ctx
+
 from api.auth import require_auth
+from api.context import ctx
 from core.locks import instance_lock
 
 # 登录入口必须无鉴权（原实现挂在带鉴权的 router 下，永远拿不到 token）
@@ -49,6 +51,14 @@ def run_wizard_step(inst_id: str, req: StepReq):
 def list_instances():
     return [{**r, "process": ctx.pm.get(r["id"]).probe()} for r in ctx.registry.all()]
 
+@router.get("/pending")
+def list_pending():
+    """未完成的中间态实例：管理器重启 / 断网后可经向导从这里继续。"""
+    return [{"id": i.id, "dice": i.dice, "state": i.state, "dir": i.dir,
+             "qq": i.qq, "login_ref": i.login_ref,
+             "next_step": ctx.wizard.next_step(i.id)}
+            for i in ctx.registry.resume_pending()]
+
 @router.post("/instances/{inst_id}/{op}")
 def instance_op(inst_id: str, op: str):
     if op not in VALID_OPS:                              # 显式校验（assert 会被 -O 剥离）
@@ -58,11 +68,19 @@ def instance_op(inst_id: str, op: str):
         if op in ("start", "restart"):
             if op == "restart":
                 ctx.pm.stop(inst_id)
+            # 首启一次性动作（LLBot --update 等）：与向导 Step5 同一条路径
+            def runner(cmd, cwd, label):
+                ctx.pm.run_once(inst_id, cmd, cwd, label=label)
+            try:
+                if ctx.get_adapter(inst.dice).prepare_start(inst, runner):
+                    ctx.registry.update(inst_id, first_run_done=True)
+            except Exception:
+                pass
             cmd = ctx.get_adapter(inst.dice).build_start_cmd(inst)   # 后端构建（安全）
             try:
                 ctx.pm.launch(inst_id, cmd, inst.dir)
             except RuntimeError as e:                    # 已在运行等场景
-                raise HTTPException(409, str(e))
+                raise HTTPException(409, str(e)) from e
         else:
             ctx.pm.stop(inst_id)
     return {"ok": True}
@@ -81,10 +99,14 @@ def delete_instance(inst_id: str, confirm: bool = False,
         if remove_dir:
             base = Path(inst.dir)
             if keep_save:
-                # 保留存档：删除目录内除 config 外的全部内容
+                # 保留存档：删除目录内除存档目录外的全部内容
                 # （原实现语义颠倒：keep_save=true 反而把存档目录删了）
+                # 存档目录名由 manifest 的 save_keep_dir 指定，缺省 config
+                raw = ctx.adapters[inst.dice][0].get("save_keep_dir", "config")
+                keep_names = ([raw] if isinstance(raw, str)
+                              else list(raw) if raw else ["config"])
                 for child in base.iterdir():
-                    if child.name == "config":
+                    if child.name in keep_names:
                         continue
                     if child.is_dir():
                         shutil.rmtree(child, ignore_errors=True)

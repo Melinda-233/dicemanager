@@ -1,8 +1,10 @@
 """五步向导状态机（断点续跑 + 同名冲突弹窗 + 后端统一构建启动命令）"""
 import uuid
 from pathlib import Path
+
 from core.locks import instance_lock
 from core.registry import State
+
 
 class Wizard:
     def __init__(self, registry, adapter_registry, ports, processes, log_dir):
@@ -34,6 +36,30 @@ class Wizard:
                         port=ports.get("webui", 0), allocated_ports=ports,
                         login_ref=login_ref)
         return iid
+
+    def next_step(self, instance_id: str) -> int:
+        """断点续跑：按状态机给出该实例下一步该执行哪一步（供前端「继续」使用）。"""
+        st = self.reg.get(instance_id).state
+        if st in (State.UNDEPLOYED.value, State.DEPLOYING.value): return 2
+        if st == State.AWAIT_LOGIN.value: return 3
+        return 5                                  # CONFIGURED / RUNNING → 直接启动
+
+    def _login_ref_info(self, inst):
+        """关联的登录端实例的 (ob11 端口, 互联 token)；没关联或已删除则 (None, None)。"""
+        if not inst.login_ref: return None, None
+        try:
+            li = self.reg.get(inst.login_ref)
+            return (li.allocated_ports or {}).get("ob11"), li.conn_token
+        except KeyError:
+            return None, None
+
+    def _refresh_account(self, instance_id: str, inst, adapter) -> None:
+        """扫码/账号登录后才拿得到 QQ 号：配置文件优先，其次日志锚点。"""
+        if inst.qq: return
+        qq = adapter.detect_account(inst)
+        if not qq and hasattr(adapter, "account_from_logs"):
+            qq = adapter.account_from_logs(self.pm.get(instance_id).ring)
+        if qq: self.reg.update(instance_id, qq=qq)
 
     def run_step(self, instance_id: str, step: int, payload: dict) -> dict:
         with instance_lock(instance_id):
@@ -68,7 +94,8 @@ class Wizard:
                 if r.get("conflict"):
                     return {"result": "conflict", "message": r["conflict"]}
                 if payload.get("qq"):
-                    self.reg.update(instance_id, qq=payload["qq"])
+                    self.reg.update(instance_id, qq=payload["qq"]); inst.qq = payload["qq"]
+                self._refresh_account(instance_id, inst, adapter)   # 扫码后回读账号
                 login_type = self.adapters[inst.dice][0].get("login_type", "none")
                 needs_login = bool(r.get("needs_login",
                                          login_type in ("qrcode", "account")))
@@ -77,22 +104,40 @@ class Wizard:
                 return {"result": "ok", "needs_login": needs_login, **r}
 
             if step == 4:                                      # 互联配置写入 + 预览
-                addr = payload.get("addr",
-                    f"127.0.0.1:{inst.allocated_ports.get('ob11', 3001)}")
+                self._refresh_account(instance_id, inst, adapter)  # 可能刚扫码成功
+                login_port, login_token = self._login_ref_info(inst)
+                direction = payload.get("direction") or inst.conn_direction or "forward"
+                # 默认地址：自己有 ob11 端口（登录端作服务端）用自己，否则连登录端的端口
+                default_port = (inst.allocated_ports or {}).get("ob11") or login_port or 3001
+                addr = payload.get("addr") or inst.conn_addr or f"127.0.0.1:{default_port}"
+                # 两端 token 必须一致：登录端先生成，骰子端经 login_ref 继承同一个
+                token = (payload.get("token") or inst.conn_token or login_token
+                         or adapter.gen_token())
                 wr = adapter.write_conn_config(inst, payload.get("mode", "ob11"),
-                                               payload.get("direction", "forward"),
-                                               addr, payload.get("token", ""))
-                if wr.manual:
-                    self.reg.update(instance_id, warnings=[wr.manual])
-                    return {"result": "ok", "manual": wr.manual}
-                return {"result": "ok", "preview":
-                        f"{'正向' if payload.get('direction') == 'forward' else '反向'} WS → {addr}"}
+                                               direction, addr, token)
+                self.reg.update(instance_id, conn_token=token, conn_addr=addr,
+                                conn_direction=direction)
+                if not wr.ok:
+                    return {"result": "error", "message": wr.manual or "互联配置写入失败"}
+                kind = "正向" if direction != "reverse" else "反向"
+                return {"result": "ok",
+                        "preview": f"{kind} WS → {addr}\nToken: {token}",
+                        "token": token, "path": wr.path, "manual": wr.manual}
 
             if step == 5:                                      # 启动（命令后端构建，安全）
                 proc = self.pm.get(instance_id)
                 if proc.is_alive():
                     self.reg.transition(instance_id, State.RUNNING)
                     return {"result": "ok", "already_running": True}
+                # 首启一次性动作（LLBot --update 等），输出同进本实例日志流
+                def runner(cmd, cwd, label):
+                    self.pm.run_once(instance_id, cmd, cwd, label=label)
+                try:
+                    if adapter.prepare_start(inst, runner):
+                        self.reg.update(instance_id, first_run_done=True)
+                        inst.first_run_done = True
+                except Exception:                              # 准备失败不阻断启动
+                    pass
                 cmd = adapter.build_start_cmd(inst)
                 try:
                     proc.start(cmd, inst.dir)

@@ -1,5 +1,7 @@
 """原子读写：同目录 mkstemp + os.replace + fsync，杜绝半写文件"""
-import json, os, tempfile
+import json
+import os
+import tempfile
 from pathlib import Path
 from threading import Lock
 
@@ -21,7 +23,7 @@ def read_json_any(path) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        import json5                                # pip install json5
+        import json5  # pip install json5
         return json5.loads(text)
 
 def atomic_write_json(path, mutate, source_json5: bool = False) -> dict:

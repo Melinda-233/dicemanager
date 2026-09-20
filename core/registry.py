@@ -1,11 +1,15 @@
 """实例注册表与状态机：UNDEPLOYED→DEPLOYING→AWAIT_LOGIN→CONFIGURED→RUNNING"""
-import json, threading, time, uuid
-from dataclasses import dataclass, field, asdict
+import json
+import threading
+import time
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
 from core.atomicio import atomic_write_json
 from core.locks import instance_lock
+
 
 class State(Enum):
     UNDEPLOYED = "UNDEPLOYED"; DEPLOYING = "DEPLOYING"
@@ -36,6 +40,12 @@ class Instance:
     state: str = State.UNDEPLOYED.value
     warnings: list = field(default_factory=list)
     webui_token: Optional[str] = None
+    # 互联配置（Step4）：登录端生成 token 后落盘，骰子端自动沿用，保证两端一致
+    conn_token: Optional[str] = None
+    conn_addr: Optional[str] = None
+    conn_direction: Optional[str] = None
+    # 首启一次性动作（如 LLBot --update）只做一次，重启不重复
+    first_run_done: bool = False
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
 
 class Registry:

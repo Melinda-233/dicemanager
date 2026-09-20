@@ -103,9 +103,14 @@ Windows 开发 / 非 root 运行可用环境变量覆盖路径：`DM_STATE_DIR`�
 ## 开发与测试
 
 ```bash
-pip install pytest && pytest tests/   # 进程守护回归测试（自动重启线程/计数/seq 一致性）
+pip install -r requirements-dev.txt
+ruff check .                          # Lint（紧凑单行风格已豁免，见 pyproject.toml）
+mypy                                  # 类型检查（core + services）
+pytest tests/                         # 进程守护回归测试（自动重启线程/计数/seq 一致性）
 python tests/smoke_local.py           # Windows 可跑的本地冒烟（fcntl 自动打桩）
 ```
+
+推送后由 GitHub Actions（`.github/workflows/ci.yml`）跑同一套检查 + 前端构建。
 
 ## 常见问题
 

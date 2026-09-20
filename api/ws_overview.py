@@ -6,10 +6,12 @@
 进程尚未打印端口，向导 step5 的即时回读恒为 None（已移除）。"""
 import asyncio
 from types import SimpleNamespace
+
 import psutil
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter
-from api.context import ctx
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
 from api.auth import auth
+from api.context import ctx
 
 router = APIRouter()
 
@@ -17,12 +19,30 @@ EDGE_STATES = {"ok": "solid-green",        # 实线绿：已连接
                "none": "dashed-gray",      # 虚线灰：已配置未连接
                "down": "solid-red"}        # 红：连接失败
 
-def _backfill_actual_port(rec: dict) -> dict:
-    """进程存活时从日志 ring 提取实际端口，变化才写盘（2s 周期下的写放大保护）。"""
-    alive_port = ctx.get_adapter(rec["dice"]).get_actual_port(ctx.pm.get(rec["id"]).ring)
-    if alive_port and alive_port != rec.get("actual_port"):
-        ctx.registry.update(rec["id"], actual_port=alive_port)
-        return {**rec, "actual_port": alive_port}
+def _backfill_from_logs(rec: dict) -> dict:
+    """进程存活时从日志 ring 回读实际端口 / WebUI token / QQ 号，变化才写盘。
+
+    NapCat 的真实 WebUI 端口（占用时自动 +1）与登录令牌只在启动日志里出现一次，
+    这里_periodic 回读是它们的唯一落盘入口；写盘前比对旧值，避免 2s 周期的写放大。
+    """
+    adapter = ctx.get_adapter(rec["dice"])
+    ring = ctx.pm.get(rec["id"]).ring
+    upd: dict = {}
+    port = adapter.get_actual_port(ring)
+    if port and port != rec.get("actual_port"):
+        upd["actual_port"] = port
+    token = adapter.get_webui_token(ring)
+    if token and token != rec.get("webui_token"):
+        upd["webui_token"] = token
+    if not rec.get("qq"):
+        qq = adapter.detect_account(SimpleNamespace(**rec))
+        if not qq and hasattr(adapter, "account_from_logs"):
+            qq = adapter.account_from_logs(ring)
+        if qq:
+            upd["qq"] = qq
+    if upd:
+        ctx.registry.update(rec["id"], **upd)
+        return {**rec, **upd}
     return rec
 
 async def overview_loop(ws: WebSocket):
@@ -32,7 +52,7 @@ async def overview_loop(ws: WebSocket):
             try:
                 alive = ctx.pm.is_alive(rec["id"])
                 if alive:
-                    rec = _backfill_actual_port(rec)
+                    rec = _backfill_from_logs(rec)
                 nodes.append({"id": rec["id"], "dice": rec["dice"],
                               "arch": rec["arch"],              # allinone → 单节点渲染
                               "state": rec["state"],

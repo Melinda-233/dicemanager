@@ -3,9 +3,11 @@
 回放与实时事件用 ring 的 (seq, line) 对去重：先注册 hook、再读快照，
 回放完冲刷队列时跳过 seq ≤ 快照尾的重复——消除了「快照后注册 hook 前」的丢行窗口。"""
 import asyncio
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter
-from api.context import ctx
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
 from api.auth import auth
+from api.context import ctx
 from core.registry import State
 
 router = APIRouter()

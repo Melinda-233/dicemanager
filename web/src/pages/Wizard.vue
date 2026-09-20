@@ -8,6 +8,16 @@
       </ol>
     </div>
 
+    <!-- 断点续跑入口：管理器重启/断网留下的中间态实例 -->
+    <div v-if="pending.length && step === 1 && !loading" class="pending">
+      <p class="hint">有 {{ pending.length }} 个未完成的实例，可从中断处继续：</p>
+      <div v-for="p in pending" :key="p.id" class="pending-item">
+        <span>{{ p.dice }} · {{ p.id }}{{ p.qq ? ' (QQ ' + p.qq + ')' : '' }}
+          — 下一步：{{ STEP_NAMES[Math.min(p.next_step, 5) - 1] }}</span>
+        <button class="primary" :disabled="busy" @click="resume(p)">继续</button>
+      </div>
+    </div>
+
     <p v-if="loading" class="hint">正在加载程序清单…</p>
     <div v-else-if="loadError" class="empty">
       <p>程序清单加载失败：{{ loadError }}</p>
@@ -88,21 +98,46 @@
 
     <!-- Step4：互联配置 -->
     <div v-else-if="step === 4" class="wz-body">
+      <div class="field">
+        <label>连接方向</label>
+        <select v-model="conn.direction">
+          <option value="forward">正向 WS：本程序监听端口，等待对端连接</option>
+          <option value="reverse">反向 WS：本程序主动连接对端</option>
+        </select>
+        <p class="hint">不确定就保持默认：两端一个监听、一个连接即可。</p>
+      </div>
+      <div class="field">
+        <label>地址（host:port，留空使用端口分配的默认值）</label>
+        <input v-model="conn.addr" placeholder="例如 127.0.0.1:3001"/>
+      </div>
+      <div class="field">
+        <label>互联 Token（两端必须一致，留空自动生成/沿用）</label>
+        <input v-model="conn.token" placeholder="留空自动生成"/>
+      </div>
+      <div class="ops">
+        <button class="primary" :disabled="busy" @click="doConn">确认写入互联配置</button>
+      </div>
       <pre class="preview" v-if="preview">{{ preview }}</pre>
       <p v-if="manual" class="warn">{{ manual }}</p>
-      <div class="ops">
-        <button class="primary" :disabled="busy" @click="doStep(4, {})">确认写入互联配置</button>
-      </div>
     </div>
 
     <!-- Step5：启动 -->
     <div v-else-if="step === 5" class="wz-body">
       <p v-if="busy">启动中…</p>
-      <p v-else>已下发启动命令，总览图出现新节点即完成。</p>
-      <div class="ops">
-        <button class="primary" @click="goOverview">完成，回到总览</button>
-        <button @click="reset">再建一个</button>
-      </div>
+      <template v-else-if="!started">
+        <p>配置已就绪，点击启动实例。</p>
+        <div class="ops">
+          <button class="primary" @click="startInst">启动</button>
+          <button @click="goOverview">暂不启动，回到总览</button>
+        </div>
+      </template>
+      <template v-else>
+        <p>已下发启动命令，总览图出现新节点即完成。</p>
+        <div class="ops">
+          <button class="primary" @click="goOverview">完成，回到总览</button>
+          <button @click="reset">再建一个</button>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -110,7 +145,7 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
-import { listManifests, listInstances, createInstance, wizardStep } from '../api'
+import { listManifests, listInstances, listPending, createInstance, wizardStep } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']
 const STEP_COUNT = STEP_NAMES.length
@@ -120,7 +155,10 @@ const dice = ref(''), loginRef = ref('')
 const loading = ref(true), loadError = ref(''), busy = ref(false), err = ref('')
 const conflict = ref(false), conflictDir = ref(''), qr = ref({}), verifyUrl = ref('')
 const cred = ref({ qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' })
+const conn = ref({ direction: 'forward', addr: '', token: '' })
 const preview = ref(''), manual = ref('')
+const pending = ref([])          // 中间态实例（断点续跑入口）
+const started = ref(false)       // Step5 是否已下发启动命令
 // sock 必须是 ref：script setup 里 let 变量不会随赋值同步到模板上下文，
 // 旧写法下「刷新二维码」按钮拿到的永远是初始的 null
 const sock = ref(null)
@@ -158,7 +196,22 @@ const reset = () => {
   step.value = 1; err.value = ''; conflict.value = false
   qr.value = {}; verifyUrl.value = ''; preview.value = ''; manual.value = ''
   cred.value = { qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' }
+  conn.value = { direction: 'forward', addr: '', token: '' }
+  started.value = false
   loginRef.value = ''; instanceId = null
+  refreshLists()
+}
+
+// 断点续跑：跳到该实例下一步（二维码登录需重开推送通道）
+const resume = p => {
+  sock.value?.close(); sock.value = null
+  err.value = ''; conflict.value = false; preview.value = ''; manual.value = ''
+  started.value = false
+  instanceId = p.id
+  dice.value = p.dice
+  loginRef.value = p.login_ref || ''
+  step.value = Math.min(p.next_step || 1, 5)
+  if (step.value === 3 && loginType.value === 'qrcode') openLoginWS()
 }
 
 const guard = async fn => {                    // 统一转圈 + 报错，避免失败后界面无反馈卡死
@@ -187,8 +240,22 @@ const doStep = async (n, payload) => {
     if (loginType.value === 'qrcode') openLoginWS()
   }
   if (step.value === 4) preview.value = r.preview || ''
-  if (step.value === 5) await doStep(5, {})
+  // Step5 不再自动启动：由用户在启动页显式点击（也兼容断点续跑直接落在第 5 步）
 }
+
+// Step4：留空的字段交给后端用默认值/自动生成的 token（两端一致性由后端保证）
+const doConn = () => guard(async () => {
+  const payload = { direction: conn.value.direction }
+  if (conn.value.addr) payload.addr = conn.value.addr.trim()
+  if (conn.value.token) payload.token = conn.value.token.trim()
+  await doStep(4, payload)
+})
+
+const startInst = () => guard(async () => {
+  await doStep(5, {})
+  started.value = true
+  refreshLists()
+})
 
 const resolve = useExisting => guard(async () => {   // 冲突二选一：重发 step2（后端已实现）
   await wizardStep(instanceId, 2, { use_existing: useExisting })
@@ -233,6 +300,8 @@ onUnmounted(() => sock.value?.close())
 .warn { color: var(--warn); }
 .qr img { max-width: 260px; display: block; margin-bottom: 10px; background: #fff; }
 .dialog { padding: 14px; margin-bottom: 14px; border: 1px solid var(--danger); border-radius: 8px; }
+.pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
+.pending-item { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .dialog code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 pre.preview {
   padding: 12px; margin: 0 0 14px; background: #f6f8fa; border: 1px solid var(--border);

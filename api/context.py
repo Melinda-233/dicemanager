@@ -2,12 +2,13 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from core.registry import Registry
+
+from adapters import load_registry
 from core.ports import PortAllocator
 from core.process import ProcessManager
-from services.wizard import Wizard
+from core.registry import Registry
 from services.login import LoginService
-from adapters import load_registry
+from services.wizard import Wizard
 
 # 默认 Linux 生产路径；Windows 开发 / 非 root 运行可用 DM_STATE_DIR / DM_LOG_DIR 覆盖
 STATE_DIR = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager"))

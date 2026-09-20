@@ -4,6 +4,7 @@
   "exe": "NapCat.sh", "install_root": "/opt",
   "login_type": "qrcode", "compatible_login": ["builtin"],
   "webui_default_port": 6099, "webui_port_bump_limit": 100,
+  "ob11_default_port": 3001,
   "onebot_config": "config/onebot11_{qq}.json",
   "prerequisite": "linuxqq-deb",
   "release_page": "https://github.com/NapNeko/NapCatQQ/releases",

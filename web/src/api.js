@@ -30,6 +30,7 @@ export async function api(path, opts = {}) {
 export const login = async pwd =>
   setToken((await api('/login', { method: 'POST', body: { password: pwd } })).token)
 export const listInstances = () => api('/instances')
+export const listPending = () => api('/pending')
 export const listManifests = () => api('/manifests')
 export const createInstance = b => api('/instances', { method: 'POST', body: b })
 export const wizardStep = (id, step, payload) =>

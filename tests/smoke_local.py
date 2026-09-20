@@ -7,14 +7,6 @@ os.environ["DM_STATE_DIR"] = tmp
 os.environ["DM_LOG_DIR"] = os.path.join(tmp, "logs")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Windows 本地无 fcntl：打桩跳过跨进程文件锁（真实文件锁在 Linux 服务器上验证）
-if os.name != "posix":
-    import types
-    _stub = types.ModuleType("fcntl")
-    _stub.LOCK_EX, _stub.LOCK_UN = 2, 8
-    _stub.flock = lambda *a, **k: None
-    sys.modules["fcntl"] = _stub
-
 # 1) 旧版明文 auth.json 自动迁移
 legacy = {"password": "test-pwd-123", "token": "tok-abc"}
 Path(tmp, "auth.json").write_text(json.dumps(legacy), encoding="utf-8")

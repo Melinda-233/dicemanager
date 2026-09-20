@@ -1,8 +1,11 @@
 """溯洄 Dice!：整合包 + 版本特征文件识别（AutoLogin.yml / config.txt）"""
-import yaml
 from pathlib import Path
+
+import yaml
+
 from adapters.base import BaseAdapter, WriteResult
 from core.atomicio import write_atomic
+
 
 class ShikiAdapter(BaseAdapter):
     def build_start_cmd(self, instance) -> list[str]:

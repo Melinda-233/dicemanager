@@ -1,9 +1,16 @@
 """鉴权：随机密码（PBKDF2 哈希存储）+ Bearer token（恒定时间比较）+ 登录失败限速；
 WS 经 ?token= 查询参数鉴权。旧版明文 auth.json 首次加载时自动迁移为哈希。"""
-import hashlib, hmac, json, os, secrets, time
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
 from pathlib import Path
+
 from fastapi import Depends, HTTPException, WebSocket
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
 from core.atomicio import write_atomic
 
 AUTH_FILE = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager")) / "auth.json"

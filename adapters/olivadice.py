@@ -1,7 +1,9 @@
 """青果 OlivaDice：OPK 组合部署（缺核阻断 / 缺件告警）"""
 import urllib.request
 from pathlib import Path
+
 from adapters.base import BaseAdapter, WriteResult
+
 
 class OlivaDiceAdapter(BaseAdapter):
     def deploy(self, instance) -> str:

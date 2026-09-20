@@ -1,8 +1,10 @@
 """端口分配表：默认端口起步 +1 重试；文件锁互斥；持久化到 ports.json"""
-import json, socket
+import socket
 from pathlib import Path
+
 from core.atomicio import atomic_write_json
 from core.locks import port_allocation_lock
+
 
 class PortAllocator:
     def __init__(self, path): self._path = Path(path)

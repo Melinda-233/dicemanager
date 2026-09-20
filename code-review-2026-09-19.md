@@ -4,7 +4,15 @@
 > DM_STATE_DIR/DM_LOG_DIR 环境变量、manifest 可选 sha256 校验、前端两处小修。
 > 验证：py_compile 零错误；新增 tests/test_process.py 4 项回归测试通过（真实子进程驱动重启链路）；
 > tests/smoke_local.py 冒烟 5 项通过（含旧明文 auth.json 自动迁移）；vite build 通过。
-> 未做：logging 框架替换 print、ruff/mypy/CI（建议后续迭代）。
+>
+> **第二轮（2026-09-20 凌晨）—— 工程化短板全部补齐**：
+> - logging：新增 core/logutil.py（控制台 + 10MB×3 滚动文件），app.py 的 print 全部替换；
+>   管理密码横幅改 console_only()，明确敏感信息不落盘
+> - ruff：pyproject.toml 配置（豁免项目刻意的紧凑单行风格 E701/E702），`ruff check .` 全绿，
+>   顺手修掉 F401 未用导入、B904 异常链、EOF 换行等 43 处
+> - mypy：platform=linux，覆盖 core+services，10 文件零错误（修了 _log_fp/_last_cmd 类型标注）
+> - CI：.github/workflows/ci.yml（backend: ruff+mypy+pytest on ubuntu；frontend: vite build）
+> - 新增 requirements-dev.txt；README 开发与测试一节同步更新
 
 ---
 

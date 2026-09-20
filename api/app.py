@@ -1,19 +1,24 @@
 """FastAPI 组装：lifespan 恢复扫描 + uvicorn 监听 127.0.0.1:8765"""
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+
+from api import ws_login, ws_logs, ws_overview
 from api.context import ctx
-from api.rest import router, public
-from api import ws_overview, ws_logs, ws_login
+from api.rest import public, router
+from core.logutil import console_only, setup_logging
+
+log = setup_logging(ctx.log_dir)                        # 控制台 + 滚动文件
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from api.auth import auth
-    print(f"[auth] 本次管理密码: {auth.admin_password}")
+    console_only(f"[auth] 本次管理密码: {auth.admin_password}")   # 敏感：只进控制台，不落盘
     ctx.registry.purge_tombstones()                     # 兑现「墓碑保留 30 天」承诺
     for inst in ctx.registry.resume_pending():          # 启动恢复：中间态扫描
-        print(f"[resume] 实例 {inst.id} 停留在 {inst.state}，可经向导继续或回滚")
+        log.info("[resume] 实例 %s 停留在 %s，可经向导继续或回滚", inst.id, inst.state)
     yield
 
 app = FastAPI(title="DiceManager", lifespan=lifespan)
@@ -28,7 +33,7 @@ _dist = Path(__file__).resolve().parent.parent / "web" / "dist"
 if _dist.exists():
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="web")
 else:
-    print(f"[warn] 前端构建产物不存在: {_dist}，仅提供 API")
+    log.warning("前端构建产物不存在: %s，仅提供 API", _dist)
 
 if __name__ == "__main__":
     import uvicorn

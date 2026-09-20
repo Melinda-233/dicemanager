@@ -1,7 +1,9 @@
 """清单加载与校验（坏清单直接报错）"""
-import json, re
+import json
+import re
 from pathlib import Path
-from adapters import sealdice, llbot, napcat, shiki, olivadice
+
+from adapters import llbot, napcat, olivadice, sealdice, shiki
 
 REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")

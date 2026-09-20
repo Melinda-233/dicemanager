@@ -1,10 +1,16 @@
 """进程管理：Popen 管道 + 环形缓冲(seq,line) + 日志双限滚动 + 崩溃自动重启（滑动窗口）
 ring 存 (seq, line) 对：WS 历史回放与实时 hook 用 seq 去重，消除「快照后 hook 前」丢行窗口。"""
 import itertools
-import os, shutil, signal, subprocess, threading, time
+import os
+import shutil
+import signal
+import subprocess
+import threading
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 _POSIX = os.name == "posix"
 
@@ -27,9 +33,9 @@ class ManagedProcess:
         self._t: threading.Thread | None = None
         self._lock = threading.Lock()
         self._stop_flag = threading.Event()
-        self._last_cmd: list | None = None
+        self._last_cmd: list[str] | None = None
         self._last_cwd: str | None = None
-        self._log_fp = None                       # 持久句柄：避免每行 open/close
+        self._log_fp: TextIO | None = None        # 持久句柄：避免每行 open/close
         self._last_rotate_check = 0.0
         self._restart_times: deque = deque(maxlen=MAX_RESTARTS)
         self.restarts = 0
@@ -47,15 +53,52 @@ class ManagedProcess:
         with self._lock:
             if self._proc and self._proc.poll() is None:
                 raise RuntimeError("进程已在运行")
+            try:
+                proc = subprocess.Popen(
+                    cmd, cwd=cwd, env={**os.environ, **(env or {})},
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, start_new_session=_POSIX)   # Windows 本地开发/测试可运行
+            except OSError as e:                           # exe 缺失/权限等：友好报错而非 500
+                raise RuntimeError(f"启动失败：{e}") from e
+            self._proc = proc
             self._last_cmd, self._last_cwd = cmd, cwd
-            self._proc = subprocess.Popen(
-                cmd, cwd=cwd, env={**os.environ, **(env or {})},
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, start_new_session=_POSIX)   # Windows 本地开发/测试可运行
             self.started_at = time.time()
             self._stop_flag.clear()
             self._t = threading.Thread(target=self._tail, daemon=True)
             self._t.start()
+
+    def run_once(self, cmd: list[str], cwd: str, timeout: float = 600,
+                 env: dict | None = None, label: str = "") -> int:
+        """一次性命令（自更新、写配置等）：输出同样进 ring 与日志，但不作为常驻进程。
+
+        与 start() 互斥（常驻进程在跑就不执行），且不触发自动重启逻辑——
+        --update 这类命令退出码非 0 是正常现象，不该被熔断机制当成崩溃。
+        """
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                raise RuntimeError("常驻进程正在运行")
+        self._append_log(f"[manager] 执行一次性命令: {label or ' '.join(cmd)}")
+        p = None
+        try:
+            p = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, start_new_session=_POSIX)
+            for line in p.stdout:
+                line = line.rstrip("\n")
+                with self._lock:
+                    seq = next(self._seq)
+                    self.ring.append((seq, line))
+                self._append_log(line)
+                for cb in list(self._tail_listeners):
+                    try: cb(seq, line)
+                    except Exception: pass
+            rc = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if p: p.kill()
+            rc = -1
+            self._append_log(f"[manager] 命令超时（{timeout}s）已终止: {label or cmd}")
+        self._append_log(f"[manager] 命令结束 rc={rc}")
+        return rc
 
     def _tail(self):
         """tail 线程：行回调 + 日志写入 + 滑动窗口自动重启。
@@ -89,6 +132,8 @@ class ManagedProcess:
                 break
             time.sleep(min(backoff, RESTART_COOLDOWN)); backoff *= 2
             self._append_log(f"[manager] 进程退出 rc={rc}，第 {self.restarts} 次重启")
+            # 不变量：_tail 只在 start() 之后运行，二者必已被赋值
+            assert self._last_cmd is not None and self._last_cwd is not None
             self.start(self._last_cmd, self._last_cwd)
             return                        # 新 tail 线程已由 start() 接管，旧线程必须退出
 
@@ -172,6 +217,10 @@ class ProcessManager:
     def launch(self, inst_id: str, cmd: list[str], cwd: str, env: dict | None = None):
         """REST start/restart 与向导 Step5 的统一入口。"""
         self.get(inst_id).start(cmd, cwd, env)
+
+    def run_once(self, inst_id: str, cmd: list[str], cwd: str, **kw) -> int:
+        """一次性命令（自更新等），输出进同一条日志流。"""
+        return self.get(inst_id).run_once(cmd, cwd, **kw)
 
     def stop(self, inst_id: str):
         self.get(inst_id).stop()

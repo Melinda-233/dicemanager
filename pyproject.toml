@@ -1,0 +1,28 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["web", "tests", ".workbuddy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "SIM"]
+# E501 行宽不强制（注释密集）；E402 允许 app.py 先组装再 mount；
+# E701/E702 豁免：本项目刻意采用紧凑单行风格（registry 枚举、短守卫语句），不展开
+# SIM105 豁免：带注释的 try-except-pass 兜底比 contextlib.suppress 更达意
+ignore = ["E501", "E402", "E701", "E702", "SIM105"]
+
+[tool.ruff.lint.per-file-ignores]
+# B008：Depends()/HTTPBearer() 作为参数默认值是 FastAPI 惯用法
+"api/rest.py" = ["B008"]
+"api/auth.py" = ["B008"]
+# SIM115：持久日志句柄 / flock 常驻 fd 是刻意设计，非泄漏
+"core/process.py" = ["SIM115"]
+"core/locks.py" = ["SIM115"]
+
+[tool.mypy]
+python_version = "3.10"
+platform = "linux"              # 本项目仅部署 Linux：fcntl/killpg/SIGKILL 均为真实 API
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unreachable = true
+# 只查核心层：adapters/api 大量依赖 FastAPI/pydantic 动态特性，信噪比低，后续逐步放开
+files = ["core", "services"]

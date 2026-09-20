@@ -7,10 +7,16 @@
   （同一进程内两个 fd 对同一文件 flock 也会互相阻塞）。因此这里统一改成
   RLock + 引用计数的文件锁，保证同一线程/同一进程内可安全嵌套。
 """
-import fcntl
+import os
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+if os.name == "posix":
+    import fcntl
+else:
+    fcntl = None                    # Windows 本地开发/测试：退化为进程内锁
+    import msvcrt
 
 class DeploymentConflict(Exception): pass
 class PortConflict(Exception): pass
@@ -19,16 +25,19 @@ _dir_lock = threading.Lock()
 _instance_locks: dict[str, threading.RLock] = {}
 _file_guard = threading.Lock()
 _file_locks: dict[str, list] = {}          # name -> [refcount, fileobj]
-_LOCK_DIR = Path("/tmp/dicemanager")
+_LOCK_DIR = Path(os.environ.get("DM_LOCK_DIR", "/tmp/dicemanager"))
 
 def _acquire_file(name: str) -> list:
-    """同一进程内对同一锁名只 flock 一次，重复进入仅增加引用计数。"""
+    """同一进程内对同一锁名只锁一次，重复进入仅增加引用计数。"""
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
     with _file_guard:
         entry = _file_locks.get(name)
         if entry is None:
             f = open(_LOCK_DIR / f"{name}.lock", "a+")
-            fcntl.flock(f, fcntl.LOCK_EX)
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            else:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)   # 锁 1 字节即可
             entry = [0, f]
             _file_locks[name] = entry
         entry[0] += 1
@@ -43,7 +52,11 @@ def _release_file(name: str) -> None:
         if entry[0] > 0:
             return
         try:
-            fcntl.flock(entry[1], fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(entry[1], fcntl.LOCK_UN)
+            else:
+                entry[1].seek(0)
+                msvcrt.locking(entry[1].fileno(), msvcrt.LK_UNLCK, 1)
         finally:
             entry[1].close()
         _file_locks.pop(name, None)

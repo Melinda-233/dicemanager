@@ -2,6 +2,7 @@
 from core.locks import instance_lock
 from core.registry import State
 
+
 class LoginService:
     def __init__(self, wizard, processes):
         self.w = wizard; self.pm = processes
