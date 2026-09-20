@@ -83,6 +83,7 @@ class ManagedProcess:
             p = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, start_new_session=_POSIX)
+            assert p.stdout is not None          # 上面指定了 stdout=PIPE，此处收窄供 mypy
             for line in p.stdout:
                 line = line.rstrip("\n")
                 with self._lock:

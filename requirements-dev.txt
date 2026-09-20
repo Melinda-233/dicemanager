@@ -1,4 +1,6 @@
 -r requirements.txt
-pytest
-ruff
-mypy
+# 检查工具锁大版本：CI 若每次拉 latest，ruff/mypy 跨版本新增规则会让既绿的代码莫名变红。
+# 下界为本地已验证版本，上界为下一个大版本（不含）。
+pytest>=9.1,<10
+ruff>=0.16,<0.17
+mypy>=2.3,<3

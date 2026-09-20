@@ -11,12 +11,18 @@ import os
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 
+# 平台适配：mypy 以 platform=linux 检查时，裸 `import fcntl` 会让 else 分支被判为
+# 「永不可达」（warn_unreachable 报错）；显式声明成可选模块可让两条分支都参与检查。
+fcntl: ModuleType | None = None
+msvcrt: ModuleType | None = None
 if os.name == "posix":
-    import fcntl
+    import fcntl as _fcntl
+    fcntl = _fcntl
 else:
-    fcntl = None                    # Windows 本地开发/测试：退化为进程内锁
-    import msvcrt
+    import msvcrt as _msvcrt  # Windows 本地开发/测试：退化为进程内锁
+    msvcrt = _msvcrt
 
 class DeploymentConflict(Exception): pass
 class PortConflict(Exception): pass
@@ -37,6 +43,7 @@ def _acquire_file(name: str) -> list:
             if fcntl is not None:
                 fcntl.flock(f, fcntl.LOCK_EX)
             else:
+                assert msvcrt is not None
                 msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)   # 锁 1 字节即可
             entry = [0, f]
             _file_locks[name] = entry
@@ -55,6 +62,7 @@ def _release_file(name: str) -> None:
             if fcntl is not None:
                 fcntl.flock(entry[1], fcntl.LOCK_UN)
             else:
+                assert msvcrt is not None
                 entry[1].seek(0)
                 msvcrt.locking(entry[1].fileno(), msvcrt.LK_UNLCK, 1)
         finally:
