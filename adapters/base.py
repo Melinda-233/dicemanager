@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core.locks import program_dir_lock
+from core import packages as pkgstore
 
 # 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
 # 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
@@ -44,35 +45,52 @@ class BaseAdapter(ABC):
             if p.exists():
                 missing = self.verify_required(instance)
                 return "ok" if not missing else "conflict"    # 冲突 → 前端弹窗
-            self._download(instance)
+            archive = self._acquire_archive()     # 本地包优先，没有才在线下载
+            if expected := self.m.get("sha256"):
+                self._verify_sha256(archive, expected)
+            self._extract(archive, instance)
             if missing := self.verify_required(instance):
                 raise RuntimeError(f"部署后缺失必备文件: {missing}")
         return "ok"
 
-    def _download(self, instance):
-        """流式落盘再解压：避免整包读入内存（大安装包动辄上百 MB）。
-        manifest 提供可选 sha256 时做完整性校验（供应链防篡改）。"""
+    def _acquire_archive(self) -> Path:
+        """取包：本地 packages/<dice>.zip 直接用；否则下载并缓存供后续复用。"""
+        cached = pkgstore.find_archive(self.m["name"])
+        if cached:
+            return cached
         url = mirror_url(self._resolve_download())
-        target = Path(instance.dir)
-        target.mkdir(parents=True, exist_ok=True)
-        tmp = target / ".dm_download.zip"
+        target = pkgstore.archive_path(self.m["name"])
+        tmp = target.with_suffix(".zip.tmp")
         try:
             with urllib.request.urlopen(url, timeout=600) as resp, \
                     open(tmp, "wb") as f:
                 shutil.copyfileobj(resp, f)
-            expected = self.m.get("sha256")
-            if expected:
-                import hashlib
-                h = hashlib.sha256()
-                with open(tmp, "rb") as f:
-                    for chunk in iter(lambda: f.read(1 << 20), b""):
-                        h.update(chunk)
-                if h.hexdigest() != expected.lower():
-                    raise RuntimeError(f"下载包 sha256 校验失败（期望 {expected[:12]}…）")
-            with zipfile.ZipFile(tmp) as zf:
-                zf.extractall(target)
+            if not zipfile.is_zipfile(tmp):
+                raise RuntimeError("下载内容不是有效的 zip 压缩包")
+            tmp.replace(target)
         finally:
             tmp.unlink(missing_ok=True)
+        pkgstore.mark_source(self.m["name"], "download")
+        return target
+
+    def _verify_sha256(self, archive: Path, expected: str) -> None:
+        import hashlib
+        h = hashlib.sha256()
+        with open(archive, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != expected.lower():
+            if pkgstore.find_archive(self.m["name"]):
+                raise RuntimeError(
+                    "本地程序包 sha256 与清单不一致：请上传正确版本的压缩包，"
+                    "或在 WebUI 删除该包后重新部署")
+            raise RuntimeError(f"下载包 sha256 校验失败（期望 {expected[:12]}…）")
+
+    def _extract(self, archive: Path, instance):
+        target = Path(instance.dir)
+        target.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(target)
 
     def _resolve_download(self) -> str:
         strat = self.m.get("download_strategy", "direct")

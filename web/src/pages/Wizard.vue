@@ -45,15 +45,29 @@
         <p class="hint">兼容：{{ loginOptions.join(' / ') }}
           <span v-if="!loginCandidates.length">（当前还没有已创建的登录端实例）</span></p>
       </div>
+      <div class="field" v-if="dice">
+        <label>离线程序包（可选）</label>
+        <div class="pkg" v-if="pkgInfo">
+          <span class="pkg-ok">✓ 本地已有：{{ pkgInfo.size_mb }} MB ·
+            {{ pkgInfo.source === 'upload' ? '上传' : '下载缓存' }}于 {{ pkgInfo.updated_at }}</span>
+          <button :disabled="pkgBusy" @click="removePkg">删除</button>
+        </div>
+        <p v-else class="hint">未上传：部署时将从 GitHub 在线下载（国内可能很慢）。</p>
+        <p class="hint">上传 zip 后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
+        <input type="file" accept=".zip" :disabled="pkgBusy" @change="uploadPkg"/>
+        <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
+      </div>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
-        <button class="primary" :disabled="!dice || busy" @click="create">下一步：下载部署</button>
+        <button class="primary" :disabled="!dice || busy" @click="create">
+          下一步：{{ pkgInfo ? '解压本地包部署' : '下载部署' }}</button>
       </div>
     </div>
 
     <!-- Step2：部署 -->
     <div v-else-if="step === 2" class="wz-body">
-      <p v-if="busy">正在下载部署 {{ dice }}，请稍候（首次可能耗时数分钟）…</p>
+      <p v-if="busy">{{ pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
+                          : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…' }}</p>
       <div v-if="conflict" class="dialog">
         <p>同名文件夹已存在：<code>{{ conflictDir }}</code></p>
         <div class="ops">
@@ -145,7 +159,8 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
-import { listManifests, listInstances, listPending, createInstance, wizardStep } from '../api'
+import { listManifests, listInstances, listPending, listPackages, uploadPackage,
+         deletePackage, createInstance, wizardStep } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']
 const STEP_COUNT = STEP_NAMES.length
@@ -159,12 +174,15 @@ const conn = ref({ direction: 'forward', addr: '', token: '' })
 const preview = ref(''), manual = ref('')
 const pending = ref([])          // 中间态实例（断点续跑入口）
 const started = ref(false)       // Step5 是否已下发启动命令
+const pkgs = ref({})             // {dice: {exists,size_mb,source,updated_at}}
+const pkgBusy = ref(false), pkgMsg = ref('')
 // sock 必须是 ref：script setup 里 let 变量不会随赋值同步到模板上下文，
 // 旧写法下「刷新二维码」按钮拿到的永远是初始的 null
 const sock = ref(null)
 let instanceId = null
 
 const manifest = computed(() => manifests.value[dice.value] || {})
+const pkgInfo = computed(() => pkgs.value[dice.value] || null)
 const loginType = computed(() => manifest.value.login_type || 'none')
 const loginOptions = computed(() =>
   (manifest.value.compatible_login || []).filter(o => o !== 'builtin'))
@@ -177,8 +195,10 @@ const needAuthToken = computed(() => !!manifest.value.auth_token_conditional)
 const load = async () => {
   loading.value = true; loadError.value = ''
   try {
-    const [m, inst] = await Promise.all([listManifests(), listInstances()])
-    manifests.value = m || {}; instances.value = inst || []
+    const [m, inst, pend, pk] = await Promise.all(
+      [listManifests(), listInstances(), listPending(), listPackages()])
+    manifests.value = m || {}; instances.value = inst || []; pending.value = pend || []
+    pkgs.value = Object.fromEntries((pk || []).filter(p => p.exists).map(p => [p.dice, p]))
     dice.value = Object.keys(manifests.value)[0] || ''
     step.value = dice.value ? 1 : 0           // 原实现从未把 step 推进到 1，页面永远停在 0/5
   } catch (e) {
@@ -188,6 +208,38 @@ const load = async () => {
   }
 }
 load()
+
+// 静默刷新实例/待续跑列表（启动完成后待续跑条目应消失）
+const refreshLists = () =>
+  Promise.all([listInstances(), listPending()])
+    .then(([i, p]) => { instances.value = i || []; pending.value = p || [] })
+    .catch(() => {})
+
+// 程序包：上传后部署直接解压本地包，不再联网下载
+const uploadPkg = e => {
+  const file = e.target.files[0]
+  e.target.value = ''                          // 允许重选同一文件再次触发 change
+  if (!file) return
+  pkgBusy.value = true; pkgMsg.value = ''
+  uploadPackage(dice.value, file)
+    .then(info => {
+      pkgs.value = { ...pkgs.value, [dice.value]: info }
+      pkgMsg.value = `已上传 ${info.size_mb} MB，部署时将直接解压该包。`
+    })
+    .catch(ex => { pkgMsg.value = ''; err.value = ex.message || String(ex) })
+    .finally(() => { pkgBusy.value = false })
+}
+
+const removePkg = () => {
+  pkgBusy.value = true; pkgMsg.value = ''
+  deletePackage(dice.value)
+    .then(() => {
+      const next = { ...pkgs.value }; delete next[dice.value]; pkgs.value = next
+      pkgMsg.value = '已删除本地包，下次部署将在线下载。'
+    })
+    .catch(ex => { err.value = ex.message || String(ex) })
+    .finally(() => { pkgBusy.value = false })
+}
 
 const goOverview = () => (location.hash = '#/overview')
 
@@ -301,6 +353,8 @@ onUnmounted(() => sock.value?.close())
 .qr img { max-width: 260px; display: block; margin-bottom: 10px; background: #fff; }
 .dialog { padding: 14px; margin-bottom: 14px; border: 1px solid var(--danger); border-radius: 8px; }
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
+.pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.pkg-ok { color: var(--ok); }
 .pending-item { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .dialog code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 pre.preview {

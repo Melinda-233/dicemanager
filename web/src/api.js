@@ -41,6 +41,26 @@ export const delInstance = (id, confirm, removeDir, keepSave) =>
       { method: 'DELETE' })
 export const resmon = () => api('/resmon')
 
+// ---------- 程序包：部署优先解压本地包，免在线下载 ----------
+export const listPackages = () => api('/packages')
+export const deletePackage = dice => api(`/packages/${dice}`, { method: 'DELETE' })
+// 大文件原始流上传：不走 api()（它会把 body JSON 序列化）
+export async function uploadPackage(dice, file) {
+  const r = await fetch(`/api/packages/${dice}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream',
+               ...(token && { Authorization: `Bearer ${token}` }) },
+    body: file,                                   // Browser 自动流式发送
+  })
+  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
+  if (!r.ok) {
+    let detail = r.statusText
+    try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 响应兜底 */ }
+    throw new Error(detail)
+  }
+  return r.json()
+}
+
 // 裸 <a href> 下载带不上 Authorization 头（原来必 401），改走 fetch + blob
 export async function downloadLog(id) {
   const r = await fetch(`/api/logs/${id}/download`,

@@ -72,4 +72,32 @@ body = r.json()
 assert body["result"] == "error" and "启动失败" in body.get("message", ""), body
 assert ctx.registry.get(nap_id).state == State.AWAIT_LOGIN.value   # 启动失败不迁状态
 print("[4] Step5 缺失 exe 友好报错 OK:", body["message"])
+
+# 5) 程序包端点：上传→列表→坏包拒绝→删除（部署优先解压本地包链路的入口）
+import io as _io
+import zipfile as _zf
+from core import packages as pkgstore
+
+def _zip(*names):
+    b = _io.BytesIO()
+    with _zf.ZipFile(b, "w") as z:
+        for n in names:
+            z.writestr(n, "x")
+    return b.getvalue()
+
+r = c.post("/api/packages/napcat", content=_zip("NapCat.sh"),
+           headers={**H, "Content-Type": "application/octet-stream"})
+assert r.status_code == 200 and r.json()["source"] == "upload", r.text
+assert pkgstore.find_archive("napcat").exists()
+r = c.post("/api/packages/napcat", content=b"garbage",
+           headers={**H, "Content-Type": "application/octet-stream"})
+assert r.status_code == 400, r.text                       # 坏包拒绝
+assert pkgstore.find_archive("napcat").exists()           # 旧包未被顶掉
+r = c.post("/api/packages/nope", content=_zip("a"), headers=H)
+assert r.status_code == 400                               # 未知程序
+r = c.get("/api/packages", headers=H)
+assert "napcat" in [p["dice"] for p in r.json()]
+assert c.delete("/api/packages/napcat", headers=H).status_code == 200
+assert c.delete("/api/packages/napcat", headers=H).status_code == 404
+print("[5] 程序包上传/列表/坏包拒绝/删除 OK")
 print("SMOKE PATCH ALL OK")

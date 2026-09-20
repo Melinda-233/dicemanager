@@ -1,13 +1,14 @@
-"""REST 端点：向导 / 实例操作 / 快照查询 / 二次确认删除"""
+"""REST 端点：向导 / 实例操作 / 快照查询 / 程序包管理 / 二次确认删除"""
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from api.auth import require_auth
 from api.context import ctx
+from core import packages as pkgstore
 from core.locks import instance_lock
 
 # 登录入口必须无鉴权（原实现挂在带鉴权的 router 下，永远拿不到 token）
@@ -125,6 +126,48 @@ def list_manifests():
                                       "approx_memory_mb", "auth_token_conditional",
                                       "prerequisite")}
             for n, (m, _) in ctx.adapters.items()}
+
+# ---------- 程序包管理：上传/列表/删除（部署时优先解压本地包，免在线下载） ----------
+
+@router.get("/packages")
+def list_packages():
+    return pkgstore.list_archives()
+
+@router.post("/packages/{dice}")
+async def upload_package(dice: str, request: Request):
+    """原始字节流上传（Content-Type: application/octet-stream）。
+
+    不用 multipart：免 python-multipart 依赖；浏览器端直接 fetch(file) 即可。
+    流式落盘临时文件再整体校验，避免大包整体读入内存。
+    """
+    if dice not in ctx.adapters:
+        raise HTTPException(400, f"未知程序: {dice}")
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > pkgstore.MAX_PKG_BYTES:
+        raise HTTPException(413, f"压缩包超过大小上限（{pkgstore.MAX_PKG_BYTES // 1048576} MB）")
+    tmp = pkgstore.archive_path(dice).with_suffix(".zip.tmp")
+    total = 0
+    try:
+        with open(tmp, "wb") as f:
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > pkgstore.MAX_PKG_BYTES:
+                    raise HTTPException(413, "压缩包超过大小上限")
+                f.write(chunk)
+        if not total:
+            raise HTTPException(400, "空请求体")
+        info = pkgstore.commit_archive(dice, tmp, source="upload")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    finally:
+        tmp.unlink(missing_ok=True)
+    return info
+
+@router.delete("/packages/{dice}")
+def delete_package(dice: str):
+    if not pkgstore.remove_archive(dice):
+        raise HTTPException(404, "本地没有该程序包")
+    return {"ok": True}
 
 @router.get("/resmon")
 def resmon_snapshot():
