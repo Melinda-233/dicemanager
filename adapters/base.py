@@ -54,24 +54,22 @@ class BaseAdapter(ABC):
         return "ok"
 
     def _acquire_archive(self) -> Path:
-        """取包：本地 packages/<dice>.zip 直接用；否则下载并缓存供后续复用。"""
+        """取包：本地 packages/<dice>.<ext> 直接用；否则下载并缓存供后续复用。"""
         cached = pkgstore.find_archive(self.m["name"])
         if cached:
             return cached
         url = mirror_url(self._resolve_download())
-        target = pkgstore.archive_path(self.m["name"])
-        tmp = target.with_suffix(".zip.tmp")
+        tmp = pkgstore.pkg_dir() / f"{self.m['name']}.dl.tmp"
         try:
             with urllib.request.urlopen(url, timeout=600) as resp, \
                     open(tmp, "wb") as f:
                 shutil.copyfileobj(resp, f)
-            if not zipfile.is_zipfile(tmp):
-                raise RuntimeError("下载内容不是有效的 zip 压缩包")
-            tmp.replace(target)
+            if pkgstore.detect_kind(tmp) is None:
+                raise RuntimeError("下载内容不是有效的 zip/tar 压缩包")
+            pkgstore.commit_archive(self.m["name"], tmp, "download")
         finally:
             tmp.unlink(missing_ok=True)
-        pkgstore.mark_source(self.m["name"], "download")
-        return target
+        return pkgstore.find_archive(self.m["name"])
 
     def _verify_sha256(self, archive: Path, expected: str) -> None:
         import hashlib
@@ -89,8 +87,23 @@ class BaseAdapter(ABC):
     def _extract(self, archive: Path, instance):
         target = Path(instance.dir)
         target.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(target)
+        kind = pkgstore.detect_kind(archive)
+        if kind == ".zip":
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(target)
+        else:                                    # tar 系（gzip/xz/bz2 由 tarfile 自动识别）
+            import tarfile
+            # filter="data" 防 tar 内绝对路径/../ 穿越解压（等价 zip 的取成员名安全做法）
+            with tarfile.open(archive, "r:*") as tf:
+                tf.extractall(target, filter="data")
+        # 归一化：压缩包常带唯一顶层目录（如 SnowLuma-linux-x64/），
+        # 把其内容直接上移到实例目录，避免 instance.dir/xxx/launcher.sh 这种错位
+        entries = [p for p in target.iterdir()]
+        if len(entries) == 1 and entries[0].is_dir():
+            sub = entries[0]
+            for child in sub.iterdir():
+                shutil.move(str(child), str(target / child.name))
+            sub.rmdir()
 
     def _resolve_download(self) -> str:
         strat = self.m.get("download_strategy", "direct")
@@ -104,11 +117,16 @@ class BaseAdapter(ABC):
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "DiceManager"})
             mreq = urllib.request.Request(mirror_url(req.full_url), headers=req.headers)
             assets = json.load(urllib.request.urlopen(mreq, timeout=30))["assets"]
-            suffix = self.m.get("asset_suffix", ".zip")
+            pattern = self.m.get("asset_name_pattern")
+            if pattern:                               # 正则精确选资产（如 linux-x64 完整包）
+                for a in assets:
+                    if re.search(pattern, a["name"]):
+                        return a["browser_download_url"]
+            suffix = self.m.get("asset_suffix", ".zip")   # 退化为后缀匹配
             for a in assets:
                 if a["name"].endswith(suffix):
                     return a["browser_download_url"]
-            raise RuntimeError(f"release 未找到 *{suffix} 资产")
+            raise RuntimeError(f"release 未找到匹配资产（pattern={pattern}, suffix={suffix}）")
         raise ValueError(f"未知下载策略: {strat}")
 
     def verify_required(self, instance) -> list:

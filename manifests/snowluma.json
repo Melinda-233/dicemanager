@@ -1,0 +1,13 @@
+// manifests/snowluma.json
+{
+  "name": "snowluma", "arch": "standalone", "multi_account": true,
+  "exe": "launcher.sh", "install_root": "/opt",
+  "webui_default_port": 5099, "ob11_default_port": 3001,
+  "login_type": "webui",
+  "prerequisite": "linuxqq-deb",
+  "release_page": "https://github.com/SnowLuma/SnowLuma/releases",
+  "download_strategy": "resolve_latest_via_api",
+  "asset_name_pattern": "SnowLuma-.*-linux-x64\\.tar\\.gz",
+  "required_files": ["launcher.sh"],
+  "approx_memory_mb": 200
+}

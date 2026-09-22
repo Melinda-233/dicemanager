@@ -34,6 +34,12 @@ def _backfill_from_logs(rec: dict) -> dict:
     token = adapter.get_webui_token(ring)
     if token and token != rec.get("webui_token"):
         upd["webui_token"] = token
+    # SnowLuma 等登录端的 OneBot accessToken 由它自己生成并落在 onebot.json，
+    # 回读后写入 conn_token，骰子端经 login_ref 继承，保证两端 token 一致
+    if hasattr(adapter, "get_conn_token"):
+        ct = adapter.get_conn_token(SimpleNamespace(**rec))
+        if ct and ct != rec.get("conn_token"):
+            upd["conn_token"] = ct
     if not rec.get("qq"):
         qq = adapter.detect_account(SimpleNamespace(**rec))
         if not qq and hasattr(adapter, "account_from_logs"):

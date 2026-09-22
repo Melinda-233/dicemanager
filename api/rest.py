@@ -104,8 +104,13 @@ def delete_instance(inst_id: str, confirm: bool = False,
                 # （原实现语义颠倒：keep_save=true 反而把存档目录删了）
                 # 存档目录名由 manifest 的 save_keep_dir 指定，缺省 config
                 raw = ctx.adapters[inst.dice][0].get("save_keep_dir", "config")
-                keep_names = ([raw] if isinstance(raw, str)
-                              else list(raw) if raw else ["config"])
+                # 兼容三种声明：字符串（目录名）/ 数组（多个目录）/ true（用默认 config）
+                if isinstance(raw, str):
+                    keep_names = [raw]
+                elif isinstance(raw, (list, tuple)):
+                    keep_names = list(raw) or ["config"]
+                else:
+                    keep_names = ["config"]
                 for child in base.iterdir():
                     if child.name in keep_names:
                         continue
@@ -124,7 +129,7 @@ def list_manifests():
                                       "compatible_login", "recommended_protocols",
                                       "webui_default_port", "ob11_default_port",
                                       "approx_memory_mb", "auth_token_conditional",
-                                      "prerequisite")}
+                                      "prerequisite", "delete_keeps_save")}
             for n, (m, _) in ctx.adapters.items()}
 
 # ---------- 程序包管理：上传/列表/删除（部署时优先解压本地包，免在线下载） ----------

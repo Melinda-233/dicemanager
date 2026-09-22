@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 
-from adapters import llbot, napcat, olivadice, sealdice, shiki
+from adapters import dicenext, llbot, napcat, olivadice, sealdice, shiki, snowluma
 
 REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")
@@ -12,7 +12,9 @@ ALLOWED_STRATEGY = ("direct", "resolve_latest_via_api", "olivos_bundle_or_opk")
 
 classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "napcat": napcat.NapCatAdapter, "shiki": shiki.ShikiAdapter,
-           "olivadice": olivadice.OlivaDiceAdapter}
+           "olivadice": olivadice.OlivaDiceAdapter,
+           "snowluma": snowluma.SnowLumaAdapter,
+           "dicenext": dicenext.DiceNextAdapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out = {}

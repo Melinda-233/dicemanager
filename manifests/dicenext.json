@@ -1,0 +1,14 @@
+// manifests/dicenext.json
+{
+  "name": "dicenext", "arch": "standalone", "multi_account": false,
+  "exe": "DiceNext", "install_root": "/opt",
+  "webui_default_port": 18088, "ob11_default_port": 6700,
+  "login_type": "external",
+  "compatible_login": ["napcat", "snowluma", "llbot"],
+  "config_path": "config/adapters.json",
+  "release_page": "https://github.com/DiceZone/Dice-Next/releases",
+  "download_strategy": "resolve_latest_via_api",
+  "asset_name_pattern": "DiceNext-.*-linux-amd64-.*\\.tar\\.gz",
+  "required_files": [],
+  "approx_memory_mb": 150
+}

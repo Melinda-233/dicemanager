@@ -7,6 +7,7 @@
   "protocols": ["ANDROID_PAD", "ANDROID_WATCH", "ANDROID_PHONE"],
   "version_markers": { "new": "config/Console/AutoLogin.yml", "legacy": "config.txt" },
   "save_keep_dir": true,
+  "delete_keeps_save": true,
   "release_page": "https://github.com/Dice-Developer-Team/Dice/releases",
   "release_page_legacy": "https://github.com/w4123/Dice/releases",
   "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",

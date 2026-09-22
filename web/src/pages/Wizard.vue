@@ -54,8 +54,8 @@
           <button :disabled="pkgBusy" @click="removePkg">删除</button>
         </div>
         <p v-else class="hint">未上传：部署时将从 GitHub 在线下载（国内可能很慢）。</p>
-        <p class="hint">上传 zip 后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
-        <input type="file" accept=".zip" :disabled="pkgBusy" @change="uploadPkg"/>
+        <p class="hint">上传 zip / tar.gz / tar.xz 等压缩包后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
+        <input type="file" accept=".zip,.gz,.tgz,.xz,.bz2,.tar" :disabled="pkgBusy" @change="uploadPkg"/>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
       </div>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
@@ -100,6 +100,11 @@
           <option value="ANDROID_PHONE">ANDROID_PHONE</option>
         </select>
         <div class="ops"><button class="primary" :disabled="busy" @click="doLogin">提交登录</button></div>
+      </div>
+      <div v-else-if="loginType === 'webui'" class="field">
+        <p class="hint">该程序需在其自带 WebUI 完成登录，dicemanager 不代劳：</p>
+        <pre class="preview" v-if="manual">{{ manual }}</pre>
+        <div class="ops"><button class="primary" :disabled="busy" @click="doLogin">我已了解，继续</button></div>
       </div>
       <div v-else class="field">
         <p class="hint">该程序无需在此登录，点击继续。</p>

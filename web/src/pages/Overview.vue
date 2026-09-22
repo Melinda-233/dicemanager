@@ -36,11 +36,13 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
-import { opInstance, delInstance } from '../api'
+import { opInstance, delInstance, listManifests } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
+const manifests = ref({})               // 程序清单：删除等行为由 manifest 声明驱动
 const connected = ref(false)             // WS 是否已连上：用于区分「连接中」与「真的没有实例」
 let sock
+listManifests().then(m => (manifests.value = m)).catch(() => {})   // 拉不到不阻塞总览
 const pos = id => {
   const i = nodes.value.findIndex(n => n.id === id)
   if (i < 0) return { x: 400, y: 200 }
@@ -58,10 +60,13 @@ onUnmounted(() => sock?.close())
 
 const op = o => opInstance(sel.value.id, o)
 const del = () => {
+  // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码
+  const keeps = !!manifests.value[sel.value.dice]?.delete_keeps_save
   if (!confirm(`确认删除 ${sel.value.dice} 实例 ${sel.value.id}？`)) return
-  const removeDir = confirm('同时删除程序文件夹？\n（Shiki 建议保留 Dice 存档目录）')
-  delInstance(sel.value.id, true, removeDir,
-              removeDir && sel.value.dice === 'shiki')      // 保留存档目录
+  const removeDir = confirm(keeps
+    ? '同时删除程序文件夹？\n（该程序建议保留存档目录）'
+    : '同时删除程序文件夹？')
+  delInstance(sel.value.id, true, removeDir, removeDir && keeps)
     .then(() => (sel.value = null))
 }
 </script>
