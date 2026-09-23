@@ -3,21 +3,24 @@ import json
 import re
 from pathlib import Path
 
-from adapters import dicenext, llbot, napcat, olivadice, sealdice, shiki, snowluma
+from adapters import dicenext, lagrange, llbot, napcat, olivadice, sealdice, shiki, snowluma
 
 REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")
 ALLOWED_ARCH = ("standalone", "allinone")
-ALLOWED_STRATEGY = ("direct", "resolve_latest_via_api", "olivos_bundle_or_opk")
+# manual：上游不发行可直接运行的程序包（如 Dice! 只发平台 dll 模块），只能离线上传
+ALLOWED_STRATEGY = ("direct", "resolve_latest_via_api", "olivos_bundle_or_opk",
+                    "manual")
 
 classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "napcat": napcat.NapCatAdapter, "shiki": shiki.ShikiAdapter,
            "olivadice": olivadice.OlivaDiceAdapter,
            "snowluma": snowluma.SnowLumaAdapter,
-           "dicenext": dicenext.DiceNextAdapter}
+           "dicenext": dicenext.DiceNextAdapter,
+           "lagrange": lagrange.LagrangeAdapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
-    out = {}
+    out: dict[str, tuple[dict, type]] = {}
     for f in sorted(Path(manifest_dir).glob("*.json")):
         # 清单允许行首 // 注释（JSONC），逐行剥离后再解析
         text = re.sub(r"^\s*//.*$", "", f.read_text("utf-8"), flags=re.M)

@@ -34,8 +34,9 @@ print("[1] auth 迁移 + 登录 + 限速 OK")
 # 2) context：环境变量路径生效 + 清单加载
 from api.context import ctx
 assert ctx.log_dir == Path(tmp, "logs"), ctx.log_dir
-assert len(ctx.adapters) == 5, ctx.adapters.keys()
-print("[2] context 环境变量路径 + 5 个清单加载 OK")
+REQUIRED_ADAPTERS = {"napcat", "sealdice", "llbot", "shiki", "olivadice"}
+assert REQUIRED_ADAPTERS <= ctx.adapters.keys(), ctx.adapters.keys()
+print(f"[2] context 环境变量路径 + 清单加载 OK（{len(ctx.adapters)} 个适配器）")
 
 # 3) registry：create/transition/update/remove/purge 全链路
 from core.registry import State

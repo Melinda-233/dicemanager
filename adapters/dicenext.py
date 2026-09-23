@@ -51,11 +51,15 @@ class DiceNextAdapter(BaseAdapter):
 
         atomic_write_json(path, _m)                 # Dice!Next 用纯 JSON
         kind = "正向" if forward else "反向"
+        if forward:
+            detail = "骰子主动连登录端 " + str(entry["endpoint"])
+        else:
+            detail = "骰子监听 " + port + "，登录端反连 ws://<骰子IP>:" + port + "/"
         return WriteResult(
             ok=True, path=str(path),
             manual=f"已写入 config/adapters.json（{kind} WS）。\n"
                    f"Dice!Next 面板「适配器管理」里 dicemanager 连接启用即生效：\n"
-                   f"  {'骰子主动连登录端 ' + entry['endpoint'] if forward else '骰子监听 ' + port + '，登录端反连 ws://<骰子IP>:' + port + '/'}")
+                   f"  {detail}")
 
     def get_actual_port(self, lines) -> int | None:
         return None                                 # 端口由 allocated/webui 决定，无需日志回读

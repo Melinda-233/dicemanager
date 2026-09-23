@@ -4,7 +4,7 @@
   "exe": "DiceNext", "install_root": "/opt",
   "webui_default_port": 18088, "ob11_default_port": 6700,
   "login_type": "external",
-  "compatible_login": ["napcat", "snowluma", "llbot"],
+  "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
   "config_path": "config/adapters.json",
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",
   "download_strategy": "resolve_latest_via_api",

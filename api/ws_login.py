@@ -26,13 +26,29 @@ async def ws_login(ws: WebSocket, inst_id: str):
     EXTRACTORS = (("qrcode", adapter.extract_qrcode),
                   ("verify", adapter.extract_verify))
 
-    def hook(pair: tuple):
-        """tail 线程 → 事件循环：线程安全投递（asyncio.Queue 非线程安全）。"""
+    # 二维码去重：Lagrange 把二维码打成多行字符画，每行都会命中提取器；
+    # 同一张码只推一次（按连接保存，重连时仍会补发当前这张）
+    qr_seen = {"payload": None}
+
+    def _dedup_qr(tag: str, payload) -> bool:
+        if tag != "qrcode":
+            return False
+        if payload == qr_seen["payload"]:
+            return True
+        qr_seen["payload"] = payload
+        return False
+
+    def hook(seq: int, line: str):
+        """tail 线程 → 事件循环：线程安全投递（asyncio.Queue 非线程安全）。
+        签名须与 process.on_line 约定一致 cb(seq, line)——此前单参数写法
+        TypeError 被 except 吞掉，二维码/验证事件实时推送整条失效（2026-09-22 修复）。"""
         def _put():
             for tag, fn in EXTRACTORS:
-                if item := fn(pair[1]):
+                if item := fn(line, inst):
+                    if _dedup_qr(tag, item):
+                        continue
                     if queue.full(): queue.get_nowait()
-                    queue.put_nowait((pair[0], {"type": tag, "payload": item}))
+                    queue.put_nowait((seq, {"type": tag, "payload": item}))
         loop.call_soon_threadsafe(_put)
 
     proc = ctx.pm.get(inst_id)
@@ -41,7 +57,9 @@ async def ws_login(ws: WebSocket, inst_id: str):
     max_seq = snapshot[-1][0] if snapshot else -1
     for _, line in snapshot:
         for tag, fn in EXTRACTORS:
-            if item := fn(line):
+            if item := fn(line, inst):
+                if _dedup_qr(tag, item):
+                    continue
                 await ws.send_json({"type": tag, "payload": item})
     while True:                         # 回放期间 hook 已投递的事件：去重后补发
         try: s, ev = queue.get_nowait()

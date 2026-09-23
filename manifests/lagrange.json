@@ -1,0 +1,17 @@
+// manifests/lagrange.json — Lagrange.OneBot（LagrangeDev/Lagrange.Core v1，登录端）
+// 与 NapCat 不同：协议自建（纯 C#），不依赖 LinuxQQ，故无 prerequisite。
+// 上游 release 只有 nightly 一个 tag（无 latest，走 resolve_latest_via_api 会 404），
+// 故用 release_tag 指定；资产为自带运行时的 SelfContained tar.gz，无需预装 dotnet。
+{
+  "name": "lagrange", "arch": "standalone", "multi_account": false,
+  "exe": "Lagrange.OneBot", "install_root": "/opt",
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "ob11_default_port": 3001,
+  "config_path": "appsettings.json",
+  "release_page": "https://github.com/LagrangeDev/Lagrange.Core/releases",
+  "download_strategy": "resolve_latest_via_api",
+  "release_tag": "nightly",
+  "asset_name_pattern": "Lagrange\\.OneBot_linux-x64.*\\.tar\\.gz",
+  "required_files": ["Lagrange.OneBot"],
+  "approx_memory_mb": 250
+}

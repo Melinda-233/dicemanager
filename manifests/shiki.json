@@ -1,15 +1,16 @@
 // manifests/shiki.json
 {
-  "name": "shiki", "arch": "allinone", "multi_account": false,
+  "name": "shiki", "arch": "standalone", "multi_account": false,
   "exe": "Dice", "install_root": "/opt",
-  "login_type": "account",
-  "recommended_protocols": ["ANDROID_PAD", "ANDROID_WATCH"],
-  "protocols": ["ANDROID_PAD", "ANDROID_WATCH", "ANDROID_PHONE"],
-  "version_markers": { "new": "config/Console/AutoLogin.yml", "legacy": "config.txt" },
+  "login_type": "external",
+  "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
   "save_keep_dir": true,
   "delete_keeps_save": true,
+  // 上游 GitHub 只发行各平台 QQ 协议原生模块（w4123.Dice.<platform>.dll），
+  // 主程序 Dice 可执行文件不在 GitHub 发行（README 说预编译二进制在 Actions）→ 离线上传。
+  // Dice! 自身不登录 QQ，走 OneBot 连独立登录端，故无需 AutoLogin.yml / config.txt。
   "release_page": "https://github.com/Dice-Developer-Team/Dice/releases",
-  "release_page_legacy": "https://github.com/w4123/Dice/releases",
-  "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",
-  "required_files": []
+  "prerequisite": "Dice! 主程序不在 GitHub 发行（release 里只有平台 dll 模块），请先在本页「离线程序包」上传含 Dice 可执行文件的官方程序包",
+  "download_strategy": "manual",
+  "required_files": ["Dice"]
 }

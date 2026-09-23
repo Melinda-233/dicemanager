@@ -27,12 +27,14 @@ async def ws_logs(ws: WebSocket, inst_id: str):
     filter_re = None
     queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
-    def hook(pair: tuple):
+    def hook(seq: int, line: str):
         """tail 线程 → 事件循环：asyncio.Queue 非线程安全，必须经 call_soon_threadsafe；
-        队列满时丢最旧，保证不阻塞 tail 线程。投递 (seq, line) 对。"""
+        队列满时丢最旧，保证不阻塞 tail 线程。投递 (seq, line) 对。签名须与
+        process.on_line 约定一致 cb(seq, line)——此前单参数写法 TypeError 被
+        except 吞掉，实时推送整条失效（2026-09-22 修复）。"""
         def _put():
             if queue.full(): queue.get_nowait()
-            queue.put_nowait(pair)
+            queue.put_nowait((seq, line))
         loop.call_soon_threadsafe(_put)
 
     async def send_line(s: int, line: str):

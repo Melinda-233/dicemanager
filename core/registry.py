@@ -22,8 +22,9 @@ TRANSITIONS = {
     State.AWAIT_LOGIN: {State.CONFIGURED, State.RUNNING, State.UNDEPLOYED},
     State.CONFIGURED:  {State.RUNNING, State.UNDEPLOYED},
     State.RUNNING:     {State.CONFIGURED, State.UNDEPLOYED},
+    State.ERROR:       {State.DEPLOYING, State.AWAIT_LOGIN, State.UNDEPLOYED},
 }
-# ERROR 特批：任意运行态可迁移到 ERROR
+# ERROR 特批：任意运行态可迁移到 ERROR；出边允许从错误恢复——重跑部署/登录向导或直接回滚删除
 # AWAIT_LOGIN → RUNNING：二维码/账号登录流程中直接启动（登录随启动进程完成）
 
 @dataclass

@@ -69,7 +69,10 @@ class BaseAdapter(ABC):
             pkgstore.commit_archive(self.m["name"], tmp, "download")
         finally:
             tmp.unlink(missing_ok=True)
-        return pkgstore.find_archive(self.m["name"])
+        cached = pkgstore.find_archive(self.m["name"])   # 刚 commit 过，必然命中
+        if not cached:
+            raise RuntimeError("程序包缓存写入失败，请重试")
+        return cached
 
     def _verify_sha256(self, archive: Path, expected: str) -> None:
         import hashlib
@@ -109,11 +112,22 @@ class BaseAdapter(ABC):
         strat = self.m.get("download_strategy", "direct")
         if strat == "direct":
             return self.m["download"]
+        if strat == "manual":
+            # 上游不发行可直接运行的程序包（如 Dice! 只发平台 dll 模块）：
+            # 本地无包时明确引导上传离线包，避免下到「能解压但跑不起来」的错包
+            raise RuntimeError(
+                "该程序不提供在线下载，请先在 WebUI「离线程序包」上传程序包后重新部署"
+                + (f"（{self.m['prerequisite']}）" if self.m.get("prerequisite") else ""))
         if strat == "resolve_latest_via_api":
             rp = urlparse(self.m["release_page"]).path        # /owner/repo/releases
             repo = rp.split("/releases")[0].strip("/")
+            # release_tag：上游没有 latest release（如 Lagrange 只有 nightly 滚动 tag）
+            # 时按固定 tag 取，避免 /releases/latest 直接 404
+            tag = self.m.get("release_tag")
+            api = (f"https://api.github.com/repos/{repo}/releases/latest" if not tag
+                   else f"https://api.github.com/repos/{repo}/releases/tags/{tag}")
             req = urllib.request.Request(
-                f"https://api.github.com/repos/{repo}/releases/latest",
+                api,
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "DiceManager"})
             mreq = urllib.request.Request(mirror_url(req.full_url), headers=req.headers)
             assets = json.load(urllib.request.urlopen(mreq, timeout=30))["assets"]
@@ -185,11 +199,12 @@ class BaseAdapter(ABC):
         return None
 
     # ---------- 登录页推送提取 ----------
-    def extract_qrcode(self, line: str):
+    def extract_qrcode(self, line: str, instance=None):
+        """instance 可选：二维码不在日志里（而是落盘 png）的适配器需要它取实例目录。"""
         m = re.search(r"data:image/png;base64,[A-Za-z0-9+/=]+|https?://\S+qrcode\S*", line)
         return {"url": m.group(0) if m.group(0).startswith("http") else None,
                 "base64": m.group(0) if m.group(0).startswith("data:") else None} if m else None
 
-    def extract_verify(self, line: str):
+    def extract_verify(self, line: str, instance=None):
         m = re.search(r"ticket url:\s*(https?://\S+)", line)      # 滑块验证锚点
         return {"url": m.group(1)} if m else None
