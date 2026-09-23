@@ -29,6 +29,10 @@ export async function api(path, opts = {}) {
 
 export const login = async pwd =>
   setToken((await api('/login', { method: 'POST', body: { password: pwd } })).token)
+// 改密成功后服务端轮换 token（所有旧凭据失效）——必须立刻替换本地 token，否则自己被 401
+export const changePassword = async (oldPwd, newPwd) =>
+  setToken((await api('/password', { method: 'POST',
+                                     body: { old_password: oldPwd, new_password: newPwd } })).token)
 export const listInstances = () => api('/instances')
 export const listPending = () => api('/pending')
 export const listManifests = () => api('/manifests')
@@ -44,21 +48,35 @@ export const resmon = () => api('/resmon')
 // ---------- 程序包：部署优先解压本地包，免在线下载 ----------
 export const listPackages = () => api('/packages')
 export const deletePackage = dice => api(`/packages/${dice}`, { method: 'DELETE' })
-// 大文件原始流上传：不走 api()（它会把 body JSON 序列化）
-export async function uploadPackage(dice, file) {
-  const r = await fetch(`/api/packages/${dice}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream',
-               ...(token && { Authorization: `Bearer ${token}` }) },
-    body: file,                                   // Browser 自动流式发送
+// 大文件原始流上传：不走 api()（它会把 body JSON 序列化）。
+// 用 XHR 而不是 fetch：只有 XHR 有 upload.onprogress。
+// fetch + ReadableStream(duplex:'half') 在本站不可用——它要求 HTTP/2/3 或安全上下文，
+// 而本服务是 http://IP:8888（HTTP/1.1 明文），Firefox 也尚不支持该写法。
+// onProgress({loaded, total, sent})：sent=true 表示请求体已发完、正在等服务端响应。
+export function uploadPackage(dice, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/packages/${dice}`)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.timeout = 0                 // 大包不限时（服务端自己也做 2GB 上限校验）
+    const emit = (loaded, total, sent) =>
+      onProgress && onProgress({ loaded, total, sent })
+    xhr.upload.onprogress = e => emit(e.loaded, e.lengthComputable ? e.total : 0, false)
+    // 请求体发完 → 后端落盘 + 整体校验（可能数十秒），此时进度条应停在满格并转为「校验中」
+    xhr.upload.onload = () => emit(file.size, file.size, true)
+    xhr.onload = () => {
+      let body = null
+      try { body = JSON.parse(xhr.responseText) } catch { /* 非 JSON 响应兜底 */ }
+      if (xhr.status === 401) { unauthorized(); reject(new Error('未授权')); return }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve(body); return }
+      reject(new Error((body && body.detail) || xhr.statusText || '上传失败'))
+    }
+    xhr.onerror = () => reject(new Error('网络中断：上传失败，请重试'))
+    xhr.onabort = () => reject(new Error('已取消上传'))
+    xhr.ontimeout = () => reject(new Error('上传超时'))
+    xhr.send(file)                  // File 直接作为请求体，浏览器自动设置 Content-Length
   })
-  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
-  if (!r.ok) {
-    let detail = r.statusText
-    try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 响应兜底 */ }
-    throw new Error(detail)
-  }
-  return r.json()
 }
 
 // 裸 <a href> 下载带不上 Authorization 头（原来必 401），改走 fetch + blob

@@ -15,7 +15,11 @@ log = setup_logging(ctx.log_dir)                        # 控制台 + 滚动文�
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from api.auth import auth
-    console_only(f"[auth] 本次管理密码: {auth.admin_password}")   # 敏感：只进控制台，不落盘
+    # 敏感：只进控制台，不落盘。非首次启动只有哈希，拿不到明文（重置需删 auth.json）
+    pwd = auth.admin_password
+    console_only(f"[auth] 本次管理密码: {pwd}" if pwd else
+                 "[auth] 密码为 PBKDF2 哈希存储（明文见首次启动的控制台输出）；"
+                 "忘记密码请删除 auth.json 后重启服务重置")
     ctx.registry.purge_tombstones()                     # 兑现「墓碑保留 30 天」承诺
     for inst in ctx.registry.resume_pending():          # 启动恢复：中间态扫描
         log.info("[resume] 实例 %s 停留在 %s，可经向导继续或回滚", inst.id, inst.state)

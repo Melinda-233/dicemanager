@@ -28,11 +28,15 @@ def _hash_password(password: str, salt: bytes) -> str:
 
 class Auth:
     def __init__(self, state_file: Path = AUTH_FILE):
+        self._file = state_file                    # change_password 需要回写同一文件
+        self._initial_password: str | None = None   # 仅首次生成时持有，供启动横幅打印一次
         if state_file.exists():
             d = json.loads(state_file.read_text("utf-8"))
         else:
             salt = secrets.token_hex(16)
-            d = {"password_hash": _hash_password(secrets.token_urlsafe(12), bytes.fromhex(salt)),
+            # 明文只在本次进程内存里留一份给启动横幅；此后进程内不再持有
+            self._initial_password = secrets.token_urlsafe(12)
+            d = {"password_hash": _hash_password(self._initial_password, bytes.fromhex(salt)),
                  "salt": salt, "token": secrets.token_urlsafe(32)}
             write_atomic(state_file, json.dumps(d).encode("utf-8"))   # 原子写入
         if "password_hash" not in d:    # 旧版明文字段：加载即迁移为哈希
@@ -44,11 +48,17 @@ class Auth:
         self._fails: list[float] = []   # 登录失败时间戳（滑动窗口限速）
 
     @property
-    def admin_password(self) -> str:
-        """兼容启动横幅：明文密码不再持有，迁移后仅提示查看方式。"""
-        return "（PBKDF2 哈希存储，首次启动见控制台 / 删除 auth.json 重置）"
+    def admin_password(self) -> str | None:
+        """启动横幅用：仅在「本次启动刚生成 auth.json」时返回明文，之后返回 None。
 
-    def login(self, password: str) -> str:
+        明文从未落盘——既不在 auth.json 里，也不进日志文件（横幅走 console_only）。
+        历史坑：哈希化改造时把明文打印一并删掉后，新装用户再也拿不到密码
+        （install.sh / README 都让人去日志里找 [auth] 行），只能删 auth.json 重置。
+        """
+        return self._initial_password
+
+    def _verify(self, password: str) -> None:
+        """校验密码（含滑动窗口限速），失败抛 401/429。登录与改密共用同一套防爆破。"""
         now = time.time()
         self._fails = [t for t in self._fails if now - t < LOGIN_WINDOW]
         if len(self._fails) >= LOGIN_MAX_FAILS:
@@ -56,9 +66,28 @@ class Auth:
         if _ct_eq(_hash_password(password, bytes.fromhex(self._cred["salt"])),
                   self._cred["password_hash"]):
             self._fails.clear()
-            return self._cred["token"]
+            return
         self._fails.append(now)
         raise HTTPException(401, "密码错误")
+
+    def login(self, password: str) -> str:
+        self._verify(password)
+        return self._cred["token"]
+
+    def change_password(self, old: str, new: str) -> str:
+        """修改密码：验旧密码 → 新盐重哈希 → **轮换 token** → 原子落盘，返回新 token。
+
+        轮换 token 使所有旧凭据（含其他已登录会话）立即失效；调用方（前端）拿到
+        返回的新 token 后必须立刻替换本地存储，否则自己会被 401 踢回登录页。
+        """
+        self._verify(old)
+        if not new or len(new) < 6:
+            raise HTTPException(400, "新密码至少 6 位")
+        salt = secrets.token_hex(16)
+        self._cred = {"password_hash": _hash_password(new, bytes.fromhex(salt)),
+                      "salt": salt, "token": secrets.token_urlsafe(32)}
+        write_atomic(self._file, json.dumps(self._cred).encode("utf-8"))   # 原子写入
+        return self._cred["token"]
 
     def verify_http(self, cred: HTTPAuthorizationCredentials | None) -> None:
         if not cred or not _ct_eq(cred.credentials, self._cred["token"]):

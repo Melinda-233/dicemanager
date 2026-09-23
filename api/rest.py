@@ -35,6 +35,16 @@ def login(req: LoginReq):
     from api.auth import auth
     return {"token": auth.login(req.password)}
 
+class PasswordReq(BaseModel):
+    old_password: str
+    new_password: str
+
+@router.post("/password")
+def change_password(req: PasswordReq):
+    """修改管理密码：需登录；成功后旧 token 全部作废，返回新 token。"""
+    from api.auth import auth
+    return {"token": auth.change_password(req.old_password, req.new_password)}
+
 @router.post("/instances")
 def create_instance(req: CreateReq):
     if req.dice not in ctx.adapters:

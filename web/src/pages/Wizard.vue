@@ -56,6 +56,12 @@
         <p v-else class="hint">未上传：部署时将从 GitHub 在线下载（国内可能很慢）。</p>
         <p class="hint">上传 zip / tar.gz / tar.xz 等压缩包后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
         <input type="file" accept=".zip,.gz,.tgz,.xz,.bz2,.tar" :disabled="pkgBusy" @change="uploadPkg"/>
+        <div v-if="pkgUp" class="pkgup">
+          <div class="pkgup-bar" :class="{ 'is-indet': !pkgUp.total && !pkgUp.sent, 'is-sent': pkgUp.sent }">
+            <i :style="{ width: pkgPercent + '%' }"></i>
+          </div>
+          <p class="hint">{{ pkgText }}</p>
+        </div>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
       </div>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
@@ -222,18 +228,44 @@ const refreshLists = () =>
     .catch(() => {})
 
 // 程序包：上传后部署直接解压本地包，不再联网下载
+const pkgUp = ref(null)             // 上传进度 {loaded, total, sent, startAt}
+const fmtMB = b => (b / 1048576).toFixed(1)
+const pkgPercent = computed(() => {
+  const u = pkgUp.value
+  if (!u) return 0
+  if (u.sent) return 100                          // 已发完 → 满格（停在「校验中」）
+  return u.total ? Math.min(99, Math.round(u.loaded / u.total * 100)) : 100
+})
+const pkgText = computed(() => {
+  const u = pkgUp.value
+  if (!u) return ''
+  // 请求体发完后后端还要落盘并做整体校验，大包可达数十秒，必须说明，否则像卡死
+  if (u.sent) return '已发送完毕，服务端正在落盘并校验（大包可能耗时较久，请勿关闭页面）…'
+  const secs = (Date.now() - u.startAt) / 1000
+  const rate = secs > 1 ? ` · ${fmtMB(u.loaded / secs)} MB/s` : ''
+  const size = `已上传 ${fmtMB(u.loaded)}${u.total ? ` / ${fmtMB(u.total)} MB` : ' MB'}`
+  return u.total ? `${size}（${pkgPercent.value}%${rate}）` : size + rate
+})
+
 const uploadPkg = e => {
   const file = e.target.files[0]
   e.target.value = ''                          // 允许重选同一文件再次触发 change
   if (!file) return
   pkgBusy.value = true; pkgMsg.value = ''
-  uploadPackage(dice.value, file)
+  pkgUp.value = { loaded: 0, total: file.size, sent: false, startAt: Date.now() }
+  uploadPackage(dice.value, file, ({ loaded, total, sent }) => {
+    const cur = pkgUp.value                    // sent 一旦为真不再回退；loaded 取单调最大值
+    pkgUp.value = { loaded: Math.max(loaded, cur?.loaded || 0),
+                    total: total || cur?.total || file.size,
+                    sent: !!(sent || cur?.sent),
+                    startAt: cur?.startAt || Date.now() }
+  })
     .then(info => {
       pkgs.value = { ...pkgs.value, [dice.value]: info }
       pkgMsg.value = `已上传 ${info.size_mb} MB，部署时将直接解压该包。`
     })
     .catch(ex => { pkgMsg.value = ''; err.value = ex.message || String(ex) })
-    .finally(() => { pkgBusy.value = false })
+    .finally(() => { pkgBusy.value = false; pkgUp.value = null })
 }
 
 const removePkg = () => {
