@@ -1,10 +1,10 @@
 <template>
   <div class="wizard">
     <div class="wz-head">
-      <h3>新建骰子 — 第 {{ Math.min(step, 5) }}/5 步</h3>
+      <h3>{{ wizTitle }} — 第 {{ Math.min(step, stepNames.length) }}/{{ stepNames.length }} 步</h3>
       <ol class="steps">
-        <li v-for="s in STEP_NAMES" :key="s" :class="{ done: step > STEP_NAMES.indexOf(s) + 1,
-                                                       now: step === STEP_NAMES.indexOf(s) + 1 }">{{ s }}</li>
+        <li v-for="s in stepNames" :key="s" :class="{ done: step > stepNames.indexOf(s) + 1,
+                                                      now: step === stepNames.indexOf(s) + 1 }">{{ s }}</li>
       </ol>
     </div>
 
@@ -26,25 +26,75 @@
     </div>
     <p v-else-if="err" class="err">{{ err }}</p>
 
-    <!-- Step1：选程序 + 登录端 -->
+    <!-- Step1：选程序 + 登录端（支持「先选登录端」的配对模式） -->
     <div v-if="step === 1" class="wz-body">
       <div class="field">
-        <label>骰子程序</label>
-        <select v-model="dice">
-          <option v-for="(m, n) in manifests" :key="n" :value="n">
-            {{ n }}（{{ m.arch === 'allinone' ? '整合包' : '独立程序'
-            }}{{ m.approx_memory_mb ? ' · 约 ' + m.approx_memory_mb + ' MB' : '' }}）</option>
+        <label>部署模式</label>
+        <select v-model="mode" :disabled="!!pair">
+          <option value="dice">先选骰子端（默认）</option>
+          <option value="pair">先选登录端 · 配对（登录端 → 兼容骰子端 → 互联）</option>
         </select>
+        <p class="hint" v-if="mode === 'pair' && !pair">
+          先创建并登录一个登录端（自动写入它的互联配置并拉起），随后只列出与它兼容的骰子端，
+          创建时自动关联并继承登录端的地址与令牌。</p>
+        <p class="hint" v-else-if="pair && pair.phase === 'dice'">
+          登录端 {{ pair.loginId }} 已就绪，请从兼容列表中选择骰子端。</p>
       </div>
-      <div class="field" v-if="loginOptions.length">
-        <label>登录端（可留空，稍后再关联）</label>
-        <select v-model="loginRef">
-          <option value="">不关联</option>
-          <option v-for="o in loginCandidates" :key="o.id" :value="o.id">
-            {{ o.dice }} · {{ o.id }}{{ o.qq ? ' (QQ ' + o.qq + ')' : '' }}</option>
+
+      <!-- 配对 · 阶段一：选登录端（新建或复用已有实例） -->
+      <div class="field" v-if="mode === 'pair' && (!pair || pair.phase === 'login')">
+        <label>登录端程序</label>
+        <select v-model="loginChoice" @change="onLoginChoice">
+          <option value="" disabled>请选择</option>
+          <optgroup label="新建登录端">
+            <option v-for="n in loginPrograms" :key="n" :value="'new:' + n">{{ n }}</option>
+          </optgroup>
+          <optgroup label="已有登录端实例" v-if="existingLogins.length">
+            <option v-for="i in existingLogins" :key="i.id" :value="'inst:' + i.id">
+              {{ i.dice }} · {{ i.id }}{{ i.qq ? ' (QQ ' + i.qq + ')' : '' }}</option>
+          </optgroup>
         </select>
-        <p class="hint">兼容：{{ loginOptions.join(' / ') }}
-          <span v-if="!loginCandidates.length">（当前还没有已创建的登录端实例）</span></p>
+        <p class="hint">选「新建」会先部署并登录该登录端；选「已有实例」直接进入骰子端选择。</p>
+      </div>
+
+      <!-- 配对 · 阶段二：选骰子端（只列兼容项） -->
+      <div class="field" v-if="mode === 'pair' && pair && pair.phase === 'dice'">
+        <label>骰子端程序（已按兼容性过滤）</label>
+        <select v-model="dice">
+          <option value="" disabled>请选择</option>
+          <option v-for="n in diceCandidates" :key="n" :value="n">{{ n }}</option>
+        </select>
+        <p class="hint" v-if="!diceCandidates.length">
+          没有与 {{ pair.loginProg }} 兼容的骰子端程序。</p>
+      </div>
+
+      <!-- 默认模式：先选骰子端，再可选关联登录端 -->
+      <template v-if="mode === 'dice'">
+        <div class="field">
+          <label>骰子程序</label>
+          <select v-model="dice">
+            <option v-for="(m, n) in manifests" :key="n" :value="n">
+              {{ n }}（{{ m.arch === 'allinone' ? '整合包' : '独立程序'
+              }}{{ m.approx_memory_mb ? ' · 约 ' + m.approx_memory_mb + ' MB' : '' }}）</option>
+          </select>
+        </div>
+        <div class="field" v-if="loginOptions.length">
+          <label>登录端（可留空，稍后再关联）</label>
+          <select v-model="loginRef">
+            <option value="">不关联</option>
+            <option v-for="o in loginCandidates" :key="o.id" :value="o.id">
+              {{ o.dice }} · {{ o.id }}{{ o.qq ? ' (QQ ' + o.qq + ')' : '' }}</option>
+          </select>
+          <p class="hint">兼容：{{ loginOptions.join(' / ') }}
+            <span v-if="!loginCandidates.length">（当前还没有已创建的登录端实例）</span></p>
+        </div>
+      </template>
+
+      <!-- LLBot v8 的 AUTH TOKEN 提前到第一步：选完程序立刻填，扫码页免操作直接出码 -->
+      <div class="field" v-if="needAuthToken">
+        <label>AUTH TOKEN（LLBot v8.0.9+ 必填）</label>
+        <input v-model="cred.auth_token" placeholder="AUTH TOKEN"/>
+        <p class="hint">到 https://auth.luckylillia.com 申请获取；进入扫码页时自动保存生效。</p>
       </div>
       <div class="field" v-if="dice">
         <label>离线程序包（可选）</label>
@@ -66,8 +116,8 @@
       </div>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
-        <button class="primary" :disabled="!dice || busy" @click="create">
-          下一步：{{ pkgInfo ? '解压本地包部署' : '下载部署' }}</button>
+        <button class="primary" :disabled="!canCreate || busy" @click="create">
+          下一步：{{ createLabel }}</button>
       </div>
     </div>
 
@@ -91,7 +141,8 @@
         <img v-if="qr.base64" :src="qr.base64" alt="二维码"/>
         <div class="ops">
           <button @click="sock?.send('refresh')">刷新二维码</button>
-          <button class="primary" @click="doLogin">我已完成扫码</button>
+          <button class="primary" @click="doLogin">
+            {{ needAuthToken && !tokenSaved ? '保存 TOKEN 并获取二维码' : '我已完成扫码' }}</button>
         </div>
         <a v-if="verifyUrl" :href="verifyUrl" target="_blank" rel="noreferrer">
           需要滑块验证：请手动完成（只转发不代做）</a>
@@ -116,10 +167,12 @@
         <p class="hint">该程序无需在此登录，点击继续。</p>
         <div class="ops"><button class="primary" :disabled="busy" @click="doLogin">继续</button></div>
       </div>
-      <div class="field" v-if="needAuthToken">
-        <label>AUTH TOKEN{{ needAuthToken ? '（必填）' : '' }}</label>
+      <div class="field" v-if="needAuthToken && !tokenSaved">
+        <label>AUTH TOKEN（必填）</label>
         <input v-model="cred.auth_token" placeholder="AUTH TOKEN（LLBot v8.0.9+ 需申请）"/>
+        <p class="hint">到 https://auth.luckylillia.com 申请获取。第一步已填则自动保存，此处仅作补填兜底。</p>
       </div>
+      <p class="hint" v-if="needAuthToken && tokenSaved">TOKEN 已保存，二维码生成中；扫码后点击「我已完成扫码」继续。</p>
     </div>
 
     <!-- Step4：互联配置 -->
@@ -174,14 +227,18 @@ import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
          deletePackage, createInstance, wizardStep, delInstance } from '../api'
 
-const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']
+const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']   // 默认模式（断点续跑文案也用它）
 const STEP_COUNT = STEP_NAMES.length
 
 const step = ref(0), manifests = ref({}), instances = ref([])
 const dice = ref(''), loginRef = ref('')
+// 配对模式：phase='login' 先部署+登录登录端；'dice' 选兼容骰子端（创建时自动 login_ref 关联）
+const mode = ref('dice'), pair = ref(null), loginChoice = ref('')
+let loginHandled = false            // 登录完成去向只处理一次（「我已完成扫码」与 WS completed 会竞态双触发）
 const loading = ref(true), loadError = ref(''), busy = ref(false), err = ref('')
 const conflict = ref(false), conflictDir = ref(''), qr = ref({}), verifyUrl = ref('')
 const cred = ref({ qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' })
+const tokenSaved = ref(false)   // AUTH TOKEN 已落盘并重启过进程（LLBot v8 扫码前置条件）
 const conn = ref({ direction: 'forward', addr: '', token: '' })
 const preview = ref(''), manual = ref('')
 const pending = ref([])          // 中间态实例（断点续跑入口）
@@ -203,6 +260,39 @@ const loginCandidates = computed(() =>
   instances.value.filter(i => loginOptions.value.includes(i.dice)))
 // 默认选中项要在切换程序时同步，否则默认骰子（未触发 change）永远拿不到该标记
 const needAuthToken = computed(() => !!manifest.value.auth_token_conditional)
+
+// ---------- 配对模式 ----------
+// 登录端程序 = 在任意骰子端 manifest 的 compatible_login 里出现过的程序（纯清单驱动，无名字分支）
+const loginPrograms = computed(() => {
+  const s = new Set()
+  for (const m of Object.values(manifests.value))
+    (m.compatible_login || []).forEach(o => { if (o !== 'builtin') s.add(o) })
+  return Object.keys(manifests.value).filter(n => s.has(n))
+})
+const existingLogins = computed(() =>
+  instances.value.filter(i => loginPrograms.value.includes(i.dice)))
+const diceCandidates = computed(() => Object.keys(manifests.value).filter(n =>
+  (manifests.value[n].compatible_login || []).includes(pair.value?.loginProg)))
+const canCreate = computed(() => {
+  if (mode.value === 'dice') return !!dice.value
+  return pair.value?.phase === 'dice' ? !!dice.value : !!loginChoice.value
+})
+const createLabel = computed(() => {
+  if (mode.value !== 'pair') return pkgInfo.value ? '解压本地包部署' : '下载部署'
+  if (!pair.value || pair.value.phase === 'login')
+    return loginChoice.value.startsWith('inst:') ? '进入骰子端选择' : '部署并登录该登录端'
+  return pkgInfo.value ? '解压本地包部署（自动关联登录端）' : '下载部署（自动关联登录端）'
+})
+const stepNames = computed(() => {
+  if (mode.value !== 'pair' || !pair.value) return STEP_NAMES
+  return pair.value.phase === 'login'
+    ? ['选登录端', '部署', '登录']                    // 登录端启动在登录完成后自动进行
+    : ['选骰子端', '部署', '登录', '互联', '启动']
+})
+const wizTitle = computed(() => {
+  if (mode.value !== 'pair' || !pair.value) return '新建骰子'
+  return pair.value.phase === 'login' ? '配对 · 第一步：登录端' : '配对 · 第二步：骰子端'
+})
 
 const load = async () => {
   loading.value = true; loadError.value = ''
@@ -287,16 +377,18 @@ const reset = () => {
   qr.value = {}; verifyUrl.value = ''; preview.value = ''; manual.value = ''
   cred.value = { qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' }
   conn.value = { direction: 'forward', addr: '', token: '' }
-  started.value = false
+  started.value = false; tokenSaved.value = false
   loginRef.value = ''; instanceId = null
+  pair.value = null; loginChoice.value = ''; loginHandled = false
   refreshLists()
 }
 
-// 断点续跑：跳到该实例下一步（二维码登录需重开推送通道）
+// 断点续跑：跳到该实例下一步（二维码登录需重开推送通道）——续跑只支持默认模式，退出配对态
 const resume = p => {
   sock.value?.close(); sock.value = null
   err.value = ''; conflict.value = false; preview.value = ''; manual.value = ''
-  started.value = false
+  started.value = false; tokenSaved.value = false   // 续跑实例的 token 落盘状态未知，重新判定
+  pair.value = null; mode.value = 'dice'; loginHandled = false
   instanceId = p.id
   dice.value = p.dice
   loginRef.value = p.login_ref || ''
@@ -315,13 +407,56 @@ const guard = async fn => {                    // 统一转圈 + 报错，避免
   try { await fn() } catch (e) { err.value = e.message || String(e) } finally { busy.value = false }
 }
 
+// 配对阶段一选「新建」时把 dice 指向登录端程序：manifest / 离线包 / AUTH TOKEN 字段全部对准它
+const onLoginChoice = () => {
+  if (loginChoice.value.startsWith('new:')) dice.value = loginChoice.value.slice(4)
+}
+
 const create = () => guard(async () => {
+  if (mode.value === 'pair') {
+    // 阶段二：创建骰子端，自动 login_ref 关联登录端（第 4 步据此继承地址与令牌）
+    if (pair.value && pair.value.phase === 'dice') {
+      const r = await createInstance({ dice: dice.value,
+                                       arch: manifest.value.arch || 'standalone',
+                                       login_ref: pair.value.loginId })
+      instanceId = r.id
+      step.value = 2
+      return doStep(2, {})
+    }
+    const [kind, v] = loginChoice.value.split(':')
+    if (kind === 'inst') {                       // 已有登录端实例 → 直接进入骰子端选择
+      const inst = instances.value.find(i => i.id === v)
+      if (!inst) throw new Error('登录端实例不存在，请刷新页面重试')
+      pair.value = { phase: 'dice', loginProg: inst.dice, loginId: v }
+      dice.value = ''
+      enterPhaseStepOne()
+      return
+    }
+    // 阶段一：新建登录端，部署/登录复用同一套步骤机
+    pair.value = { phase: 'login', loginProg: v, loginId: null }
+    const r = await createInstance({ dice: v, arch: manifests.value[v].arch || 'standalone' })
+    instanceId = r.id
+    step.value = 2
+    return doStep(2, {})
+  }
   const r = await createInstance({ dice: dice.value, arch: manifest.value.arch || 'standalone',
                                    login_ref: loginRef.value || null })
   instanceId = r.id
   step.value = 2
   await doStep(2, {})
 })
+
+// 阶段切换 / 新流程开始时回到第 1 步：清掉上一阶段全部中间态
+const enterPhaseStepOne = () => {
+  err.value = ''; conflict.value = false
+  qr.value = {}; verifyUrl.value = ''; preview.value = ''; manual.value = ''
+  cred.value = { qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' }
+  conn.value = { direction: 'forward', addr: '', token: '' }
+  started.value = false; tokenSaved.value = false
+  sock.value?.close(); sock.value = null
+  loginHandled = false
+  step.value = 1
+}
 
 const doStep = async (n, payload) => {
   const r = await wizardStep(instanceId, n, payload)
@@ -330,13 +465,40 @@ const doStep = async (n, payload) => {
     conflict.value = true; conflictDir.value = r.dir || r.message || ''; return
   }
   if (r.manual) manual.value = r.manual
+  if (n === 3) { afterLoginDone(); return }        // 登录完成去向统一收口（含配对阶段切换）
   step.value = n + 1
   if (step.value === 3) {
-    if (r.needs_login === false) return doStep(3, {})   // 无需登录的程序直接跳过登录页
-    if (loginType.value === 'qrcode') openLoginWS()
+    loginHandled = false                            // 进入新一次登录步
+    if (loginType.value === 'qrcode') {
+      // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
+      if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
+      openLoginWS()
+    }
   }
   if (step.value === 4) preview.value = r.preview || ''
-  // Step5 不再自动启动：由用户在启动页显式点击（也兼容断点续跑直接落在第 5 步）
+}
+
+// 登录完成后的去向：
+// · 普通模式 / 配对阶段二 → 第 4 步互联；
+// · 配对阶段一（登录端）→ 先写登录端自身互联配置（默认正向监听 + 自动生成 token），
+//   再拉起登录端（扫码时已运行则为 no-op），然后切到「选骰子端」阶段。
+//   骰子端第 4 步经 login_ref 继承登录端的 ob11 端口与 token，保证两端一致。
+const afterLoginDone = () => {
+  if (loginHandled) return                          // 「我已完成扫码」与 WS completed 竞态双触发
+  loginHandled = true
+  if (!pair.value || pair.value.phase !== 'login') {
+    step.value = 4; preview.value = ''; return
+  }
+  guard(async () => {
+    const lid = instanceId
+    const r4 = await wizardStep(lid, 4, {})
+    if (r4.result === 'error') throw new Error(r4.message || '登录端互联配置写入失败')
+    await wizardStep(lid, 5, {})
+    pair.value = { phase: 'dice', loginProg: pair.value.loginProg, loginId: lid }
+    dice.value = ''; loginChoice.value = ''
+    enterPhaseStepOne()
+    refreshLists()
+  })
 }
 
 // Step4：留空的字段交给后端用默认值/自动生成的 token（两端一致性由后端保证）
@@ -356,6 +518,7 @@ const startInst = () => guard(async () => {
 const resolve = useExisting => guard(async () => {   // 冲突二选一：重发 step2（后端已实现）
   await wizardStep(instanceId, 2, { use_existing: useExisting })
   conflict.value = false; step.value = 3
+  loginHandled = false                                // 重新进入登录步
   if (loginType.value === 'qrcode') openLoginWS()
 })
 
@@ -364,12 +527,25 @@ const openLoginWS = () => {
   sock.value = connectWS(`/ws/login/${instanceId}`, m => {
     if (m.type === 'qrcode') qr.value = m.payload
     if (m.type === 'verify') verifyUrl.value = m.payload.url
-    if (m.type === 'completed' || m.type === 'skipped') { step.value = 4; preview.value = '' }
+    if (m.type === 'completed' || m.type === 'skipped') afterLoginDone()
   })
+}
+
+const saveToken = async () => {                        // AUTH TOKEN 落盘（LLBot v8 出码前置条件）
+  const r = await wizardStep(instanceId, 3, { qq: cred.value.qq, credentials: { ...cred.value } })
+  if (r.result === 'error' || r.result === 'conflict')
+    throw new Error(r.message || r.conflict || 'AUTH TOKEN 保存失败')
+  tokenSaved.value = true
+  if (r.manual) manual.value = r.manual
 }
 
 const doLogin = () => guard(async () => {              // Step3：登录（含条件必填校验）
   if (needAuthToken.value && !cred.value.auth_token) throw new Error('LLBot v8.0.9+ 必须填写 AUTH TOKEN')
+  if (loginType.value === 'qrcode' && needAuthToken.value && !tokenSaved.value) {
+    await saveToken()                        // 首次提交：保存 TOKEN 并重启进程出码，留在本步扫码
+    sock.value?.send('refresh')
+    return
+  }
   await doStep(3, { qq: cred.value.qq, credentials: { ...cred.value } })
 })
 

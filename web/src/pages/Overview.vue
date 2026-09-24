@@ -22,25 +22,53 @@
         <text v-for="(w, i) in n.warnings" :key="i" y="40" class="warn">{{ w }}</text>
       </g>
     </svg>
-    <div v-if="sel" class="ops">
-      <button @click="op('start')">启动</button>
-      <button @click="op('stop')">停止</button>
-      <button @click="op('restart')">重启</button>
-      <button @click="location.hash = `#/logs?instance=${sel.id}`">查看日志</button>
-      <button class="danger" @click="del">删除</button>
+    <div v-if="sel" class="panel">
+      <div class="sel-info">
+        <b>{{ sel.dice }}</b> · {{ sel.id }} · {{ live.state }} · 端口 {{ live.port || '-' }}
+        <span v-if="live.qq"> · QQ {{ live.qq }}</span>
+        <span v-if="linkTarget"> · 已连 {{ linkTarget.dice }}（{{ edgeState }}）</span>
+      </div>
+      <div class="ops">
+        <button @click="op('start')">启动</button>
+        <button @click="op('stop')">停止</button>
+        <button @click="op('restart')">重启</button>
+        <button @click="openWebui">打开 WebUI</button>
+        <button @click="location.hash = `#/logs?instance=${sel.id}`">查看日志</button>
+        <button class="danger" @click="del">删除</button>
+      </div>
+      <p v-if="webuiInfo" class="hint">
+        WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
+          webuiInfo.token || '日志中未发现令牌，请进 WebUI 查看' }}</code>（点击复制）</p>
+      <div class="ops">
+        <template v-if="linkTarget">
+          <button @click="reconn">重写互联配置</button>
+          <button class="danger" @click="unlink">解除连接</button>
+        </template>
+        <template v-else-if="linkCandidates.length">
+          <select v-model="linkChoice">
+            <option value="" disabled>选择登录端并关联…</option>
+            <option v-for="c in linkCandidates" :key="c.id" :value="c.id">
+              {{ c.dice }} · {{ c.id }}{{ c.qq ? ' (QQ ' + c.qq + ')' : '' }}</option>
+          </select>
+          <button :disabled="!linkChoice" @click="link">关联登录端</button>
+        </template>
+        <span v-else class="hint">该程序没有可关联的登录端（未声明兼容矩阵或暂无候选实例）。</span>
+      </div>
+      <p v-if="connMsg" class="hint">{{ connMsg }}</p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
-import { opInstance, delInstance, listManifests } from '../api'
+import { opInstance, delInstance, listManifests, linkInstance, instanceWebui, wizardStep } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
-const manifests = ref({})               // 程序清单：删除等行为由 manifest 声明驱动
+const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
 const connected = ref(false)             // WS 是否已连上：用于区分「连接中」与「真的没有实例」
+const webuiInfo = ref(null), connMsg = ref(''), linkChoice = ref('')
 let sock
 listManifests().then(m => (manifests.value = m)).catch(() => {})   // 拉不到不阻塞总览
 const pos = id => {
@@ -58,6 +86,26 @@ onMounted(() => {
 })
 onUnmounted(() => sock?.close())
 
+// WS 每 2s 全量替换 nodes，sel 里存的是点击时刻的快照（login_ref/qq 会过期）——
+// 展示一律读 selLive（按 id 回当前节点），操作用 sel.id（稳定）
+const selLive = computed(() => nodes.value.find(n => n.id === sel.value?.id) || sel.value)
+const live = computed(() => selLive.value || {})
+const linkTarget = computed(() =>
+  live.value.login_ref ? nodes.value.find(n => n.id === live.value.login_ref) : null)
+const edgeState = computed(() => {
+  const e = edges.value.find(e => e.src === sel.value?.id || e.dst === sel.value?.id)
+  return e ? ({ 'solid-green': '已连接', 'dashed-gray': '已配置未连接',
+                'solid-red': '连接失败' })[e.state] : '—'
+})
+// 可关联的登录端候选：manifest 的 compatible_login 声明 ∩ 当前存活节点
+const linkCandidates = computed(() => {
+  if (!sel.value) return []
+  const opts = (manifests.value[sel.value.dice]?.compatible_login || [])
+    .filter(o => o !== 'builtin')
+  return nodes.value.filter(n => opts.includes(n.dice) && n.id !== sel.value.id)
+})
+watch(sel, () => { webuiInfo.value = null; connMsg.value = ''; linkChoice.value = '' })
+
 const op = o => opInstance(sel.value.id, o)
 const del = () => {
   // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码
@@ -69,6 +117,37 @@ const del = () => {
   delInstance(sel.value.id, true, removeDir, removeDir && keeps)
     .then(() => (sel.value = null))
 }
+
+const guard = async fn => {              // 面板操作统一报错出口，失败不静默
+  try { await fn() } catch (e) { connMsg.value = e.message || String(e) }
+}
+// WebUI：端口由后端回读（实际端口优先），URL 用面板同主机名拼接（服务与面板同机）
+const openWebui = () => guard(async () => {
+  const w = await instanceWebui(sel.value.id)
+  if (!w.port) { connMsg.value = '未发现 WebUI 端口：实例未启动，或该程序没有 WebUI。'; return }
+  webuiInfo.value = w
+  window.open(`http://${location.hostname}:${w.port}`, '_blank', 'noopener')
+})
+const copyToken = () => {
+  if (webuiInfo.value?.token) navigator.clipboard?.writeText(webuiInfo.value.token)
+      .catch(() => {})
+  connMsg.value = webuiInfo.value?.token ? '令牌已复制到剪贴板' : ''
+}
+// 连接管理：关联/解除只改 login_ref（拓扑连线随之变化）；重写互联配置复用向导第 4 步，
+// 地址与令牌留空 → 后端自动继承登录端的 ob11 端口与 token，保证两端一致
+const link = () => guard(async () => {
+  await linkInstance(sel.value.id, linkChoice.value)
+  connMsg.value = '已关联。建议点「重写互联配置」自动对齐两端的地址与令牌。'
+})
+const unlink = () => guard(async () => {
+  if (!confirm('解除与登录端的连接？（不删除任何实例）')) return
+  await linkInstance(sel.value.id, null)
+  connMsg.value = '已解除关联。'
+})
+const reconn = () => guard(async () => {
+  const r = await wizardStep(sel.value.id, 4, {})
+  connMsg.value = r.result === 'ok' ? `互联配置已重写：${r.preview || ''}` : (r.message || '重写失败')
+})
 </script>
 
 <style scoped>
@@ -81,4 +160,8 @@ text.warn { fill: #d97706; font-size: 10px; }
 .fill { height: 100%; background: #42b883; border-radius: 6px; }
 .fill.alert { background: #e5484d; }
 button.danger { color: #e5484d; }
+.panel { max-width: 560px; }
+.sel-info { margin-bottom: 8px; }
+.ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+.tok { cursor: pointer; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
 </style>

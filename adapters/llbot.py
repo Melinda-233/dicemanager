@@ -9,7 +9,9 @@ CLI 参数（官方 README）：--qq= 快速登录、--update 检查并执行更
 端口只能靠改配置文件（CLI 无端口参数），所以分配到的端口必须在首启前写回，
 否则多开时第二个实例仍会去抢默认端口。配置热更新：写完 1s 内 LLBot 自动重载。
 """
+import base64
 import re
+import time
 from pathlib import Path
 
 from adapters.base import BaseAdapter, WriteResult
@@ -37,7 +39,11 @@ class LLBotAdapter(BaseAdapter):
 
     # ---------- 启动前准备 ----------
     def prepare_start(self, instance, runner=None) -> bool:
-        """把分配到的端口写回配置（每次幂等）+ 首启执行一次 --update。"""
+        """执行位保障（zip 解压不保证保留 +x）+ 端口写回 + 首启 --update。"""
+        for rel in (self.m["exe"], "bin/llbot/node", "bin/pmhq/pmhq"):
+            exe = Path(instance.dir) / rel
+            if exe.exists() and not exe.stat().st_mode & 0o111:
+                exe.chmod(exe.stat().st_mode | 0o111)
         try:
             self._apply_allocated_ports(instance)
         except (OSError, ValueError):
@@ -86,12 +92,20 @@ class LLBotAdapter(BaseAdapter):
     def configure_login(self, instance, credentials) -> dict:
         ver = self._parse_ver(credentials["version"]) \
               if credentials.get("version") else (9, 9, 9)     # 未提供版本按 v8 从严
-        if ver >= self.V8 and not credentials.get("auth_token"):
+        token = (credentials.get("auth_token") or "").strip()
+        if ver >= self.V8 and not token:
             return {"conflict": "v8.0.9+ 需在快速登录平台申请 AUTH TOKEN"}
         qq = credentials.get("qq", "")
         atomic_write_json(self._config_path(instance),
                           lambda c: {**c, "QQ": qq}, source_json5=True)
-        return {"ok": True, "qq": qq}
+        restart = False
+        if token:
+            # LLBot 启动时读 data/auth_token.txt（缺失直接报错退出），必须落盘且重启进程才生效
+            token_file = Path(instance.dir) / "bin/llbot/data/auth_token.txt"
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            token_file.write_text(token + "\n", encoding="utf-8")
+            restart = True
+        return {"ok": True, "qq": qq, "restart": restart}
 
     def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
         entry = {"type": "ws" if direction != "reverse" else "ws-reverse",
@@ -127,6 +141,26 @@ class LLBotAdapter(BaseAdapter):
         for _, line in reversed(list(lines)[-200:]):
             m = re.search(r"[Oo]b11.*?端口[:：]?\s*(\d{4,5})", line)
             if m: return int(m.group(1))
+        return None
+
+    def extract_qrcode(self, line: str, instance=None) -> dict | None:
+        """LLBot 无头登录的二维码三路输出：stdout 字符画（多行，还原不可靠）、
+        落盘 PNG、二维码生成服务 URL（create-qr-code，含连字符，基类正则不匹配）。
+        命中落盘行时直接读 bin/llbot/data/temp/login-qrcode.png 转 base64，
+        前端 <img> 可直接渲染。重复码由 ws_login 的 payload 去重挡住。
+
+        健壮性：触发行与文件写完之间存在竞态，PNG 未就绪时短重试兜底（否则这张码
+        永久丢失，只能重启进程重新生成）；魔数校验挡住截断/覆盖中的半张图，
+        避免把损坏 base64 推给前端且被去重逻辑记住。"""
+        if instance is None or "二维码文件已保存" not in line:
+            return None
+        png = Path(instance.dir) / "bin/llbot/data/temp/login-qrcode.png"
+        for _ in range(3):                       # 3 × 0.2s：tail 线程最多阻塞 0.6s，可接受
+            data = png.read_bytes() if png.exists() else b""
+            if data.startswith(b"\x89PNG"):
+                b64 = base64.b64encode(data).decode()
+                return {"url": None, "base64": f"data:image/png;base64,{b64}"}
+            time.sleep(0.2)
         return None
 
     def health_check(self, instance, is_alive=False) -> dict:

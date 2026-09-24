@@ -65,6 +65,9 @@ async def overview_loop(ws: WebSocket):
                               "process_alive": alive,
                               "port": rec.get("actual_port")
                                       or rec.get("allocated_ports", {}).get("webui"),
+                              # 连接管理面板需要：关联目标与登录账号（旧 payload 缺这两项）
+                              "login_ref": rec.get("login_ref"),
+                              "qq": rec.get("qq"),
                               "warnings": rec.get("warnings", [])})
                 if rec.get("login_ref"):                       # 独立程序型才有连线
                     # health_check 期望属性访问（allocated_ports/actual_port/dir），

@@ -45,6 +45,13 @@ export const delInstance = (id, confirm, removeDir, keepSave) =>
       { method: 'DELETE' })
 export const resmon = () => api('/resmon')
 
+// ---------- 总览页连接管理 ----------
+// login_ref 传 null 即解除关联；兼容性校验由后端按 manifest 的 compatible_login 做
+export const linkInstance = (id, loginRef) =>
+  api(`/instances/${id}/link`, { method: 'POST', body: { login_ref: loginRef } })
+// WebUI 直连信息：port 可能与分配端口不同（占用时程序自动 +1），token 来自启动日志回读
+export const instanceWebui = id => api(`/instances/${id}/webui`)
+
 // ---------- 程序包：部署优先解压本地包，免在线下载 ----------
 export const listPackages = () => api('/packages')
 export const deletePackage = dice => api(`/packages/${dice}`, { method: 'DELETE' })

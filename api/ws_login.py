@@ -66,6 +66,19 @@ async def ws_login(ws: WebSocket, inst_id: str):
         except asyncio.QueueEmpty: break
         if s > max_seq: await ws.send_json(ev)
 
+    if inst.state == State.AWAIT_LOGIN.value and not proc.is_alive():
+        # 登录页首入：进程尚未拉起，自动启动（原实现必须手点刷新才出码）。
+        # 仅 AWAIT_LOGIN 才拉起：部署中/错误态重连（浏览器挂着登录页反复重连）
+        # 不得触碰实例目录 —— 曾因 prepare_start 建出残缺目录致部署 conflict（2026-09-24）。
+        def runner(cmd, cwd, label):    # 与 REST start 同路：首启写回端口 + 一次性 --update
+            ctx.pm.run_once(inst_id, cmd, cwd, label=label)
+        try:
+            if adapter.prepare_start(inst, runner):
+                ctx.registry.update(inst_id, first_run_done=True)
+            ctx.pm.launch(inst_id, adapter.build_start_cmd(inst), inst.dir)
+        except (RuntimeError, OSError):
+            pass                        # 已在运行等竞态：不打死 WS，进程状态经总览暴露
+
     def _mark_configured():
         try:
             ctx.registry.transition(inst_id, State.CONFIGURED)

@@ -62,6 +62,48 @@ def run_wizard_step(inst_id: str, req: StepReq):
 def list_instances():
     return [{**r, "process": ctx.pm.get(r["id"]).probe()} for r in ctx.registry.all()]
 
+class LinkReq(BaseModel):
+    login_ref: str | None = None         # None = 解除关联
+
+@router.post("/instances/{inst_id}/link")
+def link_login(inst_id: str, req: LinkReq):
+    """总览页连接管理：建立/解除 骰子端 → 登录端 的关联（login_ref 即拓扑连线数据源）。
+
+    兼容性由 manifest 的 compatible_login 声明驱动，后端不写程序名分支。
+    """
+    try:
+        inst = ctx.registry.get(inst_id)
+    except KeyError:
+        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    if req.login_ref:
+        if req.login_ref == inst_id:
+            raise HTTPException(400, "不能关联自己")
+        try:
+            target = ctx.registry.get(req.login_ref)
+        except KeyError:
+            raise HTTPException(404, f"登录端实例不存在: {req.login_ref}") from None
+        ok_set = [d for d in (ctx.adapters[inst.dice][0].get("compatible_login") or [])
+                  if d != "builtin"]
+        if target.dice not in ok_set:
+            raise HTTPException(400, f"{inst.dice} 不兼容登录端 {target.dice}"
+                                     f"（兼容：{' / '.join(ok_set) or '无'}）")
+    with instance_lock(inst_id):
+        ctx.registry.update(inst_id, login_ref=req.login_ref)
+    return {"ok": True}
+
+@router.get("/instances/{inst_id}/webui")
+def instance_webui(inst_id: str):
+    """WebUI 直连信息：实际端口优先（占用时程序可能自动 +1 换端口），令牌从启动日志回读。
+
+    前端用 location.hostname 拼完整 URL（服务与面板同机部署，浏览器到的是同一个主机）。
+    """
+    try:
+        rec = ctx.registry.get(inst_id)
+    except KeyError:
+        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    port = rec.actual_port or (rec.allocated_ports or {}).get("webui")
+    return {"port": port, "token": rec.webui_token}
+
 @router.get("/pending")
 def list_pending():
     """未完成的中间态实例：管理器重启 / 断网后可经向导从这里继续。"""
