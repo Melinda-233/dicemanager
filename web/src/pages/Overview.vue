@@ -9,7 +9,11 @@
     <p v-else-if="!nodes.length" class="hint">
       还没有骰子实例 —— 点上方「新建骰子」开始，或直接访问 <code>#/wizard</code>。
     </p>
-    <svg viewBox="0 0 800 400" class="topo">
+    <svg viewBox="0 0 800 420" class="topo">
+      <text x="170" y="24" class="col-title" text-anchor="middle">登录端</text>
+      <text x="630" y="24" class="col-title" text-anchor="middle">应用端（骰子）</text>
+      <text v-if="!loginNodes.length" x="170" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
+      <text v-if="!diceNodes.length" x="630" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
       <line v-for="e in edges" :key="e.src+e.dst"
             :x1="pos(e.src).x" :y1="pos(e.src).y"
             :x2="pos(e.dst).x" :y2="pos(e.dst).y" :class="e.state"/>
@@ -33,7 +37,7 @@
         <button @click="op('stop')">停止</button>
         <button @click="op('restart')">重启</button>
         <button @click="openWebui">打开 WebUI</button>
-        <button @click="location.hash = `#/logs?instance=${sel.id}`">查看日志</button>
+        <button @click="goLogs">查看日志</button>
         <button class="danger" @click="del">删除</button>
       </div>
       <p v-if="webuiInfo" class="hint">
@@ -71,11 +75,26 @@ const connected = ref(false)             // WS 是否已连上：用于区分「
 const webuiInfo = ref(null), connMsg = ref(''), linkChoice = ref('')
 let sock
 listManifests().then(m => (manifests.value = m)).catch(() => {})   // 拉不到不阻塞总览
+// ---------- 两栏布局：登录端在左、应用端在右 ----------
+// 登录端程序 = 在任意骰子端 manifest 的 compatible_login 里出现过的程序
+// （纯清单驱动，与 Wizard 配对模式同口径，不写程序名分支）
+const loginSet = computed(() => {
+  const s = new Set()
+  for (const m of Object.values(manifests.value))
+    (m.compatible_login || []).forEach(o => { if (o !== 'builtin') s.add(o) })
+  return s
+})
+const isLogin = n => loginSet.value.has(n.dice)
+const loginNodes = computed(() => nodes.value.filter(isLogin))
+const diceNodes = computed(() => nodes.value.filter(n => !isLogin(n)))
 const pos = id => {
-  const i = nodes.value.findIndex(n => n.id === id)
-  if (i < 0) return { x: 400, y: 200 }
-  const a = (i / nodes.value.length) * 2 * Math.PI - Math.PI / 2   // 首节点从正上方起
-  return { x: 400 + 280 * Math.cos(a), y: 200 + 130 * Math.sin(a) }
+  const node = nodes.value.find(n => n.id === id)
+  if (!node) return { x: 400, y: 215 }
+  const col = isLogin(node) ? loginNodes.value : diceNodes.value
+  const j = col.findIndex(n => n.id === id)
+  const n = col.length
+  const y = n <= 1 ? 215 : 60 + j * (310 / (n - 1))
+  return { x: isLogin(node) ? 170 : 630, y }
 }
 onMounted(() => {
   sock = connectWS('/ws/overview', m => {
@@ -107,6 +126,8 @@ const linkCandidates = computed(() => {
 watch(sel, () => { webuiInfo.value = null; connMsg.value = ''; linkChoice.value = '' })
 
 const op = o => opInstance(sel.value.id, o)
+// 模板里不能直接用 location（会编译成 _ctx.location），一律包成方法
+const goLogs = () => { location.hash = `#/logs?instance=${sel.value.id}` }
 const del = () => {
   // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码
   const keeps = !!manifests.value[sel.value.dice]?.delete_keeps_save
@@ -156,6 +177,8 @@ line.dashed-gray { stroke: #bbb; stroke-dasharray: 6 4; }
 line.solid-red   { stroke: #e5484d; stroke-width: 3; }
 rect.dead { fill: #f3f3f3; opacity: .6; }
 text.warn { fill: #d97706; font-size: 10px; }
+text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
+text.col-empty { fill: #bbb; font-size: 12px; }
 .bar { width: 320px; height: 12px; background: #eee; border-radius: 6px; }
 .fill { height: 100%; background: #42b883; border-radius: 6px; }
 .fill.alert { background: #e5484d; }
