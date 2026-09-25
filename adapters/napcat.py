@@ -14,7 +14,7 @@ import re
 import urllib.request
 from pathlib import Path
 
-from adapters.base import BaseAdapter, WriteResult
+from adapters.base import LOOPBACK_HOSTS, BaseAdapter, WriteResult
 from core.atomicio import atomic_write_json
 
 # 面板地址行：同时拿到端口与 token
@@ -94,6 +94,26 @@ class NapCatAdapter(BaseAdapter):
                 pass
         return (instance.actual_port or instance.allocated_ports.get("webui"),
                 instance.webui_token)
+
+    def _ensure_webui_binding(self, instance) -> None:
+        """webui.json（官方字段 host/port/prefix/token/loginRate，默认 host 已是
+        0.0.0.0）：缺失时按分配端口预置；已存在仅把回环 host 放开，端口与令牌
+        不动（NapCat 自管并会在退出时覆写该文件，代写反而丢用户改动）。"""
+        wf = self._webui_json(instance)
+        if not wf.exists():
+            wf = self._config_dir(instance) / "webui.json"   # 新建一律写官方位置
+        allocated = (instance.allocated_ports or {}).get("webui")
+
+        def _m(cfg: dict) -> dict:
+            if str(cfg.get("host") or "").strip().lower() in LOOPBACK_HOSTS:
+                cfg["host"] = "0.0.0.0"
+            return cfg
+
+        if wf.exists():
+            atomic_write_json(wf, _m)
+        elif allocated:
+            atomic_write_json(wf, lambda c: {**c, "host": "0.0.0.0",
+                                             "port": int(allocated), "loginRate": 3})
 
     # ---------- 互联配置 ----------
     def _entry(self, direction, addr, token):

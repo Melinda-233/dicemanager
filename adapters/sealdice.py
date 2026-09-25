@@ -1,10 +1,27 @@
 """海豹：双形态（1.x 单文件 dice.yaml / 0.99.x 分文件 serve.yaml）+ 端点读写"""
+import datetime
 from pathlib import Path
 
 import yaml
 
 from adapters.base import BaseAdapter, WriteResult
 from core.atomicio import write_atomic
+
+
+def _stringify_datetimes(obj):
+    """pyyaml 会把 serve.yaml 里 RFC3339 时间戳（lastSavedTime 等）自动解析成
+    datetime，safe_dump 写回时变成 "2026-09-25 18:17:38.182038+08:00"——丢了 'T'
+    且纳秒精度降为微秒，海豹按 RFC3339 严格解析直接 panic（serve.yaml parse
+    failed: cannot parse ... as "T"）。写回前把 datetime/date 恢复为 isoformat。"""
+    if isinstance(obj, dict):
+        return {k: _stringify_datetimes(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_datetimes(v) for v in obj]
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    if isinstance(obj, datetime.date):
+        return obj.isoformat()
+    return obj
 
 
 class SealDiceAdapter(BaseAdapter):
@@ -20,7 +37,7 @@ class SealDiceAdapter(BaseAdapter):
 
     def build_start_cmd(self, instance) -> list[str]:
         return [str(Path(instance.dir) / self.m["exe"]),
-                f"--address=127.0.0.1:{instance.port}"]       # 多开必须改端口
+                f"--address=0.0.0.0:{instance.port}"]   # 多开必须改端口；0.0.0.0 才能从外网访问 UI
 
     def configure_login(self, instance, credentials) -> dict:
         return {"needs_login": False}                          # 登录端独立部署
@@ -41,13 +58,32 @@ class SealDiceAdapter(BaseAdapter):
                              "connectUrl": target,
                              "reverseAddr": reverse_addr,
                              "accessToken": token}}
-        for ep in eps:                                          # 端点查重：命中即改
+        own = None
+        for ep in eps:
+            # 先按 baseInfo.id 认领自己的端点（改地址也原地更新），
+            # 再退回按地址查重（兼容旧版本写入的端点）
+            if ep.get("baseInfo", {}).get("id") == instance.id:
+                own = ep
+                break
             ad = ep.get("adapter", {})
             if (ad.get("connectUrl") or "") == target and target or \
                (ad.get("reverseAddr") or "") == reverse_addr and reverse_addr:
-                ep["adapter"] = entry["adapter"]; break
+                own = ep
+                break
+        if own is not None:
+            own["baseInfo"]["id"] = instance.id
+            own["adapter"] = entry["adapter"]
+            own["baseInfo"]["enable"] = True
         else:
             eps.append(entry)
+        # 备份恢复会把旧机器的互联端点原样带回来（地址指向旧机的登录端），
+        # 一直拨号报错。以 baseInfo.id 认领本实例端点，其余 onebot 端点一律停用。
+        for ep in eps:
+            bi = ep.get("baseInfo", {})
+            if bi.get("id") != instance.id and \
+               bi.get("protocolType", "onebot") == "onebot" and bi.get("enable"):
+                bi["enable"] = False
+        doc = _stringify_datetimes(doc)
         write_atomic(path, yaml.safe_dump(doc, allow_unicode=True, sort_keys=False).encode())
         # 正向无 /ws 后缀；反向需 /ws
         return WriteResult(ok=True, path=str(path),

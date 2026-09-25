@@ -213,8 +213,10 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 - **连线状态三态**：实线绿 = 已连接、虚线灰 = 已配置未连接、实线红 = 连接失败。判定来自适配器的 `health_check()`。
 - **节点信息**：程序名（整合包标注）+ 状态 + 端口；进程已死则节点变灰；`warnings` 以橙色小字画在节点下方（不换行、最长两行由样式的 `y=40` 决定）。
 - **资源水位条**：内存 used/total，≥90%（`ctx.resmon_alert`）变红。阈值可配置。
-- **实例操作**：选中节点后出现「启动 / 停止 / 重启 / 查看日志 / 删除」。
+- **扫描安装目录**（`GET /api/scan`）：比对安装根（manifest 的 `install_root`）下的一级目录与相关进程 vs 注册表，分三类展示——`owned`（实例受管）/ `orphan`（目录名匹配程序名但无实例记录，如手工部署残留、删除失败残留，提供删除按钮）/ `external`（无关软件如 alist、containerd，仅展示不提供删除）。游离进程同样标注，可结束（pid 的 exe/cwd 必须落在安装根下且不属于实例/管理器，`POST /api/scan/kill`）。删除走 `DELETE /api/scan/dir`，三重校验在 `core/scanner.py::check_deletable`（**受保护目录必须 Path 对 Path 比较**——str/Path 混比曾放行受管目录，2026-09-25 事故）。
+- **实例操作**：选中节点后出现「启动 / 停止 / 重启 / 打开 WebUI / 查看日志 / 上传备份 / 删除」。
 - **删除的二次确认**：第一次 confirm 确认删实例；第二次 confirm 询问是否连程序目录一起删。若该程序的 manifest 声明了 `delete_keeps_save: true`，第二次询问的文案会提示「建议保留存档目录」，并把 `keep_save=true` 传给后端。
+- **删除链路顺序（2026-09-25 修正）**：停进程 → 释放端口 → 删目录（rmtree 失败会收集错误并**先于墓碑**抛 500，实例记录保留可直接重试）→ 全部成功才 `registry.remove()` 写墓碑。旧实现 `rmtree(ignore_errors=True)` 静默吞错且记录已删，失败即成无主孤儿目录；`keep_save` 删空后残留的空壳目录也会一并清掉。
 - **数据来源**：`/ws/overview`，2 秒一推。断线由前端自动重连（指数退避，上限 30s）。
 
 ### 4.2 新建向导（五步）
@@ -284,6 +286,7 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}` |
 | POST | `/api/instances/{id}/{op}` | `op ∈ start / stop / restart`；已在运行返回 409 |
 | DELETE | `/api/instances/{id}` | `?confirm=true&remove_dir=&keep_save=`；缺 confirm 返回 400 |
+| POST | `/api/instances/{id}/backup` | **备份导入**：原始字节流上传 zip/tar 系（2GB 上限）。流程：运行中先停机 → 魔数识别 + 完整性校验 → 解压覆盖到实例目录（只覆盖包内文件、不删包外文件；zip-slip 整体前置校验；顶层目录歧义按「与已有路径命中多者胜、平手剥离」消解，见 `core/backup.py`）→ 自动重启。恢复失败也会把实例拉回运行态 |
 | GET | `/api/packages` | 本地包列表 |
 | POST | `/api/packages/{dice}` | 原始字节流上传 |
 | DELETE | `/api/packages/{dice}` | 删除本地包 |
@@ -759,7 +762,7 @@ cd web && npm run build     # 或直接用 node 跑 vite
 
 1. **多架构 / 多平台包选择**：当前 `asset_name_pattern` 只能匹配一个平台；若要同时支持 amd64 与 arm64，需要让 manifest 声明平台矩阵、由运行时按 `platform.machine()` 选择。
 2. **实例配置的可视化编辑**：目前改配置要么走向导重跑，要么手工进服务器。
-3. **备份与还原**：现在只有「保留存档目录」这一个粒度；完整的「导出/导入实例（含存档）」会更实用。
+3. **备份与还原**：「导入」（上传压缩包 → 停机 → 覆盖解压 → 重启，总览页「上传备份」按钮）已实现；「导出」（把实例目录打成压缩包下载）待做。
 4. **通知渠道**：进程熔断、连接断开目前只能靠人看总览。可接 Webhook / 邮件。
 5. **mypy 覆盖面扩大**：先把 `adapters/` 纳入（给适配器加 `manifest: dict[str, Any]` 的类型标注后信噪比会好转）。
 6. **协议扩展**：manifest 已预留 `milky_default_port` / `satori_default_port` 两个端口角色与 `compatible_login` 机制，接入 Milky 协议端时主要工作在于「连接配置的读写形态与 OneBot 不同」——需要给适配器区分协议类型，不能复用现有 OneBot 写法。

@@ -84,6 +84,11 @@ def _validate(path: Path, ext: str) -> None:
             raise ValueError("不是有效的 tar 压缩包: %s" % e) from e
 
 
+def validate_archive(path: Path, ext: str) -> None:
+    """公开校验入口：程序包上传与实例备份导入共用同一套完整性校验。"""
+    _validate(path, ext)
+
+
 def _store(dice: str, tmp: Path, source: str) -> dict:
     """对已落盘的临时包做魔数识别 + 完整性校验，再原子改名到缓存路径。"""
     head = tmp.read_bytes()[:263]

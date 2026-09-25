@@ -19,7 +19,7 @@ ignore = ["E501", "E402", "E701", "E702", "SIM105"]
 "core/locks.py" = ["SIM115"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"         # 服务器 Ubuntu 24.04 = 3.12；tarfile filter= 等新 API 依赖此版本
 platform = "linux"              # 本项目仅部署 Linux：fcntl/killpg/SIGKILL 均为真实 API
 ignore_missing_imports = true
 check_untyped_defs = true

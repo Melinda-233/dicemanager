@@ -14,7 +14,7 @@ import re
 import time
 from pathlib import Path
 
-from adapters.base import BaseAdapter, WriteResult
+from adapters.base import LOOPBACK_HOSTS, BaseAdapter, WriteResult
 from core.atomicio import atomic_write_json
 
 
@@ -30,6 +30,22 @@ class LLBotAdapter(BaseAdapter):
 
     def _config_path(self, instance) -> Path:
         return Path(instance.dir) / self.m["config_path"]
+
+    def _config_paths(self, instance) -> list[Path]:
+        """default_config.json 是未登录时的引导配置；登录成功后 LLBot 生成
+        data/config_{qq}.json 按账号配置并覆盖前者（webui/ob11 等全部以它为准，
+        2026-09-25 线上实测）。两份都要写：qq 未知时只有前者；qq 已知而按账号
+        文件还没生成时，用引导配置播种一份（否则登录后监听地址会被打回回环）。"""
+        base = self._config_path(instance)
+        paths = [base]
+        if instance.qq:
+            per_uin = (Path(instance.dir) / "bin/llbot/data"
+                       / f"config_{instance.qq}.json")
+            if not per_uin.exists() and base.exists():
+                per_uin.parent.mkdir(parents=True, exist_ok=True)
+                per_uin.write_text(base.read_text("utf-8"), encoding="utf-8")
+            paths.append(per_uin)
+        return paths
 
     def build_start_cmd(self, instance) -> list[str]:
         cmd = [str(Path(instance.dir) / self.m["exe"])]
@@ -59,7 +75,7 @@ class LLBotAdapter(BaseAdapter):
         return True
 
     def _apply_allocated_ports(self, instance) -> None:
-        """端口表分配到的实际端口 → 配置文件，避免多开时端口漂移。"""
+        """端口表分配到的实际端口 → 配置文件（引导 + 按账号），避免多开时端口漂移。"""
         ports = instance.allocated_ports or {}
 
         def _m(cfg: dict) -> dict:
@@ -67,6 +83,9 @@ class LLBotAdapter(BaseAdapter):
                 w = cfg.setdefault("webui", {})
                 w["port"] = int(ports["webui"])
                 w.setdefault("enable", True)
+                # 外网可访问：回环/缺省监听地址放开为 0.0.0.0（用户自定义地址保留）
+                if str(w.get("host") or "").strip().lower() in LOOPBACK_HOSTS:
+                    w["host"] = "0.0.0.0"
             ob = cfg.setdefault("ob11", {})
             ob.setdefault("enable", True)
             conn = ob.setdefault("connect", [])
@@ -87,7 +106,8 @@ class LLBotAdapter(BaseAdapter):
                 cfg.setdefault("satori", {})["port"] = int(ports["satori"])
             return cfg
 
-        atomic_write_json(self._config_path(instance), _m, source_json5=True)
+        for path in self._config_paths(instance):
+            atomic_write_json(path, _m, source_json5=True)
 
     def configure_login(self, instance, credentials) -> dict:
         ver = self._parse_ver(credentials["version"]) \
@@ -132,10 +152,13 @@ class LLBotAdapter(BaseAdapter):
             conn.append(entry)
             ob["connect"] = conn
             return cfg
-        # JSON5 读、纯 JSON 写（LLBot 1s 轮询热更新，JSON5 是超集）
-        atomic_write_json(self._config_path(instance), _m, source_json5=True)
+        # JSON5 读、纯 JSON 写（LLBot 1s 轮询热更新，JSON5 是超集）；
+        # 引导 + 按账号两份都写，登录态下按账号那份才是热更新真正生效的
+        paths = self._config_paths(instance)
+        for path in paths:
+            atomic_write_json(path, _m, source_json5=True)
         return WriteResult(ok=True, manual="LLBot 配置热更新，约 1 秒后自动生效，无需重启。",
-                           path=str(self._config_path(instance)))
+                           path=str(paths[-1]))
 
     def get_actual_port(self, lines) -> int | None:
         for _, line in reversed(list(lines)[-200:]):

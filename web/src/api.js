@@ -52,25 +52,32 @@ export const linkInstance = (id, loginRef) =>
 // WebUI 直连信息：port 可能与分配端口不同（占用时程序自动 +1），token 来自启动日志回读
 export const instanceWebui = id => api(`/instances/${id}/webui`)
 
+// ---------- 安装根扫描：游离目录 / 游离进程 ----------
+export const scanInstallRoots = () => api('/scan')
+export const deleteOrphanDir = path =>
+  api(`/scan/dir?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+export const killOrphanProc = pid =>
+  api('/scan/kill', { method: 'POST', body: { pid } })
+
 // ---------- 程序包：部署优先解压本地包，免在线下载 ----------
 export const listPackages = () => api('/packages')
 export const deletePackage = dice => api(`/packages/${dice}`, { method: 'DELETE' })
-// 大文件原始流上传：不走 api()（它会把 body JSON 序列化）。
+// 大文件原始流上传的公共实现：不走 api()（它会把 body JSON 序列化）。
 // 用 XHR 而不是 fetch：只有 XHR 有 upload.onprogress。
 // fetch + ReadableStream(duplex:'half') 在本站不可用——它要求 HTTP/2/3 或安全上下文，
 // 而本服务是 http://IP:8888（HTTP/1.1 明文），Firefox 也尚不支持该写法。
 // onProgress({loaded, total, sent})：sent=true 表示请求体已发完、正在等服务端响应。
-export function uploadPackage(dice, file, onProgress) {
+function rawUpload(url, file, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/packages/${dice}`)
+    xhr.open('POST', url)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.timeout = 0                 // 大包不限时（服务端自己也做 2GB 上限校验）
     const emit = (loaded, total, sent) =>
       onProgress && onProgress({ loaded, total, sent })
     xhr.upload.onprogress = e => emit(e.loaded, e.lengthComputable ? e.total : 0, false)
-    // 请求体发完 → 后端落盘 + 整体校验（可能数十秒），此时进度条应停在满格并转为「校验中」
+    // 请求体发完 → 后端落盘 + 校验/解压（可能数十秒），此时进度条应停在满格并转为「处理中」
     xhr.upload.onload = () => emit(file.size, file.size, true)
     xhr.onload = () => {
       let body = null
@@ -85,6 +92,11 @@ export function uploadPackage(dice, file, onProgress) {
     xhr.send(file)                  // File 直接作为请求体，浏览器自动设置 Content-Length
   })
 }
+export const uploadPackage = (dice, file, onProgress) =>
+  rawUpload(`/api/packages/${dice}`, file, onProgress)
+// 实例备份导入：后端停机 → 解压覆盖到实例目录 → 自动重启（Overview 实例面板）
+export const uploadBackup = (id, file, onProgress) =>
+  rawUpload(`/api/instances/${id}/backup`, file, onProgress)
 
 // 裸 <a href> 下载带不上 Authorization 头（原来必 401），改走 fetch + blob
 export async function downloadLog(id) {

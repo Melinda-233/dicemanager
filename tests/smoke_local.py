@@ -80,4 +80,12 @@ ctx.pm.get = orig
 assert r == {"result": "error", "message": "进程已在运行"}, r
 print("[5] wizard step5 RuntimeError 兜底 OK")
 
+# 6) 路由注册顺序：/backup 必须先于 /{op} 通配（FastAPI 按序匹配，"backup" 会被当 op 抢走）
+from api.app import app                                   # noqa: E402
+paths = [getattr(r, "path", "") for r in app.routes]
+assert "/api/instances/{inst_id}/backup" in paths, paths
+assert paths.index("/api/instances/{inst_id}/backup") \
+    < paths.index("/api/instances/{inst_id}/{op}"), "backup 路由被 {op} 通配抢先"
+print("[6] 路由顺序（backup 先于 {op}）OK")
+
 print("SMOKE_ALL_OK")

@@ -12,7 +12,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core import packages as pkgstore
+from core.firewall import open_port
 from core.locks import program_dir_lock
+
+# 视为「仅本机监听」的绑定地址：开放 WebUI 时统一放开为 0.0.0.0
+LOOPBACK_HOSTS = ("", "127.0.0.1", "localhost", "::1")
 
 # 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
 # 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
@@ -159,6 +163,21 @@ class BaseAdapter(ABC):
         返回值=True 表示执行了只应做一次的动作，由调用方落盘 instance.first_run_done。
         """
         return False
+
+    # ---------- WebUI 对外开放（登录/启动前调用）----------
+    def expose_webui(self, instance) -> str | None:
+        """确保程序自带 WebUI 可被外部访问：先由适配器修正配置文件里的回环
+        监听（_ensure_webui_binding），再尽力经 ufw 放行端口。任何失败都不
+        阻断启动；返回给前端的提示，无动作时 None。"""
+        self._ensure_webui_binding(instance)
+        port = ((instance.allocated_ports or {}).get("webui")
+                or self.m.get("webui_default_port"))
+        return open_port(port)
+
+    def _ensure_webui_binding(self, instance) -> None:
+        """有 WebUI 监听配置文件的适配器覆写：把回环绑定放开为 0.0.0.0。
+        默认无配置文件可改（如 Lagrange 无 WebUI）。"""
+        return None
 
     @staticmethod
     def gen_token(n: int = 16) -> str:

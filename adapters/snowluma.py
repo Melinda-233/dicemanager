@@ -12,7 +12,8 @@ import json
 import re
 from pathlib import Path
 
-from adapters.base import BaseAdapter, WriteResult
+from adapters.base import LOOPBACK_HOSTS, BaseAdapter, WriteResult
+from core.atomicio import atomic_write_json
 
 
 class SnowLumaAdapter(BaseAdapter):
@@ -28,6 +29,27 @@ class SnowLumaAdapter(BaseAdapter):
                           "2) 初始账号 admin，初始密码见启动日志\n"
                           "3) 按引导接入 QQ 进程并确认 OneBot 连接已启用\n"
                           "完成后点「继续」进入互联配置。"}
+
+    def _ensure_webui_binding(self, instance) -> None:
+        """config/runtime.json（字段经官方源码 packages/common/src/runtime.ts 核实）：
+        SnowLuma 默认 webuiHost=127.0.0.1 仅本机监听——外网访问打不开的根因。
+        缺失时按分配端口预置；已存在仅放开回环 host，端口/其余设置不动
+        （用户可能在 WebUI「系统设置」里改过，改端口会与其打架）。"""
+        cfg = Path(instance.dir) / "config" / "runtime.json"
+        allocated = (instance.allocated_ports or {}).get("webui")
+
+        def _m(c: dict) -> dict:
+            if str(c.get("webuiHost") or "").strip().lower() in LOOPBACK_HOSTS:
+                c["webuiHost"] = "0.0.0.0"
+            return c
+
+        if cfg.exists():
+            atomic_write_json(cfg, _m)
+        else:
+            atomic_write_json(cfg, lambda c: {**c, "webuiHost": "0.0.0.0",
+                                              "webuiPort": int(allocated
+                                                  or self.m.get("webui_default_port")
+                                                  or 5099)})
 
     def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
         # SnowLuma 是 OneBot v11 服务端：它不连出，故无需写自身配置；

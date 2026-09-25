@@ -73,6 +73,10 @@ async def ws_login(ws: WebSocket, inst_id: str):
         def runner(cmd, cwd, label):    # 与 REST start 同路：首启写回端口 + 一次性 --update
             ctx.pm.run_once(inst_id, cmd, cwd, label=label)
         try:
+            adapter.expose_webui(inst)  # 登录同时开放 WebUI（绑定修正 + ufw，尽力而为）
+        except Exception:
+            pass
+        try:
             if adapter.prepare_start(inst, runner):
                 ctx.registry.update(inst_id, first_run_done=True)
             ctx.pm.launch(inst_id, adapter.build_start_cmd(inst), inst.dir)
@@ -100,6 +104,10 @@ async def ws_login(ws: WebSocket, inst_id: str):
                 recv_task = None
                 if cmd == "refresh":
                     proc.stop()
+                    try:
+                        adapter.expose_webui(inst)   # 重启前再保证一次 WebUI 可达
+                    except Exception:
+                        pass
                     ctx.pm.launch(inst_id, adapter.build_start_cmd(inst), inst.dir)
                     await ws.send_json({"type": "restarted"})
                 elif cmd == "skip_login":

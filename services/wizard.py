@@ -61,6 +61,14 @@ class Wizard:
             qq = adapter.account_from_logs(self.pm.get(instance_id).ring)
         if qq: self.reg.update(instance_id, qq=qq)
 
+    def _to_running(self, instance_id: str) -> None:
+        """进入 RUNNING；断点续跑时可能已是 RUNNING（进程被外部杀掉后重启），
+        状态机不允许 RUNNING→RUNNING，这里幂等处理而不是让 step5 500。"""
+        try:
+            self.reg.transition(instance_id, State.RUNNING)
+        except ValueError:
+            pass
+
     def run_step(self, instance_id: str, step: int, payload: dict) -> dict:
         with instance_lock(instance_id):
             inst = self.reg.get(instance_id)
@@ -127,7 +135,7 @@ class Wizard:
             if step == 5:                                      # 启动（命令后端构建，安全）
                 proc = self.pm.get(instance_id)
                 if proc.is_alive():
-                    self.reg.transition(instance_id, State.RUNNING)
+                    self._to_running(instance_id)
                     return {"result": "ok", "already_running": True}
                 # 首启一次性动作（LLBot --update 等），输出同进本实例日志流
                 def runner(cmd, cwd, label):
@@ -139,12 +147,17 @@ class Wizard:
                 except Exception:                              # 准备失败不阻断启动
                     pass
                 cmd = adapter.build_start_cmd(inst)
+                # 登录/启动同时开放 WebUI：修正回环绑定 + ufw 放行（尽力而为）
+                try:
+                    webui_note = adapter.expose_webui(inst)
+                except Exception:
+                    webui_note = None
                 try:
                     proc.start(cmd, inst.dir)
                 except RuntimeError as e:                      # 竞态下刚好被启动：友好返回而非 500
                     return {"result": "error", "message": str(e)}
                 # actual_port 不在此回读：启动瞬间进程还没打印端口（恒为 None）。
                 # 由 ws_overview 周期从 ring 提取并回填（actual_port 变化才写盘）。
-                self.reg.transition(instance_id, State.RUNNING)
-                return {"result": "ok"}
+                self._to_running(instance_id)
+                return {"result": "ok", "webui_note": webui_note}
         return {"result": "unknown_step"}
