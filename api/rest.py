@@ -32,6 +32,7 @@ class CreateReq(BaseModel):
     arch: str = "standalone"
     login_ref: str | None = None
     confirm_dir: bool = False            # 同名冲突「直接使用」确认
+    bot_mode: str = "onebot"             # onebot=需登录端；official=官方机器人通道（无需登录端）
 
 class StepReq(BaseModel):
     step: int
@@ -57,7 +58,8 @@ def create_instance(req: CreateReq):
     if req.dice not in ctx.adapters:
         raise HTTPException(400, f"未知程序: {req.dice}")
     iid = ctx.wizard.create_instance(req.dice, req.arch,
-                                     login_ref=req.login_ref, confirm_dir=req.confirm_dir)
+                                     login_ref=req.login_ref, confirm_dir=req.confirm_dir,
+                                     bot_mode=req.bot_mode)
     inst = ctx.registry.get(iid)
     return {"id": iid, "dir": inst.dir, "allocated_ports": inst.allocated_ports}
 
@@ -111,11 +113,29 @@ def instance_webui(inst_id: str):
     port = rec.actual_port or (rec.allocated_ports or {}).get("webui")
     return {"port": port, "token": rec.webui_token}
 
+@router.get("/instances/{inst_id}/metrics")
+def instance_metrics(inst_id: str, hours: float = 24.0):
+    """资源曲线：最近 hours 小时的 [时间戳, 内存MB, CPU%] 采样点（默认 60s 一点）。
+
+    面板重启不丢历史（落盘 <state>/metrics/<id>.json），新部署实例前几分钟可能无点。
+    """
+    try:
+        ctx.registry.get(inst_id)
+    except KeyError:
+        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    hours = min(max(hours, 0.1), 24 * 7)
+    pts = ctx.metrics.points(inst_id, hours)
+    mems = [p[1] for p in pts]; cpus = [p[2] for p in pts]
+    return {"interval": 60, "points": pts,
+            "latest_mem_mb": mems[-1] if mems else None,
+            "peak_mem_mb": round(max(mems), 1) if mems else None,
+            "avg_cpu": round(sum(cpus) / len(cpus), 1) if cpus else None}
+
 @router.get("/pending")
 def list_pending():
     """未完成的中间态实例：管理器重启 / 断网后可经向导从这里继续。"""
     return [{"id": i.id, "dice": i.dice, "state": i.state, "dir": i.dir,
-             "qq": i.qq, "login_ref": i.login_ref,
+             "qq": i.qq, "login_ref": i.login_ref, "bot_mode": i.bot_mode,
              "next_step": ctx.wizard.next_step(i.id)}
             for i in ctx.registry.resume_pending()]
 
@@ -201,13 +221,16 @@ def diagnose_instance(inst_id: str):
             lalive = ctx.pm.is_alive(rec.login_ref)
             add(lalive, "login_process",
                 "登录端进程运行中" if lalive else "登录端进程未运行（登录端连不上任何人）")
-            port = (login.allocated_ports or {}).get("ob11")
+            lproto = ctx.get_adapter(login.dice).m.get("protocol", "ob11")
+            port = (login.allocated_ports or {}).get(lproto) or \
+                   (login.allocated_ports or {}).get("ob11")
             if port:
                 reachable = ctx.get_adapter(rec.dice).tcp_probe("127.0.0.1", port)
+                pname = "milky" if lproto == "milky" else "ob11"
                 add(reachable, "port",
-                    f"登录端 ob11 端口 {port} {'可连通' if reachable else '未监听（登录端未启动/端口没开）'}")
+                    f"登录端 {pname} 端口 {port} {'可连通' if reachable else '未监听（登录端未启动/端口没开）'}")
             else:
-                add(False, "port", "登录端未分配 ob11 端口，无法建立 OneBot 连接")
+                add(False, "port", "登录端未分配互联端口，无法建立连接")
             if rec.conn_token and login.conn_token:
                 same = rec.conn_token == login.conn_token
                 add(same, "token",
@@ -425,6 +448,7 @@ def delete_instance(inst_id: str, confirm: bool = False,
     # 日志文件随实例一起走 + 释放空壳 ManagedProcess：旧实现只除名不删日志，
     # 反复增删会累积一批查不到归属的孤儿日志
     removed_logs = ctx.pm.remove_logs(inst_id)
+    ctx.metrics.drop(inst_id)               # 资源曲线随实例一起回收（与日志同口径）
     return {"ok": True, "unlinked": unlinked, "removed_logs": removed_logs}
 
 
@@ -518,7 +542,7 @@ def list_manifests():
     但前端从不读取（手册 §6.2 记为「文档性字段」），透出只会误导后来者以为有用。
     """
     return {n: {k: m.get(k) for k in ("arch", "login_type",
-                                      "compatible_login",
+                                      "compatible_login", "bot_modes",
                                       "webui_default_port", "ob11_default_port",
                                       "approx_memory_mb", "auth_token_conditional",
                                       "prerequisite", "delete_keeps_save")}

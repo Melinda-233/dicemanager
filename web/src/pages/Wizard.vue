@@ -79,7 +79,20 @@
               }}{{ m.approx_memory_mb ? ' · 约 ' + m.approx_memory_mb + ' MB' : '' }}）</option>
           </select>
         </div>
-        <div class="field" v-if="loginOptions.length">
+        <!-- 接入通道：程序声明了多种通道时才出现（目前仅海豹支持官方机器人） -->
+        <div class="field" v-if="botModes.length > 1">
+          <label>接入通道</label>
+          <select v-model="botMode">
+            <option v-for="b in botModes" :key="b.id" :value="b.id">{{ b.label }}</option>
+          </select>
+          <p class="hint" v-if="officialMode">
+            官方通道由 {{ dice }} 自己对接 QQ 官方服务：<b>不需要协议登录端</b>，面板也不会写入
+            OneBot 互联配置。启动后进 WebUI「添加账号 → 平台 QQ → QQ 官方机器人」，
+            用 AppID + AppSecret 或扫码完成接入（需在开放平台把本机公网 IP 填进白名单）。
+            <a v-if="officialGuide" :href="officialGuide" target="_blank" rel="noreferrer">官方接入手册</a>
+          </p>
+        </div>
+        <div class="field" v-if="loginOptions.length && !officialMode">
           <label>登录端（{{ loginCandidates.length ? '可留空稍后关联' : '暂无实例可选' }}）</label>
           <select v-model="loginRef">
             <option value="">暂不关联</option>
@@ -263,6 +276,22 @@
 
     <!-- Step5：启动 -->
     <div v-else-if="step === 5" class="wz-body">
+      <!-- 官方通道：连接动作在程序自身 WebUI 完成，这里把前置清单一次说清 -->
+      <div v-if="officialMode" class="official-tip">
+        <b>官方机器人通道 · 接入清单</b>
+        <ol>
+          <li>到 <a href="https://q.qq.com" target="_blank" rel="noreferrer">QQ 开放平台</a>
+            实名创建机器人应用，取到 <code>AppID</code> 与 <code>AppSecret</code>。</li>
+          <li>「开发设置 → IP 白名单」填本机<b>公网</b> IP（云服务器填控制台显示的 IP）。</li>
+          <li>启动后打开下方 WebUI：添加账号 → 平台选「QQ」→ 连接方式选「QQ 官方机器人」，
+            用 AppID + AppSecret 或扫码接入。</li>
+          <li>指令须在开放平台配置（默认前缀 <code>/</code>），使用场景勾「QQ 群 / 频道私信 / QQ 频道」，
+            <b>不要勾「消息列表」</b>。</li>
+          <li>提交审核（自测报告 + 隐私协议）通过后「上线机器人」；先用沙盒群自测。</li>
+        </ol>
+        <p class="hint">优点：不走协议端，无风控封号风险。代价：官方接口能力受限，
+          依赖主动消息、群管、本地媒体的功能可能不可用。</p>
+      </div>
       <p v-if="busy">启动中…</p>
       <template v-else-if="!started">
         <p>配置已就绪，点击启动实例。</p>
@@ -335,6 +364,14 @@ const pkgInfo = computed(() => pkgs.value[dice.value] || null)
 const loginType = computed(() => manifest.value.login_type || 'none')
 const loginOptions = computed(() =>
   (manifest.value.compatible_login || []).filter(o => o !== 'builtin'))
+// 接入通道：清单驱动（manifest.bot_modes）。官方通道由程序自身对接官方服务，
+// 不需要登录端、也不需要面板写互联配置 —— 向导据此跳过「登录」「互联」两步。
+const botModes = computed(() => manifest.value.bot_modes || [])
+const botMode = ref('onebot')
+const officialMode = computed(() =>
+  botMode.value === 'official' && botModes.value.some(b => b.id === 'official'))
+const officialGuide = computed(() =>
+  (botModes.value.find(b => b.id === 'official') || {}).guide_url || '')
 // 登录端候选 = 已创建且程序类型在兼容矩阵里的实例（login_ref 在后端即实例 id，用于画连线）
 const loginCandidates = computed(() =>
   instances.value.filter(i => loginOptions.value.includes(i.dice)))
@@ -346,7 +383,7 @@ const needAuthToken = computed(() => !!manifest.value.auth_token_conditional)
 const isLoginEnd = computed(() => !!manifest.value.ob11_default_port)
 // none/external 没有独立登录环节：Step3 自动跳过，步骤条同步少一步
 const skipLoginStep = computed(() =>
-  loginType.value === 'none' || loginType.value === 'external')
+  loginType.value === 'none' || loginType.value === 'external' || officialMode.value)
 // 后端步号 1-5；跳过登录时把 >3 的步号在显示层左移一位
 const curStepIdx = computed(() => {
   const s = Math.min(step.value, 5)
@@ -399,8 +436,11 @@ const createLabel = computed(() => {
   return pkgInfo.value ? '解压本地包部署（自动关联登录端）' : '下载部署（自动关联登录端）'
 })
 const stepNames = computed(() => {
-  if (mode.value !== 'pair' || !pair.value)
-    return skipLoginStep.value ? STEP_NAMES.filter(s => s !== '登录') : STEP_NAMES
+  if (mode.value !== 'pair' || !pair.value) {
+    const base = skipLoginStep.value ? STEP_NAMES.filter(s => s !== '登录') : STEP_NAMES
+    // 官方通道连互联步也省掉：选程序 → 部署 → 启动
+    return officialMode.value ? base.filter(s => s !== '互联') : base
+  }
   return pair.value.phase === 'login'
     ? ['选登录端', '部署', '登录']                    // 登录端启动在登录完成后自动进行
     : skipLoginStep.value
@@ -537,6 +577,7 @@ const reset = () => {
   started.value = false; tokenSaved.value = false; webuiInfo.value = null
   loginRef.value = ''; instanceId = null
   pair.value = null; loginChoice.value = ''; loginHandled = false
+  botMode.value = 'onebot'
   stopDeployPoll(); deployMsg.value = ''
   refreshLists()
 }
@@ -551,6 +592,7 @@ const resume = p => {
   instanceId = p.id
   dice.value = p.dice
   loginRef.value = p.login_ref || ''
+  botMode.value = p.bot_mode || 'onebot'          // 续跑官方通道实例才能跳过登录/互联步
   step.value = Math.min(p.next_step || 1, 5)
   if (step.value === 3) enterStep3().catch(e => { err.value = e.message || String(e) })
 }
@@ -599,7 +641,8 @@ const create = () => guard(async () => {
     return doStep(2, {})
   }
   const r = await createInstance({ dice: dice.value, arch: manifest.value.arch || 'standalone',
-                                   login_ref: loginRef.value || null })
+                                   login_ref: loginRef.value || null,
+                                   bot_mode: officialMode.value ? 'official' : 'onebot' })
   instanceId = r.id
   step.value = 2
   await doStep(2, {})
@@ -677,6 +720,7 @@ const startDeployPoll = () => {
 const afterLoginDone = () => {
   if (loginHandled) return                          // 「我已完成扫码」与 WS completed 竞态双触发
   loginHandled = true
+  if (officialMode.value) { step.value = 5; return }   // 官方通道：没有互联步，直接进启动
   if (!pair.value || pair.value.phase !== 'login') {
     step.value = 4; preview.value = ''; return
   }
@@ -764,6 +808,11 @@ onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 }
 .steps li.done { color: var(--ok); border-color: var(--step-done-border); background: var(--step-done-bg); }
 .steps li.now { color: #fff; background: var(--brand); border-color: var(--brand); }
+/* 官方机器人通道：接入清单比向导步骤更需要被看到 */
+.official-tip { padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--code-bg); margin-bottom: 10px; font-size: 13px; }
+.official-tip ol { margin: 6px 0; padding-left: 20px; }
+.official-tip li { margin: 3px 0; }
 .wz-body { display: block; }
 .field { max-width: 420px; margin-bottom: 14px; }
 .field input, .field select { margin-bottom: 8px; }

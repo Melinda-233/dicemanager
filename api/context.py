@@ -5,6 +5,7 @@ from pathlib import Path
 
 from adapters import load_registry
 from core.exports import exports_dir
+from core.metrics import MetricsStore
 from core.ports import PortAllocator
 from core.process import ProcessManager
 from core.registry import Registry
@@ -24,6 +25,7 @@ class AppContext:
     adapters: dict
     log_dir: Path
     scheduler: Scheduler
+    metrics: MetricsStore               # 资源时序（内存/CPU），采样线程在 app 里起
     resmon_alert: float = 0.90          # ≥90% 告警（可配置）
     _adapter_cache: dict = field(default_factory=dict)
 
@@ -50,9 +52,15 @@ def build_context() -> AppContext:
     # 定时备份与手动导出/升级前快照统一落在 exports/（口径与回收入口见 core/exports.py）
     scheduler = Scheduler(STATE_DIR / "schedules.json", exports_dir(),
                           registry, wizard)
+    metrics = MetricsStore(STATE_DIR / "metrics")
+    # 实例删除已同步删曲线；这里兜底回收历史上遗留的孤儿曲线文件
+    try:
+        metrics.prune_files({r["id"] for r in registry.all()})
+    except Exception:
+        pass
     return AppContext(registry=registry, ports=ports, pm=pm, wizard=wizard,
                       adapters=adapters, log_dir=LOG_DIR,
-                      scheduler=scheduler)
+                      scheduler=scheduler, metrics=metrics)
 
 # 模块级单例：import 时构建一次，所有模块拿到的是同一个实例
 # （此前 lifespan 里 global ctx 只改 app.py 自身名字空间，其余模块拿不到 —— 已修正）

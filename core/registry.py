@@ -49,6 +49,9 @@ class Instance:
     first_run_done: bool = False
     # 部署时的上游版本（release tag，升级通道比对用；直链/manual 无版本为 None）
     version: Optional[str] = None
+    # 接入通道：onebot=常规协议端（需登录端）；official=官方机器人通道（无需登录端，
+    # 由程序自身 WebUI 走官方凭证/扫码，面板不写互联配置）
+    bot_mode: str = "onebot"
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
 
 class Registry:
@@ -106,9 +109,10 @@ class Registry:
 
     # ---------- 写（写穿 + 同步缓存）----------
     def create(self, iid, dice, arch, dir_, port, allocated_ports=None,
-               login_ref=None) -> Instance:
+               login_ref=None, bot_mode="onebot") -> Instance:
         inst = Instance(id=iid, dice=dice, arch=arch, dir=dir_, port=port,
-                        allocated_ports=allocated_ports or {}, login_ref=login_ref)
+                        allocated_ports=allocated_ports or {}, login_ref=login_ref,
+                        bot_mode=bot_mode)
         self._flush(atomic_write_json(self._path, lambda t: {**t, iid: asdict(inst)}))
         return inst
 

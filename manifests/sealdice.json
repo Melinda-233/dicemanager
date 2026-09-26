@@ -4,7 +4,14 @@
   "exe": "sealdice-core", "install_root": "/opt",
   "webui_default_port": 3211,
   "login_type": "external",
-  "compatible_login": ["napcat", "llbot", "lagrange"],
+  "compatible_login": ["napcat", "llbot", "lagrange", "lagrange_milky", "yogurt"],
+  // 接入通道：official = QQ 官方机器人（海豹 v1.4.2+ 支持），不需要协议登录端；
+  // 连接在海豹 WebUI「添加账号 → 平台 QQ → QQ 官方机器人」用 AppID/AppSecret 或扫码完成
+  "bot_modes": [
+    { "id": "onebot", "label": "OneBot 协议（需登录端）", "needs_login": true },
+    { "id": "official", "label": "QQ 官方机器人（无需登录端，规避风控）", "needs_login": false,
+      "guide_url": "https://docs.sealdice.com/deploy/platform-qq-official.html" }
+  ],
   "recommended_protocols": ["onebot11-ws-forward", "onebot11-ws-reverse"],
   "config_strategy": "dice.yaml:diceConfigs[].dataDir + serve.yaml:imSession.endPoints",
   "data_paths": ["data"],

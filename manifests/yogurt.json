@@ -1,0 +1,17 @@
+// manifests/yogurt.json — Yogurt（LLOneBot/yogurt-pmhq，基于 acidify-core + PMHQ 的 Milky 协议端，登录端）
+// 对外暴露 Milky 协议（httpConfig.host/port/accessToken），无需签名服务（signApiUrl 留空）。
+// 强依赖 PMHQ 常驻：默认连 ws://localhost:13000/ws。官方推荐 Docker 部署，原生包需自行构建后离线上传（故用 manual）。
+{
+  "name": "yogurt", "arch": "standalone", "multi_account": false,
+  "exe": "yogurt", "install_root": "/opt",
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "protocol": "milky",
+  "milky_default_port": 3000,
+  "config_path": "config.json",
+  "data_paths": ["config.json"],
+  "release_page": "https://github.com/LLOneBot/yogurt-pmhq/releases",
+  "download_strategy": "manual",
+  "prerequisite": "必须先在本地/同机运行 PMHQ（默认 ws://127.0.0.1:13000/ws）。Yogurt 原生为 Docker 镜像，原生包需自行构建后上传",
+  "required_files": ["yogurt"],
+  "approx_memory_mb": 80
+}

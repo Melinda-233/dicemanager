@@ -50,6 +50,9 @@ export const linkInstance = (id, loginRef) =>
   api(`/instances/${id}/link`, { method: 'POST', body: { login_ref: loginRef } })
 // WebUI 直连信息：port 可能与分配端口不同（占用时程序自动 +1），token 来自启动日志回读
 export const instanceWebui = id => api(`/instances/${id}/webui`)
+// 资源曲线：[时间戳, 内存MB, CPU%] 采样点，默认 24h
+export const instanceMetrics = (id, hours = 24) =>
+  api(`/instances/${id}/metrics?hours=${hours}`)
 
 // ---------- 安装根扫描：游离目录 / 游离进程 ----------
 export const scanInstallRoots = () => api('/scan')

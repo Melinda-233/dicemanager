@@ -72,6 +72,7 @@
         <b>{{ sel.dice }}</b> · {{ live.state }} · 端口 {{ live.port || '-' }}
         <span v-if="live.qq"> · QQ {{ live.qq }}</span>
         <span v-if="live.mem_mb"> · 内存 {{ live.mem_mb }} MB</span>
+        <span v-if="live.bot_mode === 'official'" class="hint"> · 官方机器人通道</span>
         <span v-if="linkTarget"> · 已连 {{ linkTarget.dice }}（{{ edgeState }}）</span>
         <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
         <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
@@ -81,6 +82,7 @@
         <button @click="op('stop')">停止</button>
         <button @click="op('restart')">重启</button>
         <button @click="openWebui">打开 WebUI</button>
+        <button @click="toggleMetrics">{{ showMetrics ? '收起资源曲线' : '资源曲线' }}</button>
         <button @click="goLogs">查看日志</button>
         <button @click="pickBackup">上传备份</button>
         <button @click="doExport('full')" title="程序+配置+存档+数据全部打包">导出整目录备份</button>
@@ -92,6 +94,30 @@
         <button class="danger" @click="del">删除</button>
         <input ref="backupInput" type="file" hidden
                accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
+      </div>
+      <!-- 资源曲线：24h 内存/CPU 走势（采样 60s 一点，面板重启不丢历史） -->
+      <div v-if="showMetrics" class="metrics">
+        <div class="metrics-top">
+          <b>资源曲线</b>
+          <span class="hint">{{ metricsHours }} 小时</span>
+          <button @click="loadMetrics">刷新</button>
+        </div>
+        <p v-if="!chartPts.length" class="hint">
+          暂无采样点（实例刚部署或长时间未运行，采样进程每分钟记录一次）。</p>
+        <template v-else>
+          <svg :viewBox="`0 0 ${chartW} ${chartH}`" class="chart" preserveAspectRatio="none">
+            <polyline :points="memPath" class="line-mem" fill="none"/>
+            <polyline :points="cpuPath" class="line-cpu" fill="none"/>
+          </svg>
+          <div class="metrics-legend">
+            <span><i class="lg-line line-mem"/>内存
+              最新 {{ metrics?.latest_mem_mb ?? '-' }} MB ·
+              峰值 {{ metrics?.peak_mem_mb ?? '-' }} MB</span>
+            <span><i class="lg-line line-cpu"/>CPU
+              均值 {{ metrics?.avg_cpu ?? '-' }}% · 上限 {{ cpuMax }}%</span>
+          </div>
+          <p class="hint">{{ chartRange }}</p>
+        </template>
       </div>
       <div v-if="diag" class="diag">
         <p class="hint">互联诊断结果（{{ diag.ok ? '全部通过' : '存在问题' }}）：</p>
@@ -150,7 +176,8 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
-import { opInstance, delInstance, listManifests, linkInstance, instanceWebui, wizardStep,
+import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
+         instanceMetrics, wizardStep,
          scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance } from '../api'
@@ -342,6 +369,47 @@ const doExport = scope => guard(async () => {
   connMsg.value = `备份已开始下载（${scope === 'full' ? '整目录' : '数据'}口径，${r.files} 个文件）。`
 })
 
+// ---------- 资源曲线（拓展5）：24h 内存 / CPU 走势 ----------
+// 双线共用一张图：两条曲线各自按自己的峰值归一化（内存 MB 与 CPU% 量级不同，
+// 强行共用一个 Y 轴会让 CPU 线贴底看不见），图例给出真实数值与峰值。
+const showMetrics = ref(false), metrics = ref(null), metricsHours = ref(24)
+const chartW = 320, chartH = 96
+const chartPts = computed(() => metrics.value?.points || [])
+const cpuMax = computed(() => {
+  const v = chartPts.value.map(p => p[2])
+  return v.length ? Math.max(...v, 5) : 0            // 低负载时给 5% 底，避免线贴底
+})
+const _path = idx => {
+  const pts = chartPts.value
+  if (pts.length < 2) return ''
+  const vals = pts.map(p => p[idx])
+  const max = Math.max(...vals, idx === 2 ? 5 : 1) || 1
+  const t0 = pts[0][0], span = Math.max(pts[pts.length - 1][0] - t0, 1)
+  // polyline 的 points 是「x,y x,y …」点序列（不是 path 的 M/L 命令）
+  return pts.map(p => {
+    const x = ((p[0] - t0) / span) * chartW
+    const y = chartH - (p[idx] / max) * chartH
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+}
+const memPath = computed(() => _path(1))
+const cpuPath = computed(() => _path(2))
+const chartRange = computed(() => {
+  const pts = chartPts.value
+  if (!pts.length) return ''
+  const hhmm = t => new Date(t * 1000).toTimeString().slice(0, 5)
+  return `${hhmm(pts[0][0])} — ${hhmm(pts[pts.length - 1][0])} · ${pts.length} 个采样点`
+})
+const loadMetrics = () => guard(async () => {
+  metrics.value = await instanceMetrics(sel.value.id, metricsHours.value)
+})
+const toggleMetrics = () => {
+  if (showMetrics.value) { showMetrics.value = false; return }
+  showMetrics.value = true
+  loadMetrics()
+}
+watch(sel, () => { showMetrics.value = false; metrics.value = null })
+
 // ---------- 互联诊断（拓展2） ----------
 const diag = ref(null)
 const runDiagnose = () => guard(async () => {
@@ -466,4 +534,13 @@ button.danger { color: #e5484d; }
 .sched-add select, .sched-add input { width: auto; margin: 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
 .tok { cursor: pointer; background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
+/* 资源曲线：两条线各自归一化，颜色语义与图例一致 */
+.metrics { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.metrics-top { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.metrics-top button { padding: 2px 10px; font-size: 12px; }
+.chart { width: 100%; height: 96px; background: var(--code-bg); border-radius: 6px; }
+.line-mem { stroke: #4f7cff; stroke-width: 2; border-color: #4f7cff; }
+.line-cpu { stroke: #42b883; stroke-width: 2; border-color: #42b883; }
+.metrics-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: #666; margin-top: 4px; }
+.metrics-legend span { display: inline-flex; align-items: center; gap: 6px; }
 </style>

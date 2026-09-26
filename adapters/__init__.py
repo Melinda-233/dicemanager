@@ -3,7 +3,18 @@ import json
 import re
 from pathlib import Path
 
-from adapters import dicenext, lagrange, llbot, napcat, olivadice, sealdice, shiki, snowluma
+from adapters import (
+    dicenext,
+    lagrange,
+    lagrange_milky,
+    llbot,
+    napcat,
+    olivadice,
+    sealdice,
+    shiki,
+    snowluma,
+    yogurt,
+)
 
 REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")
@@ -17,7 +28,9 @@ classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "olivadice": olivadice.OlivaDiceAdapter,
            "snowluma": snowluma.SnowLumaAdapter,
            "dicenext": dicenext.DiceNextAdapter,
-           "lagrange": lagrange.LagrangeAdapter}
+           "lagrange": lagrange.LagrangeAdapter,
+           "lagrange_milky": lagrange_milky.LagrangeMilkyAdapter,
+           "yogurt": yogurt.YogurtAdapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out: dict[str, tuple[dict, type]] = {}

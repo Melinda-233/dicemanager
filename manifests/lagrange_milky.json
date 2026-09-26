@@ -1,0 +1,18 @@
+// manifests/lagrange_milky.json — Lagrange.Milky（LagrangeDev/Lagrange.Core 的 Milky 协议实现，登录端）
+// 与 Lagrange.OneBot 不同：它对外暴露 Milky 协议（HTTP API + /event WS），不是 OneBot v11。
+// 上游 nightly 仅发布 OneBot 二进制，Milky 需自行构建/取社区构建后离线上传（故用 manual）。
+// 必须填 Lagrange V2 Sign Token 才能启动（写入 Lagrange.Protocol.Signer.Token）。
+{
+  "name": "lagrange_milky", "arch": "standalone", "multi_account": false,
+  "exe": "Lagrange.Milky", "install_root": "/opt",
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "protocol": "milky",
+  "milky_default_port": 3000,
+  "config_path": "appsettings.json",
+  "data_paths": ["appsettings.json", "keystore.json"],
+  "release_page": "https://github.com/LagrangeDev/Lagrange.Core/releases",
+  "download_strategy": "manual",
+  "prerequisite": "需自行获取 Lagrange.Milky 二进制（上游 nightly 仅发 OneBot），并申请 Lagrange V2 Sign Token 写入 Signer.Token 才能启动",
+  "required_files": ["Lagrange.Milky"],
+  "approx_memory_mb": 60
+}

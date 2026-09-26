@@ -216,7 +216,8 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 - **节点信息**：程序名（整合包标注）+ 状态 + 端口；进程已死则节点变灰；`warnings` 以橙色小字画在节点下方（不换行、最长两行由样式的 `y=40` 决定）。
 - **资源水位条**：内存 used/total，≥90%（`ctx.resmon_alert`）变红。阈值可配置。
 - **扫描安装目录**（`GET /api/scan`）：比对安装根（manifest 的 `install_root`）下的一级目录与相关进程 vs 注册表，分三类展示——`owned`（实例受管）/ `orphan`（目录名匹配程序名但无实例记录，如手工部署残留、删除失败残留，提供删除按钮）/ `external`（无关软件如 alist、containerd，仅展示不提供删除）。游离进程同样标注，可结束（pid 的 exe/cwd 必须落在安装根下且不属于实例/管理器，`POST /api/scan/kill`）。删除走 `DELETE /api/scan/dir`，三重校验在 `core/scanner.py::check_deletable`（**受保护目录必须 Path 对 Path 比较**——str/Path 混比曾放行受管目录，2026-09-25 事故）。
-- **实例操作**：选中节点后出现「启动 / 停止 / 重启 / 打开 WebUI / 查看日志 / 上传备份 / 删除」。
+- **实例操作**：选中节点后出现「启动 / 停止 / 重启 / 打开 WebUI / 资源曲线 / 查看日志 / 上传备份 / 删除」。
+- **资源曲线（2026-09-26 新增）**：选中实例后点「资源曲线」，按 `GET /api/instances/{id}/metrics?hours=24` 取采样点画 24h 双折线（内存 MB / CPU%），图例给出最新值、峰值、CPU 均值。采样由面板后台线程每 **60s** 一点（`DM_METRICS_INTERVAL` 可调，`DM_METRICS=0` 关闭），落 `<state>/metrics/<id>.json`，**面板重启不丢历史**，删除实例时同步回收。实现要点：①`cpu_percent()` 是「距上次调用」的增量，必须复用同一个 `psutil.Process` 句柄，否则曲线会退化成「自进程启动以来的均值」；②**子进程计入总量**——LLBot 主进程只占 3MB，加子进程才是真实的 157MB。
 - **删除的二次确认**：第一次 confirm 确认删实例；第二次 confirm 询问是否连程序目录一起删。若该程序的 manifest 声明了 `delete_keeps_save: true`，第二次询问的文案会提示「建议保留存档目录」，并把 `keep_save=true` 传给后端。
 - **删除链路顺序（2026-09-25 修正）**：停进程 → 释放端口 → 删目录（rmtree 失败会收集错误并**先于墓碑**抛 500，实例记录保留可直接重试）→ 全部成功才 `registry.remove()` 写墓碑。旧实现 `rmtree(ignore_errors=True)` 静默吞错且记录已删，失败即成无主孤儿目录；`keep_save` 删空后残留的空壳目录也会一并清掉。
 - **数据来源**：`/ws/overview`，2 秒一推。断线由前端自动重连（指数退避，上限 30s）。
@@ -234,6 +235,15 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 **冲突处理（第 2 步）**：目标目录已存在且缺必备文件时，`deploy()` 返回 `"conflict"`，前端弹窗二选一——「直接使用（校验必备文件）」或「新建序号文件夹」，选择结果作为 `use_existing` 回传后端。
 
 **离线程序包**：向导第 1 步可直接上传 `zip / tar.gz / tar.xz / tar.bz2 / tar`（2GB 上限）。包按魔数识别真实格式（不看扩展名）、做完整性校验后原子落盘到包缓存，**所有同程序实例共用**。上游不提供可运行包的程序（如 Dice!）靠它落地。
+
+**接入通道 `bot_mode`（2026-09-26 新增，清单驱动）**：manifest 声明 `bot_modes` 且多于一项时，第 1 步出现「接入通道」下拉，创建时把 `bot_mode` 一并提交：
+
+| 通道 | 是否需要登录端 | 步骤 | 说明 |
+|---|---|---|---|
+| `onebot`（默认） | 是 | 选程序 → 部署 → 登录 → 互联 → 启动 | 常规协议端，由面板写互联配置 |
+| `official` | **否** | 选程序 → 部署 → 启动 | 官方机器人通道，连接动作在程序自身 WebUI 完成 |
+
+`official` 通道在后端有三处特判（`services/wizard.py`）：创建时强制 `login_ref=None`；`next_step()` 从 `AWAIT_LOGIN` 直接跳到 5（不进登录步）；step3/step4 幂等返回 `skipped=True` 且**绝不写 onebot 互联配置**（否则会留下一条永远连不上的端点，海豹还会持续报连接错误）。前端据此隐藏登录端选择、步骤条只显示三步，并在启动页给出接入清单（AppID/AppSecret、IP 白名单、指令前缀 `/`、使用场景别勾「消息列表」）。目前仅海豹声明该通道（`QQ 官方机器人`，无风控封号风险，代价是官方接口能力受限）。
 
 ### 4.3 登录页
 
@@ -316,7 +326,8 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 |---|---|---|
 | POST | `/api/login` | **无鉴权**。`{password}` → `{token}`；失败有频率限制 |
 | GET | `/api/manifests` | 前端所需字段的白名单视图（见 §6.2） |
-| POST | `/api/instances` | 建实例：`{dice, arch, login_ref?, confirm_dir?}` |
+| POST | `/api/instances` | 建实例：`{dice, arch, login_ref?, confirm_dir?, bot_mode?}`（`bot_mode` 默认 `onebot`，`official` 见 §4.2） |
+| GET | `/api/instances/{id}/metrics` | 资源曲线：`?hours=24` → `{interval, points:[[ts,mem_mb,cpu]], latest_mem_mb, peak_mem_mb, avg_cpu}` |
 | GET | `/api/instances` | 列表，每条附 `process` 探针（alive/restarts/pid/uptime） |
 | GET | `/api/pending` | 中间态实例（`DEPLOYING`/`AWAIT_LOGIN`）+ `next_step` |
 | POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}` |
@@ -406,6 +417,7 @@ manifest 是标准 JSON，但**允许整行 `//` 注释**（加载时按行剥�
 |---|---|---|
 | `login_type` | `services/wizard.py` + 前端 | `qrcode` / `account` / `webui` / `external` / `none`。决定第 3 步界面，也作为 `needs_login` 的默认判据（`qrcode`/`account` 默认为需要登录） |
 | `compatible_login` | 前端 | 兼容的登录端程序名列表；`builtin` 表示自带登录（不出现下拉） |
+| `bot_modes` | 前端 + `services/wizard.py` | 接入通道列表 `[{id, label, needs_login, guide_url?}]`。多于一项时向导显示「接入通道」下拉；`official` 通道免登录端、跳过互联步（详见 §4.2）。**须在 `/api/manifests` 白名单登记**才能到前端 |
 | `auth_token_conditional` | 前端 | 为真时登录页强制显示 AUTH TOKEN 输入框（LLBot v8.0.9+） |
 | `webui_default_port` / `ob11_default_port` / `milky_default_port` / `satori_default_port` | `wizard.create_instance` | 按角色申请端口。全部可选，缺省则不申请该角色端口 |
 | `config_path` | 适配器 | 程序配置文件的相对路径（适配器自己读，非框架强制） |

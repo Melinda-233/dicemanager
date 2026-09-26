@@ -24,6 +24,7 @@ from api import ws_login, ws_logs, ws_overview
 from api.context import ctx
 from api.rest import public, router
 from core.logutil import console_only, setup_logging
+from core.metrics import MetricsSampler
 from services.resume import resume_running_instances
 
 log = setup_logging(ctx.log_dir)                        # 控制台 + 滚动文件
@@ -36,6 +37,15 @@ def _resume_instances():
                                  lambda iid: ctx.wizard.start_instance(iid), log)
     except Exception:                                   # 兜底：后台线程异常不得拖垮面板
         log.exception("[resume] 自动恢复流程异常（面板继续正常服务）")
+
+def _sample_metrics():
+    """资源曲线采样守护：60s 一点，写 <state>/metrics/<id>.json。"""
+    sampler = MetricsSampler(ctx.metrics, ctx.registry, ctx.pm)
+    if not sampler.start():                             # DM_METRICS=0 可整体关闭
+        log.info("[metrics] 采样已关闭（DM_METRICS=0）")
+        return
+    log.info("[metrics] 资源采样已启动，间隔 %ss", sampler.interval)
+    sampler.loop()                                      # 常驻直到进程退出
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,6 +62,8 @@ async def lifespan(app: FastAPI):
     # 实例是面板子进程，systemctl restart 会连带杀掉它们而 registry 仍记 RUNNING
     # → 后台线程逐个拉回（逐个 try/except，失败不阻断面板对外服务）
     threading.Thread(target=_resume_instances, name="resume-instances",
+                     daemon=True).start()
+    threading.Thread(target=_sample_metrics, name="metrics-sampler",
                      daemon=True).start()
     yield
     ctx.scheduler.stop()

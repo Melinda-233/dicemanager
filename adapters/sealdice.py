@@ -47,12 +47,22 @@ class SealDiceAdapter(BaseAdapter):
         doc = yaml.safe_load(path.read_text("utf-8")) if path.exists() else {}
         eps = doc.setdefault("imSession", {}).setdefault("endPoints", [])
         forward = direction != "reverse"
-        target = f"ws://{addr}" if forward else ""
-        # 反向时 reverseAddr 是海豹自己的监听地址，需带 /ws 后缀
-        reverse_addr = "" if forward else (
-            addr if addr.rstrip("/").endswith("/ws") else f"{addr.rstrip('/')}/ws")
+        is_milky = (mode == "milky")
+        proto = "milky" if is_milky else "onebot"
+        # 正向：本端连登录端；反向：登录端连本端
+        if is_milky:
+            # Milky 基址为 http://host:port（HTTP API + /event WS 事件流），非 ws://
+            target = f"http://{addr}" if forward else ""
+            reverse_addr = "" if forward else (
+                addr if addr.rstrip("/").endswith("/event")
+                else f"{addr.rstrip('/')}/event")
+        else:
+            target = f"ws://{addr}" if forward else ""
+            # 反向时 reverseAddr 是海豹自己的监听地址，需带 /ws 后缀
+            reverse_addr = "" if forward else (
+                addr if addr.rstrip("/").endswith("/ws") else f"{addr.rstrip('/')}/ws")
         entry = {"baseInfo": {"id": instance.id, "state": 0, "platform": "QQ",
-                              "protocolType": "onebot", "enable": True,
+                              "protocolType": proto, "enable": True,
                               "isPublic": False},
                  "adapter": {"isReverse": not forward,
                              "connectUrl": target,
@@ -77,18 +87,19 @@ class SealDiceAdapter(BaseAdapter):
         else:
             eps.append(entry)
         # 备份恢复会把旧机器的互联端点原样带回来（地址指向旧机的登录端），
-        # 一直拨号报错。以 baseInfo.id 认领本实例端点，其余 onebot 端点一律停用。
+        # 一直拨号报错。以 baseInfo.id 认领本实例端点，其余同协议端点一律停用。
         for ep in eps:
             bi = ep.get("baseInfo", {})
             if bi.get("id") != instance.id and \
-               bi.get("protocolType", "onebot") == "onebot" and bi.get("enable"):
+               bi.get("protocolType", "onebot") == proto and bi.get("enable"):
                 bi["enable"] = False
         doc = _stringify_datetimes(doc)
         write_atomic(path, yaml.safe_dump(doc, allow_unicode=True, sort_keys=False).encode())
-        # 正向无 /ws 后缀；反向需 /ws
+        kind = "正向" if forward else "反向"
+        suffix = "（Milky 基址 http://...，非 WS）" if is_milky else ""
         return WriteResult(ok=True, path=str(path),
-                           manual=f"已写入 {path}。海豹需重启后生效"
-                                  f"（尚未启动则下一步启动即生效）。")
+                           manual=f"已写入 {path}（{kind} {proto}{suffix}）。"
+                                  f"海豹需重启后生效（尚未启动则下一步启动即生效）。")
 
     def health_check(self, instance, is_alive=False) -> dict:
         path = self._endpoints_file(instance)

@@ -18,10 +18,15 @@ class Wizard:
             self._adapter_cache[name] = cls(manifest)
         return self._adapter_cache[name]
 
-    def create_instance(self, dice, arch, login_ref=None, confirm_dir=False) -> str:
+    def create_instance(self, dice, arch, login_ref=None, confirm_dir=False,
+                        bot_mode="onebot") -> str:
         if dice not in self.adapters:
             raise ValueError(f"未知程序: {dice}")
         manifest, _ = self.adapters[dice]
+        # 官方通道由程序自身对接官方服务，不需要协议登录端：强行保留 login_ref 会让
+        # 向导去走互联步骤并写入一份用不上的 onebot 配置
+        if bot_mode == "official":
+            login_ref = None
         iid = f"{dice}-{uuid.uuid4().hex[:8]}"
         roles = {r: manifest.get(f"{r}_default_port")
                  for r in ("webui", "ob11", "milky", "satori")}
@@ -34,23 +39,30 @@ class Wizard:
             d = root / f"{dice}-{n}"
         self.reg.create(iid, dice=dice, arch=arch, dir_=str(d),
                         port=ports.get("webui", 0), allocated_ports=ports,
-                        login_ref=login_ref)
+                        login_ref=login_ref, bot_mode=bot_mode)
         return iid
 
     def next_step(self, instance_id: str) -> int:
         """断点续跑：按状态机给出该实例下一步该执行哪一步（供前端「继续」使用）。"""
-        st = self.reg.get(instance_id).state
+        inst = self.reg.get(instance_id)
+        st = inst.state
         if st in (State.UNDEPLOYED.value, State.DEPLOYING.value): return 2
-        if st == State.AWAIT_LOGIN.value: return 3
+        # 官方通道：没有登录端可配、也没有互联可写 → 部署完直接进启动步
+        if st == State.AWAIT_LOGIN.value:
+            return 5 if getattr(inst, "bot_mode", "onebot") == "official" else 3
         return 5                                  # CONFIGURED / RUNNING → 直接启动
 
     def _login_ref_info(self, inst):
-        """关联的登录端实例的 (ob11 端口, 互联 token)；没关联返回 (None, None)，
-        已关联但实例被删返回 ("dangling", None)——调用方须明确报错而不是静默换 token。"""
+        """关联登录端实例的 (协议端口, 互联 token)；没关联返回 (None, None)，
+        已关联但实例被删返回 ("dangling", None)——调用方须明确报错而不是静默换 token。
+        端口按登录端协议取（milky 取 milky 端口，否则回退 ob11）。"""
         if not inst.login_ref: return None, None
         try:
             li = self.reg.get(inst.login_ref)
-            return (li.allocated_ports or {}).get("ob11"), li.conn_token
+            proto = self.adapters[li.dice][0].get("protocol", "ob11")
+            ports = li.allocated_ports or {}
+            port = ports.get(proto) or ports.get("ob11")
+            return port, li.conn_token
         except KeyError:
             return "dangling", None
 
@@ -137,6 +149,13 @@ class Wizard:
                 return {"result": "ok"}
 
             if step == 3:                                      # 登录（needs_login 以适配器为准）
+                if getattr(inst, "bot_mode", "onebot") == "official":
+                    # 官方通道无需协议登录：直接推进到可启动态（幂等，断点续跑可重入）
+                    try:
+                        self.reg.transition(instance_id, State.CONFIGURED)
+                    except ValueError:
+                        pass
+                    return {"result": "ok", "needs_login": False, "skipped": True}
                 r = adapter.configure_login(inst, payload.get("credentials", {}))
                 if r.get("conflict"):
                     return {"result": "conflict", "message": r["conflict"]}
@@ -151,6 +170,11 @@ class Wizard:
                 return {"result": "ok", "needs_login": needs_login, **r}
 
             if step == 4:                                      # 互联配置写入 + 预览
+                if getattr(inst, "bot_mode", "onebot") == "official":
+                    # 官方通道的连接在程序自身 WebUI 里完成，面板写互联配置反而会留下
+                    # 一条连不上的 onebot 端点（海豹还会因此报连接错误）
+                    return {"result": "ok", "skipped": True,
+                            "preview": "官方机器人通道：无需面板侧互联配置"}
                 self._refresh_account(instance_id, inst, adapter)  # 可能刚扫码成功
                 login_port, login_token = self._login_ref_info(inst)
                 if login_port == "dangling":
@@ -159,22 +183,34 @@ class Wizard:
                     return {"result": "error",
                             "message": f"关联的登录端 {inst.login_ref} 已不存在"
                                        f"（可能已删除），请先在总览重新关联登录端"}
+                # 协议：关联了登录端则用其协议（milky/ob11），否则用本实例自身协议
+                login_proto = None
+                if inst.login_ref:
+                    try:
+                        login_proto = self.adapters[
+                            self.reg.get(inst.login_ref).dice][0].get("protocol", "ob11")
+                    except KeyError:
+                        login_proto = None
+                mode = (payload.get("mode") or login_proto
+                        or self.adapters[inst.dice][0].get("protocol", "ob11"))
                 direction = payload.get("direction") or inst.conn_direction or "forward"
-                # 默认地址：自己有 ob11 端口（登录端作服务端）用自己，否则连登录端的端口
-                default_port = (inst.allocated_ports or {}).get("ob11") or login_port or 3001
+                # 默认地址：优先登录端端口；其次本实例自身的 milky/ob11 端口；最后兜底
+                own_ports = inst.allocated_ports or {}
+                default_port = (login_port or own_ports.get("milky") or own_ports.get("ob11")
+                               or (3000 if mode == "milky" else 3001))
                 addr = payload.get("addr") or inst.conn_addr or f"127.0.0.1:{default_port}"
                 # 两端 token 必须一致：登录端先生成，骰子端经 login_ref 继承同一个
                 token = (payload.get("token") or inst.conn_token or login_token
                          or adapter.gen_token())
-                wr = adapter.write_conn_config(inst, payload.get("mode", "ob11"),
-                                               direction, addr, token)
+                wr = adapter.write_conn_config(inst, mode, direction, addr, token)
                 self.reg.update(instance_id, conn_token=token, conn_addr=addr,
                                 conn_direction=direction)
                 if not wr.ok:
                     return {"result": "error", "message": wr.manual or "互联配置写入失败"}
                 kind = "正向" if direction != "reverse" else "反向"
+                proto_label = "Milky" if mode == "milky" else "OneBot"
                 return {"result": "ok",
-                        "preview": f"{kind} WS → {addr}\nToken: {token}",
+                        "preview": f"{kind} {proto_label} → {addr}\nToken: {token}",
                         "token": token, "path": wr.path, "manual": wr.manual}
 
             if step == 5:                                      # 启动（与 REST start 同一公共路径）

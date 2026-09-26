@@ -71,6 +71,55 @@ def test_write_disables_foreign_endpoints_from_backup(tmp_path):
     assert len(foreign) == 1 and foreign[0]["baseInfo"]["enable"] is False
 
 
+def test_write_milky_forward_uses_http_base(tmp_path):
+    """Milky 协议：connectUrl 是 http:// 基址（HTTP API + /event WS），不是 ws://。"""
+    a, inst, path = _make(tmp_path)
+    a.write_conn_config(inst, "milky", "forward", "127.0.0.1:3000", "tok")
+    eps = _load(path)["imSession"]["endPoints"]
+    assert len(eps) == 1
+    assert eps[0]["baseInfo"]["protocolType"] == "milky"
+    assert eps[0]["adapter"]["connectUrl"] == "http://127.0.0.1:3000"
+    assert eps[0]["adapter"]["accessToken"] == "tok"
+    assert eps[0]["adapter"]["reverseAddr"] == ""
+
+
+def test_write_milky_reverse_appends_event_suffix(tmp_path):
+    """反向：登录端连海豹，Milky 事件流地址带 /event 后缀（不是 OneBot 的 /ws）。"""
+    a, inst, path = _make(tmp_path)
+    a.write_conn_config(inst, "milky", "reverse", "127.0.0.1:3000", "tok")
+    eps = _load(path)["imSession"]["endPoints"]
+    assert eps[0]["baseInfo"]["protocolType"] == "milky"
+    assert eps[0]["adapter"]["isReverse"] is True
+    assert eps[0]["adapter"]["reverseAddr"] == "127.0.0.1:3000/event"
+    assert eps[0]["adapter"]["connectUrl"] == ""
+
+
+def test_write_disables_foreign_milky_not_foreign_onebot(tmp_path):
+    """备份恢复场景：同协议（milky）的外来端点停用；不同协议（onebot）的外来端点保留。"""
+    a, inst, path = _make(tmp_path)
+    old_milky = {"baseInfo": {"id": "x-milky-old", "state": 2, "platform": "QQ",
+                              "protocolType": "milky", "enable": True,
+                              "userId": "QQ:111"},
+                 "adapter": {"isReverse": False, "connectUrl": "http://127.0.0.1:9999",
+                             "accessToken": "a"}}
+    old_onebot = {"baseInfo": {"id": "x-ob-old", "state": 2, "platform": "QQ",
+                               "protocolType": "onebot", "enable": True,
+                               "userId": "QQ:222"},
+                  "adapter": {"isReverse": False, "connectUrl": "ws://127.0.0.1:12345",
+                              "accessToken": "b"}}
+    path.write_text(yaml.safe_dump(
+        {"imSession": {"endPoints": [old_milky, old_onebot]}}), encoding="utf-8")
+    a.write_conn_config(inst, "milky", "forward", "127.0.0.1:3000", "tok")
+    eps = _load(path)["imSession"]["endPoints"]
+    assert len(eps) == 3
+    by_id = {e["baseInfo"]["id"]: e for e in eps}
+    assert by_id["sealdice-x"]["baseInfo"]["enable"] is True
+    assert by_id["sealdice-x"]["adapter"]["connectUrl"] == "http://127.0.0.1:3000"
+    # 同协议（milky）外来的被停用；不同协议（onebot）外来的保持启用
+    assert by_id["x-milky-old"]["baseInfo"]["enable"] is False
+    assert by_id["x-ob-old"]["baseInfo"]["enable"] is True
+
+
 def test_write_preserves_rfc3339_timestamps(tmp_path):
     """pyyaml 把 lastSavedTime 的 RFC3339 字符串解析成 datetime 后，safe_dump
     会丢掉 'T'（2026-09-25 18:17:38...），海豹严格解析直接 panic（2026-09-25
