@@ -6,6 +6,7 @@
   "login_type": "external",
   "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
   "config_path": "config/adapters.json",
+  "data_paths": ["config"],
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",
   "download_strategy": "resolve_latest_via_api",
   "asset_name_pattern": "DiceNext-.*-linux-amd64-.*\\.tar\\.gz",

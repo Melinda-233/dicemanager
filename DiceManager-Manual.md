@@ -58,7 +58,7 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 ┌───────────────────────────▼─────────────────────────────────┐
 │  api/  FastAPI 接入层                                        │
 │  app.py        组装 + lifespan（恢复扫描/墓碑清理/密码横幅） │
-│  rest.py       REST 端点（向导/实例/包/manifests/resmon）    │
+│  rest.py       REST 端点（向导/实例/包/备份产物/manifests）  │
 │  ws_overview.py 通道1：拓扑+资源水位，2s 周期                │
 │  ws_logs.py     通道2：日志 tail（回放+实时+暂停+过滤）      │
 │  ws_login.py    通道3：登录事件（二维码/滑块/完成）          │
@@ -68,7 +68,7 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 ┌───────────────────────────▼─────────────────────────────────┐
 │  services/  编排层（只做流程，不碰 IO 细节）                 │
 │  wizard.py     五步向导状态机 + 端口/目录/token 编排         │
-│  login.py      登录编排（承载登录进程 + 供给 WS 通道）       │
+│  resume.py     面板重启后拉回 RUNNING 但已死的实例           │
 └───────────────────────────┬─────────────────────────────────┘
 ┌───────────────────────────▼─────────────────────────────────┐
 │  core/  基础设施（与业务无关，可独立测试）                   │
@@ -76,6 +76,7 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 │  ports.py     端口分配表（系统占用探测 + 文件锁互斥）        │
 │  process.py   进程守护（ring 缓冲/日志滚动/自动重启熔断）    │
 │  packages.py  程序包缓存（魔数识别 + 完整性校验 + 元数据）   │
+│  exports.py   备份产物目录（清单/单删/按天清理）             │
 │  locks.py     RLock + 引用计数文件锁（可重入）               │
 │  atomicio.py  原子写（mkstemp + fsync + os.replace）         │
 │  logutil.py   统一日志（控制台 + 滚动文件，敏感信息只走控制台）│
@@ -130,6 +131,7 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | `/var/lib/dicemanager/ports.json` | 端口分配表 `{端口: "实例id:角色"}` | `DM_STATE_DIR` |
 | `/var/lib/dicemanager/auth.json` | 管理凭据（密码哈希 + API token） | `DM_STATE_DIR` |
 | `/var/lib/dicemanager/packages/` | 程序包缓存 `<dice>.<ext>` + `<dice>.meta.json` | `DM_STATE_DIR` |
+| `/var/lib/dicemanager/exports/` | 备份产物：手动导出 / 升级前快照 `*-preupgrade-*` / 定时备份 `*-sched-*`。只增不减，需定期在向导「备份文件」清理 | `DM_STATE_DIR` |
 | `/var/log/dicemanager/<实例id>.log` | 每实例独立日志（50MB 滚动 + 7 天保留） | `DM_LOG_DIR` |
 | `/var/log/dicemanager/<实例id>.log.1` | 上一代日志副本（重启后用于回填 ring） | `DM_LOG_DIR` |
 | `/var/log/dicemanager/dicemanager.log` | 管理器自身日志（10MB × 3 滚动） | `DM_LOG_DIR` |
@@ -252,7 +254,21 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 - 列表 `/api/packages`：每个程序本地包的存在性、大小、来源（上传/下载缓存）、更新时间。
 - 上传：原始字节流（`application/octet-stream`），**不用 multipart**（免依赖），浏览器直接 `fetch(file)` 流式发送。
 - 删除：删掉该程序所有已知扩展名的包 + 元数据。
+- 死缓存清理：`DELETE /api/packages/unused` 清掉「没有任何实例在用」的包（列表里的 `in_use` 据此标注）。
 - 部署时优先级：本地包 > 在线下载（下载成功后也会缓存进本地，供后续复用）。
+
+### 4.5.1 备份产物（exports/）
+
+三类产物都落在 `<state>/exports/`，**只增不减**，需要人工或按天清理：
+
+| 产物 | 命名 | 生成时机 |
+|---|---|---|
+| 升级前快照 | `<dice>-<id>-preupgrade-<ts>.tar.gz` | 每次点「升级」前自动整目录备份 |
+| 定时备份 | `<dice>-<id>-sched-<scope>-<ts>.tar.gz` | 定时任务 kind=backup |
+| 手动导出 | `<dice>-<id>-<scope>-<ts>.tar.gz` | 面板导出（发完即删，不常驻） |
+
+- 定时任务的 keep 滚动**只认 `-sched-` 标记**，不会误删升级前快照（升级快照同样含 `<id>-` 子串）。
+- 回收入口在向导「备份文件」区：单项删除，或按天数批量清理（默认 30 天）。
 
 ### 4.6 进程守护
 
@@ -267,6 +283,26 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | 窗口清零 | 上次启动后稳定运行超过 300s，重启窗口清零 |
 
 所有子进程都以 `start_new_session=True` 启动（POSIX），因此信号能打到整个进程组，不会留下孤儿子进程。
+
+### 4.7 面板重启后的实例自动恢复
+
+实例进程是**面板的子进程**（`start_new_session` 只脱离了终端会话，仍是 systemd 单元的成员），因此
+`systemctl restart dicemanager` 会连带杀掉全部实例，而注册表里状态仍停留在 `RUNNING`——历史上表现
+为「面板显示在跑，实际全部离线」，只能人工逐个点启动（`services/resume.py` 的来历）。
+
+启动时 `lifespan` 会起一个守护线程执行 `resume_running_instances()`：
+
+| 环节 | 口径 |
+|---|---|
+| 触发范围 | **仅 `RUNNING`**。用户主动 stop 会把状态落回 `CONFIGURED`，因此不会被强行拉起；`AWAIT_LOGIN`（待扫码）与 `ERROR`（待排查）同理不拉 |
+| 执行方式 | 后台线程，先等 2s（`DM_RESUME_DELAY`）让 HTTP 端口起来，实例之间错开 1.5s（`DM_RESUME_STAGGER`） |
+| 启动路径 | 复用 `Wizard.start_instance`，与 REST `start`、向导 Step5 **完全同一条实现**，没有第二个启动入口 |
+| 失败处理 | 逐实例独立 try/except：一个失败（目录被删、二进制缺失）不影响其余；失败原因同时写进面板日志与该实例自身的日志 |
+| 总开关 | `DM_AUTO_RESUME=0`（排障时不希望被自动拉起干扰） |
+| 可观测 | 面板日志 `[resume] 实例 xxx 已自动拉起` / `实例 xxx 自动拉起失败：原因`；成功恢复的实例日志里会有 `[manager] 面板重启后已自动恢复运行` |
+
+> 「用户主动停下的实例不得复活」是这条功能的红线，`tests/test_resume.py` 用五个用例锁死了
+> CONFIGURED / AWAIT_LOGIN / ERROR / UNDEPLOYED 一律不拉，只有 RUNNING 才拉。
 
 ---
 
@@ -290,8 +326,17 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | GET | `/api/packages` | 本地包列表 |
 | POST | `/api/packages/{dice}` | 原始字节流上传 |
 | DELETE | `/api/packages/{dice}` | 删除本地包 |
-| GET | `/api/resmon` | 内存水位 + 每实例探针 |
+| DELETE | `/api/packages/unused` | 一键清理「无任何实例在用」的死缓存 → `{removed, freed_mb}` |
+| GET | `/api/exports` | 备份产物清单（名称/大小/修改时间/已存放天数） |
+| DELETE | `/api/exports/prune?days=30` | 清理超过 N 天未修改的备份 → `{removed, freed_mb}`；`days<1` 返回 400 |
+| DELETE | `/api/exports/{name}` | 删除单个备份（名称含 `/` 或 `..` 一律拒绝，防目录穿越） |
 | GET | `/api/logs/{id}/download` | 下载日志文件（`FileResponse`） |
+
+> 内存水位没有独立 REST 端点：总览的资源数据由 `/ws/overview` 每 2s 推送
+> （`payload.resmon`），REST 侧不再重复提供（2026-09-26 移除 `/api/resmon`）。
+
+> 路由顺序坑：`/packages/unused`、`/exports/prune` 这类「字面量子路径」必须注册在
+> `/packages/{dice}`、`/exports/{name}` 之前，否则会被当成参数值吞掉。
 
 静态资源：若 `web/dist` 存在则挂载在 `/`（SPA，`html=True`）；不存在时服务照常启动，只在控制台警告「仅提供 API」。
 
@@ -376,14 +421,16 @@ manifest 是标准 JSON，但**允许整行 `//` 注释**（加载时按行剥�
 
 #### 文档性字段（当前无代码消费，保留备用）
 
-`recommended_protocols`、`config_strategy`、`release_page`（`resolve_latest_via_api` 策略会解析它，`direct`/`manual` 下纯文档）、`download_page_official`、`error_keywords`、`webui_port_bump_limit`、`onebot_config`、`framework_repo`。
+`multi_account`、`recommended_protocols`、`config_strategy`、`release_page`（`resolve_latest_via_api` 策略会解析它，`direct`/`manual` 下纯文档）、`download_page_official`、`error_keywords`、`webui_port_bump_limit`、`onebot_config`、`framework_repo`。
 
 #### 透出白名单
 
-`GET /api/manifests` **只透出白名单字段**（`api/rest.py` 里那个 tuple）：
+`GET /api/manifests` **只透出白名单字段**（`api/rest.py` 里那个 tuple），且白名单只放
+前端真正消费的字段——曾在此透出但前端从不读取的 `multi_account`、`recommended_protocols`
+已于 2026-09-26 移出，避免误导后来者：
 
 ```
-arch, multi_account, login_type, compatible_login, recommended_protocols,
+arch, login_type, compatible_login,
 webui_default_port, ob11_default_port, approx_memory_mb, auth_token_conditional,
 prerequisite, delete_keeps_save
 ```
@@ -755,7 +802,7 @@ cd web && npm run build     # 或直接用 node 跑 vite
 | ~~中~~ | ~~`ERROR` 状态无出边~~ | ✅ 已修复（`TRANSITIONS` 增加恢复边） | — |
 | 中 | Dice!（shiki）的 OneBot 连接配置**只给指引、不写文件** | 用户必须手工填写，且两端可能填错导致连不上 | `adapters/shiki.py` |
 | 低 | 管理器自身端口 `8765` 硬编码 | 与既有站点冲突时只能改代码 | `api/app.py` |
-| 低 | 端口资源监控阈值 `resmon_alert=0.90` / `resmon_warn=0.80` 是代码常量 | 无法按机器配置 | `api/context.py` |
+| 低 | 内存告警阈值 `resmon_alert=0.90` 是代码常量（原计划用于「部署前预估黄牌」的 `resmon_warn=0.80` 从未实现，已于 2026-09-26 移除） | 无法按机器配置 | `api/context.py` |
 | 低 | 墓碑清理只在启动时执行 | 长期不重启的管理器不清理 | `core/registry.py` + `api/app.py` |
 
 ### 10.2 可考虑的演进方向

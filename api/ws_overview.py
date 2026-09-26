@@ -19,31 +19,52 @@ EDGE_STATES = {"ok": "solid-green",        # 实线绿：已连接
                "none": "dashed-gray",      # 虚线灰：已配置未连接
                "down": "solid-red"}        # 红：连接失败
 
-def _backfill_from_logs(rec: dict) -> dict:
-    """进程存活时从日志 ring 回读实际端口 / WebUI token / QQ 号，变化才写盘。
+# 增量扫描游标（审查 #19）：此前每 2s 对每个存活实例全量重扫 2000 行 ring 跑 3 组正则。
+# 记录每实例上次消费到的 seq，之后每跳只扫新增行。游标按 (进程对象, seq) 记，
+# 进程对象重建（面板删除后 ring 重置 seq 从 0 起）时自动作废旧游标做一次全量补扫。
+_scan_cursor: dict[str, tuple] = {}
+
+
+def _consume_new_lines(proc) -> list[str]:
+    prev = _scan_cursor.get(proc.id)
+    last = prev[1] if prev and prev[0] is proc else -1
+    out = [(s, ln) for s, ln in proc.ring if s > last]
+    if out:
+        _scan_cursor[proc.id] = (proc, out[-1][0])
+        return [ln for _, ln in out]
+    return []
+
+
+def _backfill_from_logs(rec: dict, lines: list[str]) -> dict:
+    """进程存活时从日志回读实际端口 / WebUI token / QQ 号，变化才写盘。
 
     NapCat 的真实 WebUI 端口（占用时自动 +1）与登录令牌只在启动日志里出现一次，
     这里_periodic 回读是它们的唯一落盘入口；写盘前比对旧值，避免 2s 周期的写放大。
+    lines 为自上次消费以来的新增日志行（增量扫描，见 _scan_cursor）——端口/token
+    是行级锚点，命中过的结果已持久化到实例记录，无需重复全量扫。
     """
     adapter = ctx.get_adapter(rec["dice"])
-    ring = ctx.pm.get(rec["id"]).ring
     upd: dict = {}
-    port = adapter.get_actual_port(ring)
-    if port and port != rec.get("actual_port"):
-        upd["actual_port"] = port
-    token = adapter.get_webui_token(ring)
-    if token and token != rec.get("webui_token"):
-        upd["webui_token"] = token
+    if lines:
+        port = adapter.get_actual_port(lines)
+        if port and port != rec.get("actual_port"):
+            upd["actual_port"] = port
+        token = adapter.get_webui_token(lines)
+        if token and token != rec.get("webui_token"):
+            upd["webui_token"] = token
+        if not rec.get("qq"):
+            qq = adapter.account_from_logs(lines) if hasattr(adapter, "account_from_logs") else None
+            if qq:
+                upd["qq"] = qq
     # SnowLuma 等登录端的 OneBot accessToken 由它自己生成并落在 onebot.json，
     # 回读后写入 conn_token，骰子端经 login_ref 继承，保证两端 token 一致
+    # （文件读取开销小，不走增量；QQ 号文件侧检测同理——文件可能在任意时刻出现）
     if hasattr(adapter, "get_conn_token"):
         ct = adapter.get_conn_token(SimpleNamespace(**rec))
         if ct and ct != rec.get("conn_token"):
             upd["conn_token"] = ct
     if not rec.get("qq"):
         qq = adapter.detect_account(SimpleNamespace(**rec))
-        if not qq and hasattr(adapter, "account_from_logs"):
-            qq = adapter.account_from_logs(ring)
         if qq:
             upd["qq"] = qq
     if upd:
@@ -56,13 +77,18 @@ async def overview_loop(ws: WebSocket):
         nodes, edges = [], []
         for rec in ctx.registry.all():
             try:
-                alive = ctx.pm.is_alive(rec["id"])
+                proc = ctx.pm.get(rec["id"])
+                alive = proc.is_alive()
                 if alive:
-                    rec = _backfill_from_logs(rec)
+                    rec = _backfill_from_logs(rec, _consume_new_lines(proc))
                 nodes.append({"id": rec["id"], "dice": rec["dice"],
                               "arch": rec["arch"],              # allinone → 单节点渲染
                               "state": rec["state"],
                               "process_alive": alive,
+                              # 熔断告警：反复崩溃已停止自动重启（start 后自动解除）
+                              "crash_looped": proc.crash_looped,
+                              # 每实例内存（probe 内 psutil rss，异常时 None）
+                              "mem_mb": proc.probe().get("mem_mb"),
                               "port": rec.get("actual_port")
                                       or rec.get("allocated_ports", {}).get("webui"),
                               # 连接管理面板需要：关联目标与登录账号（旧 payload 缺这两项）
@@ -97,9 +123,10 @@ async def overview_loop(ws: WebSocket):
 
 @router.websocket("/ws/overview")
 async def ws_overview(ws: WebSocket):
-    if not auth.verify_ws(ws):
+    ok, sub = auth.ws_handshake(ws)
+    if not ok:
         return await ws.close(code=4401)
-    await ws.accept()
+    await ws.accept(subprotocol=sub)
     try:
         await overview_loop(ws)
     except (WebSocketDisconnect, asyncio.CancelledError):

@@ -34,7 +34,4 @@ def atomic_write_json(path, mutate, source_json5: bool = False) -> dict:
         result = mutate(data)
         if result is not None: data = result
         write_atomic(p, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
-        return data
-
-def atomic_write_text(path, text: str):
-    write_atomic(Path(path), text.encode("utf-8"))
+    return data

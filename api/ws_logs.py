@@ -18,9 +18,10 @@ def compile_filter(kw: str | None):
 
 @router.websocket("/ws/logs/{inst_id}")
 async def ws_logs(ws: WebSocket, inst_id: str):
-    if not auth.verify_ws(ws):
+    ok, sub = auth.ws_handshake(ws)
+    if not ok:
         return await ws.close(code=4401)
-    await ws.accept()
+    await ws.accept(subprotocol=sub)
     proc = ctx.pm.get(inst_id)
     loop = asyncio.get_running_loop()
     paused = False

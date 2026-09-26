@@ -24,6 +24,7 @@ import pytest
 import urllib.request
 from adapters.snowluma import SnowLumaAdapter
 from adapters.dicenext import DiceNextAdapter
+from conftest import put_package
 from core import packages as pkgstore
 
 
@@ -59,7 +60,7 @@ def test_ext_for_magic_gzip_is_targz():
 
 def test_tar_gz_roundtrip_and_find():
     blob = _tar_gz_bytes("SnowLuma-linux-x64", {"onebot.json": "{}"})
-    info = pkgstore.save_archive("snowluma", blob, source="upload")
+    info = put_package("snowluma", blob, source="upload")
     assert info["exists"] and info["source"] == "upload"
     # find_archive 必须能识别 .tar.gz（而非只认 .zip）
     assert pkgstore.find_archive("snowluma").name == "snowluma.tar.gz"
@@ -73,7 +74,7 @@ def test_deploy_tar_gz_normalizes_top_level(tmp_path, monkeypatch):
         "launcher.sh": "#!/bin/sh\necho hi",
         "onebot.json": "{}",
     })
-    pkgstore.save_archive("snowluma", blob, source="upload")
+    put_package("snowluma", blob, source="upload")
     # 有本地包，禁止联网
     def _boom(*a, **k):
         raise AssertionError("本地有包时不应下载")

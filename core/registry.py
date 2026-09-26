@@ -47,6 +47,8 @@ class Instance:
     conn_direction: Optional[str] = None
     # 首启一次性动作（如 LLBot --update）只做一次，重启不重复
     first_run_done: bool = False
+    # 部署时的上游版本（release tag，升级通道比对用；直链/manual 无版本为 None）
+    version: Optional[str] = None
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
 
 class Registry:

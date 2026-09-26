@@ -7,6 +7,7 @@
   "compatible_login": ["napcat", "llbot", "lagrange", "builtin"],
   "recommended_protocols": ["onebot11-ws-forward", "onebot11-ws-reverse"],
   "config_strategy": "dice.yaml:diceConfigs[].dataDir + serve.yaml:imSession.endPoints",
+  "data_paths": ["data"],
   "release_page": "https://github.com/sealdice/sealdice-build/releases",
   "download_page_official": "https://sealdice.com/download",
   "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",

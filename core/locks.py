@@ -24,9 +24,6 @@ else:
     import msvcrt as _msvcrt  # Windows 本地开发/测试：退化为进程内锁
     msvcrt = _msvcrt
 
-class DeploymentConflict(Exception): pass
-class PortConflict(Exception): pass
-
 _dir_lock = threading.Lock()
 _instance_locks: dict[str, threading.RLock] = {}
 _file_guard = threading.Lock()

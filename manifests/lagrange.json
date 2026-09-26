@@ -8,6 +8,7 @@
   "login_type": "qrcode", "compatible_login": ["builtin"],
   "ob11_default_port": 3001,
   "config_path": "appsettings.json",
+  "data_paths": ["appsettings.json", "keystore.json"],
   "release_page": "https://github.com/LagrangeDev/Lagrange.Core/releases",
   "download_strategy": "resolve_latest_via_api",
   "release_tag": "nightly",

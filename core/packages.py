@@ -39,10 +39,11 @@ def _meta_path(dice: str) -> Path:
 
 
 def mark_source(dice: str, source: str) -> None:
+    import json
     mp = _meta_path(dice)
     try:
         ts = time.strftime("%Y-%m-%d %H:%M")
-        mp.write_text('{"source": "%s", "updated_at": "%s"}' % (source, ts),
+        mp.write_text(json.dumps({"source": source, "updated_at": ts}),
                       encoding="utf-8")
     except OSError:
         pass                                        # 元数据写失败不影响主流程
@@ -100,19 +101,6 @@ def _store(dice: str, tmp: Path, source: str) -> dict:
     tmp.replace(target)
     mark_source(dice, source)
     return info_of(dice)
-
-
-def save_archive(dice: str, data: bytes, source: str = "upload") -> dict:
-    if not data:
-        raise ValueError("压缩包内容为空")
-    if len(data) > MAX_PKG_BYTES:
-        raise ValueError("压缩包超过大小上限（%d MB）" % (MAX_PKG_BYTES // 1048576))
-    tmp = pkg_dir() / f"{dice}.up.tmp"
-    tmp.write_bytes(data)
-    try:
-        return _store(dice, tmp, source)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 def commit_archive(dice: str, tmp: Path, source: str = "upload") -> dict:

@@ -52,8 +52,9 @@
         <rect x="-70" y="-26" width="140" height="52" rx="8"
               :class="{dead: !n.process_alive}"/>
         <text y="-6">{{ n.dice }}{{ n.arch === 'allinone' ? '（整合包）' : '' }}</text>
-        <text y="14" class="sub">{{ n.state }} : {{ n.port || '-' }}</text>
-        <text v-for="(w, i) in n.warnings" :key="i" y="40" class="warn">{{ w }}</text>
+        <text y="14" class="sub">{{ n.state }} : {{ n.port || '-' }}{{ n.mem_mb ? ' · ' + n.mem_mb + 'MB' : '' }}</text>
+        <text v-if="n.crash_looped" y="40" class="warn">反复崩溃，已停止自动重启</text>
+        <text v-for="(w, i) in n.warnings" :key="i" :y="n.crash_looped ? 54 : 40" class="warn">{{ w }}</text>
       </g>
     </svg>
     <div class="legend">
@@ -68,9 +69,12 @@
           <button class="x" title="关闭" @click="sel = null">×</button>
         </div>
         <div class="sel-info">
-        <b>{{ sel.dice }}</b> · {{ sel.id }} · {{ live.state }} · 端口 {{ live.port || '-' }}
+        <b>{{ sel.dice }}</b> · {{ live.state }} · 端口 {{ live.port || '-' }}
         <span v-if="live.qq"> · QQ {{ live.qq }}</span>
+        <span v-if="live.mem_mb"> · 内存 {{ live.mem_mb }} MB</span>
         <span v-if="linkTarget"> · 已连 {{ linkTarget.dice }}（{{ edgeState }}）</span>
+        <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
+        <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
       </div>
       <div class="ops">
         <button @click="op('start')">启动</button>
@@ -79,9 +83,44 @@
         <button @click="openWebui">打开 WebUI</button>
         <button @click="goLogs">查看日志</button>
         <button @click="pickBackup">上传备份</button>
+        <button @click="doExport('full')" title="程序+配置+存档+数据全部打包">导出整目录备份</button>
+        <button @click="doExport('data')" title="仅应用数据/存档（对应程序自身备份功能口径）">导出数据备份</button>
+        <button v-if="linkTarget" @click="runDiagnose">诊断连接</button>
+        <button @click="checkUpgrade">检查更新</button>
+        <button v-if="upgradeLatest" @click="doUpgrade">升级到 {{ upgradeLatest }}</button>
+        <button v-if="uploading" class="danger" @click="cancelUpload">取消上传</button>
         <button class="danger" @click="del">删除</button>
         <input ref="backupInput" type="file" hidden
                accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
+      </div>
+      <div v-if="diag" class="diag">
+        <p class="hint">互联诊断结果（{{ diag.ok ? '全部通过' : '存在问题' }}）：</p>
+        <p v-for="(d, i) in diag.items" :key="i" :class="d.ok ? 'diag-ok' : 'diag-bad'">
+          {{ d.ok ? '✓' : '✗' }} {{ d.detail }}</p>
+      </div>
+      <div class="sched">
+        <p class="hint" style="margin:4px 0">定时任务（每日到点自动执行）</p>
+        <div v-for="s in schedules" :key="s.id" class="sched-row">
+          <span>{{ s.hh }}:{{ String(s.mm).padStart(2, '0') }}
+            · {{ s.kind === 'restart' ? '定时重启'
+                : '定时备份（' + (s.scope === 'full' ? '整目录' : '数据') + '）' }}
+            <template v-if="s.inst_id === sel.id">· 本实例</template></span>
+          <button @click="runSched(s)">立即执行</button>
+          <button class="danger" @click="delSched(s)">删除</button>
+        </div>
+        <p v-if="!schedules.length" class="hint">暂无定时任务。</p>
+        <div class="sched-add">
+          <select v-model="newSched.kind">
+            <option value="restart">定时重启</option>
+            <option value="backup">定时备份</option>
+          </select>
+          <select v-if="newSched.kind === 'backup'" v-model="newSched.scope">
+            <option value="data">数据备份</option>
+            <option value="full">整目录备份</option>
+          </select>
+          <input v-model="newSched.time" type="time" style="width:120px"/>
+          <button :disabled="!newSched.time" @click="addSched">添加</button>
+        </div>
       </div>
       <p v-if="webuiInfo" class="hint">
         WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
@@ -112,7 +151,9 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
 import { opInstance, delInstance, listManifests, linkInstance, instanceWebui, wizardStep,
-         scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup } from '../api'
+         scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
+         exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
+         runSchedule, upgradeCheck, upgradeInstance } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -187,12 +228,21 @@ const goLogs = () => { location.hash = `#/logs?instance=${sel.value.id}` }
 const del = () => {
   // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码
   const keeps = !!manifests.value[sel.value.dice]?.delete_keeps_save
-  if (!confirm(`确认删除 ${sel.value.dice} 实例 ${sel.value.id}？`)) return
+  // 该实例作为登录端被哪些骰子端引用：删除会级联解除它们的关联，提前告知
+  const linkedBy = nodes.value.filter(n => n.login_ref === sel.value.id && n.id !== sel.value.id)
+  const linkWarn = linkedBy.length
+    ? `\n\n⚠ 它正被 ${linkedBy.length} 个实例关联（${linkedBy.map(n => n.dice).join('、')}），删除后将自动解除这些关联。`
+    : ''
+  if (!confirm(`确认删除 ${sel.value.dice} 实例 ${sel.value.id}？${linkWarn}`)) return
   const removeDir = confirm(keeps
     ? '同时删除程序文件夹？\n（该程序建议保留存档目录）'
     : '同时删除程序文件夹？')
   delInstance(sel.value.id, true, removeDir, removeDir && keeps)
-    .then(() => (sel.value = null))
+    .then(r => {
+      if (r?.unlinked?.length)
+        connMsg.value = `已删除；并解除了 ${r.unlinked.length} 个实例与它的关联。`
+      sel.value = null
+    })
 }
 
 const guard = async fn => {              // 面板操作统一报错出口，失败不静默
@@ -201,6 +251,7 @@ const guard = async fn => {              // 面板操作统一报错出口，失
 
 // ---------- 上传备份：停机 → 覆盖导入 → 自动重启（后端 /instances/{id}/backup） ----------
 const backupInput = ref(null)
+const uploading = ref(false), uploadJob = ref(null)   // 当前上传任务（可取消）
 const pickBackup = () => backupInput.value?.click()
 const doBackup = e => guard(async () => {
   const f = e.target.files?.[0]
@@ -211,15 +262,21 @@ const doBackup = e => guard(async () => {
     + '· 包内文件覆盖实例目录中的同名文件（包外文件不受影响）\n'
     + '· 支持 zip / tar.gz / tar.xz / tar.bz2 / tar，上限 2GB')) return
   connMsg.value = '上传中 0%'
-  const r = await uploadBackup(sel.value.id, f, p => {
+  uploading.value = true
+  uploadJob.value = uploadBackup(sel.value.id, f, p => {
     connMsg.value = p.sent ? '上传完成，服务端正在解压恢复…'
       : `上传中 ${p.total ? Math.round(p.loaded / p.total * 100) : 0}%`
   })
-  connMsg.value = `备份导入完成：${r.format} 格式，恢复 ${r.files} 个文件`
-    + (r.restart_error ? `；⚠ 自动重启失败：${r.restart_error}（请手动点「启动」）`
-       : r.restarted ? '，实例已重启' : '；实例原本未运行，保持停止')
+  uploadJob.value
+    .then(r => {
+      connMsg.value = `备份导入完成：${r.format} 格式，恢复 ${r.files} 个文件`
+        + (r.restart_error ? `；⚠ 自动重启失败：${r.restart_error}（请手动点「启动」）`
+           : r.restarted ? '，实例已重启' : '；实例原本未运行，保持停止')
+    })
+    .catch(e => { connMsg.value = e.message || String(e) })
+    .finally(() => { uploading.value = false; uploadJob.value = null })
 })
-
+const cancelUpload = () => { uploadJob.value?.abort?.() }
 // ---------- 安装根扫描：游离目录 / 游离进程 ----------
 const scanRes = ref(null)
 const scan = () => guard(async () => {
@@ -265,6 +322,79 @@ const reconn = () => guard(async () => {
   const r = await wizardStep(sel.value.id, 4, {})
   connMsg.value = r.result === 'ok' ? `互联配置已重写：${r.preview || ''}` : (r.message || '重写失败')
 })
+
+// ---------- 小操作：复制实例 ID（审查 #23） ----------
+const copyId = () => {
+  navigator.clipboard?.writeText(sel.value.id).catch(() => {})
+  connMsg.value = `已复制实例 ID：${sel.value.id}`
+}
+
+// ---------- 备份导出（拓展1）：整目录 / 应用数据两种口径，语义必须分清 ----------
+const doExport = scope => guard(async () => {
+  const what = scope === 'full'
+    ? '整目录备份（程序+配置+存档+数据，恢复即得完整实例）'
+    : '数据备份（仅应用数据/存档，对应程序自身备份功能的局部数据；恢复前提是实例已部署同版本程序）'
+  if (!confirm(`导出 ${sel.value.dice} 实例的${what}？\n\n`
+    + '· 实例运行中导出时，数据文件可能正在写入，建议停止实例后导出\n'
+    + '· 大实例打包可能耗时数十秒，请勿关闭页面')) return
+  connMsg.value = '正在打包备份，请稍候…'
+  const r = await exportBackup(sel.value.id, scope)
+  connMsg.value = `备份已开始下载（${scope === 'full' ? '整目录' : '数据'}口径，${r.files} 个文件）。`
+})
+
+// ---------- 互联诊断（拓展2） ----------
+const diag = ref(null)
+const runDiagnose = () => guard(async () => {
+  connMsg.value = ''
+  diag.value = await diagnoseInstance(sel.value.id)
+})
+
+// ---------- 升级通道（拓展11） ----------
+const upgradeLatest = ref('')
+const checkUpgrade = () => guard(async () => {
+  connMsg.value = ''
+  const r = await upgradeCheck(sel.value.id)
+  if (!r.supported) { connMsg.value = r.message; upgradeLatest.value = ''; return }
+  if (r.up_to_date) { connMsg.value = `已是最新版本（${r.current}）`; upgradeLatest.value = ''; return }
+  upgradeLatest.value = r.latest
+  connMsg.value = `发现新版本：${r.current || '(未知)'} → ${r.latest}。点「升级」开始（自动先整目录备份）。`
+})
+const doUpgrade = () => guard(async () => {
+  if (!confirm(`升级 ${sel.value.dice} 实例？\n\n`
+    + '· 会自动先做整目录备份（升级失败可回退）\n'
+    + '· 运行中的实例先停止，覆盖解压最新包（数据/存档保留）后自动重启\n'
+    + '· 需从上游下载程序包，可能耗时数分钟')) return
+  connMsg.value = '升级中（备份 → 停机 → 覆盖新包 → 重启）…'
+  const r = await upgradeInstance(sel.value.id)
+  connMsg.value = `升级完成：${r.version || '新包已部署'}；升级前备份 ${r.backup}`
+    + (r.restart_error ? `；⚠ 重启失败：${r.restart_error}` : r.restarted ? '，实例已重启' : '')
+  upgradeLatest.value = ''
+})
+
+// ---------- 定时任务（拓展7） ----------
+const schedules = ref([])
+const newSched = ref({ kind: 'restart', scope: 'data', time: '' })
+const loadSchedules = () => listSchedules()
+  .then(ts => (schedules.value = ts)).catch(() => {})
+const addSched = () => guard(async () => {
+  const [hh, mm] = newSched.value.time.split(':').map(Number)
+  await addSchedule({ inst_id: sel.value.id, kind: newSched.value.kind,
+                      hh, mm, scope: newSched.value.scope, keep: 7 })
+  connMsg.value = '定时任务已添加（每日到点自动执行）。'
+  newSched.value.time = ''
+  await loadSchedules()
+})
+const delSched = s => guard(async () => {
+  if (!confirm(`删除定时任务：${s.inst_id} 的${s.kind === 'restart' ? '定时重启' : '定时备份'}？`)) return
+  await delSchedule(s.id)
+  await loadSchedules()
+})
+const runSched = s => guard(async () => {
+  await runSchedule(s.id)
+  connMsg.value = '定时任务已执行完成（备份任务产出在服务器 exports/backups 目录）。'
+})
+watch(sel, () => { if (sel.value) { loadSchedules() } })
+onMounted(() => { loadSchedules() })
 </script>
 
 <style scoped>
@@ -282,16 +412,17 @@ text.edge-label.solid-red   { fill: #e5484d; }
 .lg-green { border-color: #42b883; }
 .lg-gray  { border-color: #bbb; border-top-style: dashed; }
 .lg-red   { border-color: #e5484d; }
-rect.dead { fill: #f3f3f3; opacity: .6; }
+rect.dead { fill: var(--code-bg); opacity: .6; }
 text.warn { fill: #d97706; font-size: 10px; }
+.crash-warn { color: #e5484d; font-weight: 600; }
 text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
 text.col-empty { fill: #bbb; font-size: 12px; }
-.bar { width: 320px; height: 12px; background: #eee; border-radius: 6px; }
+.bar { width: 320px; height: 12px; background: var(--track); border-radius: 6px; }
 .fill { height: 100%; background: #42b883; border-radius: 6px; }
 .fill.alert { background: #e5484d; }
 .scanbox {
   margin: 10px 0; padding: 10px 14px; max-width: 720px;
-  border: 1px solid var(--border); border-radius: 8px; background: #fafbfc;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2);
 }
 .scan-row {
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
@@ -321,6 +452,18 @@ button.danger { color: #e5484d; }
   .panel { width: auto; }
 }
 .sel-info { margin-bottom: 8px; }
+.iid { cursor: pointer; color: var(--muted); font-size: 12px; margin-left: 6px; }
+.iid:hover { color: var(--brand); }
+.diag { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.diag p { margin: 2px 0; font-size: 12.5px; }
+.diag-ok { color: var(--ok); }
+.diag-bad { color: var(--danger); }
+.sched { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.sched-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; font-size: 13px; flex-wrap: wrap; }
+.sched-row span { flex: 1; min-width: 150px; }
+.sched-row button { padding: 2px 10px; font-size: 12px; }
+.sched-add { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.sched-add select, .sched-add input { width: auto; margin: 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
-.tok { cursor: pointer; background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
+.tok { cursor: pointer; background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
 </style>

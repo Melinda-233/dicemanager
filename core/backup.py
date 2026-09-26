@@ -16,6 +16,7 @@
    _plan_score 注释）
 3. 平手（实例目录是空的/无交集）→ 取剥离方案（整目录备份剥离后才是可用实例）
 """
+import os
 import shutil
 import tarfile
 import zipfile
@@ -143,3 +144,65 @@ def restore_into(archive: Path, dest: Path) -> dict:
     pkgstore.validate_archive(archive, ext)
     count = _restore_zip(archive, dest) if ext == ".zip" else _restore_tar(archive, dest)
     return {"format": ext, "files": count}
+
+
+# ---------- 导出（与导入对称；两种口径严格区分） ----------
+
+def export_dir(src: Path, out: Path, scope: str = "full",
+               data_paths: list[str] | None = None) -> dict:
+    """把实例目录打包为 tar.gz，返回 {"scope", "files", "bytes"}。
+
+    两种口径（UI 与文档必须保持这个措辞，避免用户混淆）：
+    - full「整目录备份」：程序 + 配置 + 存档 + 数据全部打包。条目相对实例根、
+      无公共顶层目录 → restore_into 按落位打分导入即得完整实例。
+    - data「应用数据备份」：仅打包 manifest data_paths 声明的数据/存档路径
+      （对应应用端自身备份功能所覆盖的局部数据）。体积小、跨版本可移植，
+      但不含程序本体——恢复前提是实例已部署同版本程序。
+    """
+    src = Path(src)
+    if not src.is_dir():
+        raise ValueError(f"实例目录不存在: {src}")
+    if scope == "data":
+        paths = [p for p in (data_paths or []) if p]
+        if not paths:
+            raise ValueError("该程序未声明数据路径清单（manifest data_paths），"
+                             "请使用整目录备份")
+    elif scope != "full":
+        raise ValueError(f"未知备份口径: {scope}")
+
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tar.gz.tmp")
+    count = 0
+    try:
+        with tarfile.open(tmp, "w:gz") as tf:
+            if scope == "full":
+                roots = [src]
+            else:
+                roots = []
+                for rel in paths:
+                    p = (src / rel).resolve()
+                    # data_paths 来自 manifest，属可信配置；仍校验不逃逸实例目录
+                    if not p.is_relative_to(src.resolve()):
+                        raise ValueError(f"数据路径声明非法: {rel}")
+                    if p.exists():
+                        roots.append(p)
+                if not roots:
+                    raise ValueError("数据路径均不存在（实例尚未产生数据？）")
+            for root in roots:
+                if root.is_file():
+                    tf.add(root, arcname=root.relative_to(src))
+                    count += 1
+                    continue
+                for dirpath, dirnames, filenames in os.walk(root):
+                    dirnames.sort(); filenames.sort()
+                    for fn in filenames:
+                        f = Path(dirpath) / fn
+                        if f.is_symlink():
+                            continue           # 不跟符号链接：防打包逃逸内容
+                        tf.add(f, arcname=f.relative_to(src))
+                        count += 1
+        os.replace(tmp, out)                    # 原子落位（调度备份被打断不留半包）
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"scope": scope, "files": count, "bytes": out.stat().st_size}

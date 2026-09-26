@@ -21,6 +21,7 @@ import json5
 
 from adapters.base import BaseAdapter, WriteResult
 from adapters.lagrange import LagrangeAdapter
+from conftest import put_package
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json5.loads((ROOT / "manifests" / "lagrange.json").read_text(encoding="utf-8"))
@@ -118,7 +119,7 @@ def test_deploy_from_official_tar_gz(tmp_path):
         info = tarfile.TarInfo("Lagrange.OneBot")
         info.size = len(data)
         tf.addfile(info, io.BytesIO(data))
-    pkgstore.save_archive("lagrange", buf.getvalue(), source="upload")
+    put_package("lagrange", buf.getvalue(), source="upload")
 
     ad = LagrangeAdapter(MANIFEST)
     inst = _inst(tmp_path / "lagrange-1")

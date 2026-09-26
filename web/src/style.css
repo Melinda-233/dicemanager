@@ -2,6 +2,11 @@
 :root {
   --bg: #f4f6f8;
   --panel: #ffffff;
+  --panel-2: #fafbfc;            /* 更浅一档的面板（扫描框等） */
+  --code-bg: #eef1f5;            /* 行内代码 / 步骤徽章 / 进度条槽 */
+  --track: #eeeeee;              /* 水位条槽 */
+  --err-bg: #fdeced; --err-border: #f5c2c4;
+  --step-done-bg: #eaf7ef; --step-done-border: #bfe3cd;
   --border: #e3e7ec;
   --text: #1f2430;
   --muted: #6b7280;
@@ -12,6 +17,28 @@
   --danger: #e5484d;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 4px 12px rgba(16, 24, 40, .04);
+}
+
+/* 深色模式（审查 #26）：跟随系统 prefers-color-scheme，组件内硬编码色已全部换为变量 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --panel: #1f232a;
+    --panel-2: #232830;
+    --code-bg: #2a313c;
+    --track: #2a313c;
+    --err-bg: #3a2226; --err-border: #5f3038;
+    --step-done-bg: #1d3527; --step-done-border: #2f5c40;
+    --border: #333a45;
+    --text: #e6e9ee;
+    --muted: #9aa3af;
+    --brand: #4c8dff;
+    --brand-weak: #22304a;
+    --ok: #4cc38a;
+    --warn: #f0a020;
+    --danger: #ff6b6f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 12px rgba(0, 0, 0, .3);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -78,7 +105,7 @@ button.danger:hover { background: var(--danger); border-color: var(--danger); co
 /* ---------- 表单控件 ---------- */
 input, select, textarea {
   padding: 8px 12px; font: inherit; color: var(--text);
-  background: #fff; border: 1px solid var(--border);
+  background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; outline: none; width: 100%;
   transition: border-color .15s, box-shadow .15s;
 }
@@ -97,7 +124,7 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.topo rect { fill: #fff; stroke: var(--border); stroke-width: 1; transition: stroke .15s; }
+.topo rect { fill: var(--panel); stroke: var(--border); stroke-width: 1; transition: stroke .15s; }
 .topo rect:hover { stroke: var(--brand); }
 .topo text { font-size: 13px; font-weight: 600; text-anchor: middle; fill: var(--text); }
 .topo text.sub { font-size: 11px; font-weight: 400; fill: var(--muted); }
@@ -107,7 +134,7 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
 .hint { color: var(--muted); }
 .hint code {
   padding: 1px 6px; border-radius: 5px;
-  background: #eef1f5; font-family: ui-monospace, Menlo, Consolas, monospace;
+  background: var(--code-bg); font-family: ui-monospace, Menlo, Consolas, monospace;
 }
 
 /* ---------- 空状态 ---------- */
@@ -129,7 +156,7 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
 
 /* ---------- 上传进度（离线程序包） ---------- */
 .pkgup { margin-top: 10px; }
-.pkgup-bar { height: 8px; overflow: hidden; background: #eef1f5; border-radius: 999px; }
+.pkgup-bar { height: 8px; overflow: hidden; background: var(--code-bg); border-radius: 999px; }
 .pkgup-bar > i {
   display: block; height: 100%; border-radius: 999px;
   background: var(--brand); transition: width .2s ease-out;

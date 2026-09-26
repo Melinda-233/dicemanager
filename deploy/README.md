@@ -84,11 +84,29 @@ cat /var/lib/dicemanager/ports.json       # 端口分配表
 
 ## 6. 上 HTTPS（可选）
 
+两种方案任选其一：
+
+**方案 A：已有 Nginx（certbot 改 nginx 配置）**
+
 ```bash
 # Ubuntu/Debian
 apt-get install -y certbot python3-certbot-nginx
 certbot --nginx -d 你的域名          # 自动改 nginx 配置，WebSocket 头会被保留
 ```
+
+**方案 B：Caddy 自动证书（推荐新装，零证书维护）**
+
+把域名 A 记录指到服务器、安全组放行 80/443，然后：
+
+```bash
+apt-get install -y caddy             # 或 yum install caddy
+cp /opt/dicemanager/deploy/caddy-dicemanager.conf /etc/caddy/Caddyfile
+# 编辑 Caddyfile：把 panel.example.com 换成你的域名
+systemctl reload caddy
+```
+
+模板见 `deploy/caddy-dicemanager.conf`（含 WebSocket 透传、流式响应不缓冲、
+骰子 WebUI 反代示例）。Caddy 自动签发/续期证书，无需 certbot。
 
 ## 7. 目录位置
 

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 from adapters.base import BaseAdapter
+from conftest import put_package
 from core import packages as pkgstore
 
 
@@ -34,7 +35,7 @@ MANIFEST = {"name": "fakedice", "required_files": ["a.txt"]}
 
 
 def test_pkg_roundtrip(tmp_path):
-    info = pkgstore.save_archive("d1", _zip_bytes("a.txt"), source="upload")
+    info = put_package("d1", _zip_bytes("a.txt"), source="upload")
     assert info["exists"] and info["source"] == "upload" and info["size_mb"] >= 0
     assert pkgstore.find_archive("d1") == pkgstore.archive_path("d1")
     assert [p["dice"] for p in pkgstore.list_archives()] == ["d1"]
@@ -45,12 +46,12 @@ def test_pkg_roundtrip(tmp_path):
 
 def test_pkg_rejects_bad_zip():
     with pytest.raises(ValueError):
-        pkgstore.save_archive("d2", b"not a zip at all")
+        put_package("d2", b"not a zip at all")
     assert not pkgstore.find_archive("d2")            # 坏包不落盘
 
 
 def test_deploy_uses_local_package_no_network(tmp_path, monkeypatch):
-    pkgstore.save_archive("fakedice", _zip_bytes("a.txt"), source="upload")
+    put_package("fakedice", _zip_bytes("a.txt"), source="upload")
     # 任何联网尝试都直接失败：本地包链路必须零网络
     import urllib.request
     def _boom(*a, **k):
@@ -90,7 +91,7 @@ def test_deploy_downloads_then_caches(tmp_path, monkeypatch):
 
 
 def test_meta_updated_at_format():
-    pkgstore.save_archive("d3", _zip_bytes("a.txt"))
+    put_package("d3", _zip_bytes("a.txt"))
     info = pkgstore.info_of("d3")
     assert "updated_at" in info and ":" in info["updated_at"]
     pkgstore.remove_archive("d3")

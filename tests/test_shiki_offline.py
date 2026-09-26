@@ -22,6 +22,7 @@ import json5
 import pytest
 
 from adapters.shiki import ShikiAdapter
+from conftest import put_package
 from core import packages as pkgstore
 
 MANIFEST = json5.loads(
@@ -86,7 +87,7 @@ def test_manual_strategy_errors_clearly_without_local_pkg():
 
 def test_deploy_rejects_package_without_dice_binary(tmp_path):
     """上传的包里没有 Dice 可执行文件 → 必须报错（此前 required_files 为空会静默 ok）。"""
-    pkgstore.save_archive("shiki", _zip_bytes("w4123.Dice.linux.amd64.dll"),
+    put_package("shiki", _zip_bytes("w4123.Dice.linux.amd64.dll"),
                           source="upload")
     ad = ShikiAdapter(MANIFEST)
     inst = SimpleNamespace(dir=str(tmp_path / "s_bad"), allocated_ports={},
@@ -100,7 +101,7 @@ def test_deploy_rejects_package_without_dice_binary(tmp_path):
 def test_deploy_ok_with_official_package(tmp_path):
     """自备的官方程序包含 Dice → 部署成功，启动命令指向 Dice。"""
     pkgstore.remove_archive("shiki")
-    pkgstore.save_archive("shiki", _zip_bytes("Dice", "config.txt"), source="upload")
+    put_package("shiki", _zip_bytes("Dice", "config.txt"), source="upload")
     ad = ShikiAdapter(MANIFEST)
     inst = SimpleNamespace(dir=str(tmp_path / "s_ok"), allocated_ports={},
                            actual_port=None)

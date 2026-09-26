@@ -15,3 +15,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def put_package(dice: str, data: bytes, source: str = "upload") -> dict:
+    """测试辅助：把字节流落成本地程序包缓存，等价于旧的 pkgstore.save_archive。
+
+    生产上传走流式落盘 + commit_archive，不存在「整体读入内存」的路径，
+    故 save_archive 从 core 移除，仅保留测试侧的等价实现。
+    用法：`from conftest import put_package`（ROOT 已在 sys.path 中）。
+    """
+    from core import packages as pkgstore
+    tmp = pkgstore.pkg_dir() / f"{dice}.up.tmp"
+    tmp.write_bytes(data)
+    try:
+        return pkgstore.commit_archive(dice, tmp, source=source)
+    finally:
+        tmp.unlink(missing_ok=True)

@@ -11,6 +11,7 @@
     <!-- 断点续跑入口：管理器重启/断网留下的中间态实例 -->
     <div v-if="pending.length && step === 1 && !loading" class="pending">
       <p class="hint">有 {{ pending.length }} 个未完成的实例，可从中断处继续：</p>
+      <p class="hint">（断点续跑按默认「骰子端优先」流程走；配对模式暂不支持续跑。）</p>
       <div v-for="p in pending" :key="p.id" class="pending-item">
         <span>{{ p.dice }} · {{ p.id }}{{ p.qq ? ' (QQ ' + p.qq + ')' : '' }}
           — 下一步：{{ STEP_NAMES[Math.min(p.next_step, 5) - 1] }}</span>
@@ -106,6 +107,7 @@
         <p v-else class="hint">未上传：部署时将从 GitHub 在线下载（国内可能很慢）。</p>
         <p class="hint">上传 zip / tar.gz / tar.xz 等压缩包后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
         <input type="file" accept=".zip,.gz,.tgz,.xz,.bz2,.tar" :disabled="pkgBusy" @change="uploadPkg"/>
+        <button v-if="pkgUp" class="danger" @click="cancelPkg">取消上传</button>
         <div v-if="pkgUp" class="pkgup">
           <div class="pkgup-bar" :class="{ 'is-indet': !pkgUp.total && !pkgUp.sent, 'is-sent': pkgUp.sent }">
             <i :style="{ width: pkgPercent + '%' }"></i>
@@ -113,6 +115,44 @@
           <p class="hint">{{ pkgText }}</p>
         </div>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
+      </div>
+      <!-- 缓存管理：程序包下载/上传后永久驻留，这里集中展示占用与是否仍被实例使用 -->
+      <div class="field cache-box">
+        <label>本地缓存（{{ pkgTotalMb }} MB）</label>
+        <p v-if="!pkgRows.length" class="hint">暂无本地缓存。</p>
+        <div v-for="r in pkgRows" :key="r.dice" class="pkg">
+          <span :class="r.in_use ? 'pkg-ok' : 'pkg-idle'">
+            {{ r.dice }} · {{ r.size_mb }} MB ·
+            {{ r.source === 'upload' ? '上传' : '下载' }}于 {{ r.updated_at }} —
+            {{ r.in_use ? '已有实例在用' : '无实例使用（死缓存，可安全删除）' }}</span>
+          <button :disabled="pkgBusy" @click="removePkgOf(r.dice)">删除</button>
+        </div>
+        <div class="ops" v-if="unusedRows.length">
+          <button class="danger" :disabled="pkgBusy" @click="cleanUnused">
+            清理 {{ unusedRows.length }} 个未使用包（释放约 {{ unusedMb }} MB）</button>
+        </div>
+        <p class="hint">删除只是清掉种子包，已部署的实例不受影响；再次部署该程序需重新下载或上传。</p>
+        <p v-if="pkgMsg2" class="hint">{{ pkgMsg2 }}</p>
+      </div>
+      <!-- 备份产物：手动导出 / 升级前快照 / 定时备份都落在 exports/，此前没有任何回收入口 -->
+      <div class="field cache-box">
+        <label>备份文件（{{ expTotalMb }} MB）</label>
+        <p v-if="!expRows.length" class="hint">暂无备份文件。</p>
+        <div v-for="r in expRows" :key="r.name" class="pkg">
+          <span :class="r.age_days >= pruneDays ? 'pkg-idle' : 'pkg-ok'">
+            {{ r.name }} · {{ r.size_mb }} MB · {{ r.mtime }}（已存放 {{ r.age_days }} 天）</span>
+          <button :disabled="busy" @click="delExportFile(r.name)">删除</button>
+        </div>
+        <div class="ops" v-if="expRows.length">
+          <label class="inline">清理超过
+            <input type="number" min="1" max="365" v-model.number="pruneDays" style="width:64px"/>
+            天的备份</label>
+          <button class="danger" :disabled="busy" @click="pruneOldExports">
+            清理 {{ expStaleRows.length }} 份（释放约
+            {{ Math.round(expStaleRows.reduce((s, r) => s + (r.size_mb || 0), 0)) }} MB）</button>
+        </div>
+        <p class="hint">升级前会自动留一份整目录快照，定时备份也在这里；确认回滚无需要的旧备份可安全清理。</p>
+        <p v-if="expMsg" class="hint">{{ expMsg }}</p>
       </div>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
@@ -123,8 +163,8 @@
 
     <!-- Step2：部署 -->
     <div v-else-if="step === 2" class="wz-body">
-      <p v-if="busy">{{ pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
-                          : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…' }}</p>
+      <p v-if="busy">{{ deployMsg || (pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
+                          : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…') }}</p>
       <div v-if="conflict" class="dialog">
         <p>同名文件夹已存在：<code>{{ conflictDir }}</code></p>
         <div class="ops">
@@ -225,10 +265,10 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
-         deletePackage, createInstance, wizardStep, delInstance } from '../api'
+         deletePackage, deleteUnusedPackages, listExports, deleteExport, pruneExports,
+         createInstance, wizardStep, delInstance, deployProgress } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']   // 默认模式（断点续跑文案也用它）
-const STEP_COUNT = STEP_NAMES.length
 
 const step = ref(0), manifests = ref({}), instances = ref([])
 const dice = ref(''), loginRef = ref('')
@@ -244,7 +284,19 @@ const preview = ref(''), manual = ref('')
 const pending = ref([])          // 中间态实例（断点续跑入口）
 const started = ref(false)       // Step5 是否已下发启动命令
 const pkgs = ref({})             // {dice: {exists,size_mb,source,updated_at}}
-const pkgBusy = ref(false), pkgMsg = ref('')
+const pkgBusy = ref(false), pkgMsg = ref(''), pkgMsg2 = ref('')
+// 缓存管理视图：全部本地包 / 未被任何实例使用的那部分（可安全删除的死缓存）
+const pkgRows = computed(() => Object.values(pkgs.value))
+const unusedRows = computed(() => pkgRows.value.filter(r => !r.in_use))
+const sumMb = rows => Math.round(rows.reduce((s, r) => s + (r.size_mb || 0), 0))
+const pkgTotalMb = computed(() => sumMb(pkgRows.value))
+const unusedMb = computed(() => sumMb(unusedRows.value))
+// 备份产物（exports/）：升级前快照 + 定时备份，长期不回收会堆到几百 MB
+const expRows = ref([]), expMsg = ref(''), pruneDays = ref(30)
+const expTotalMb = computed(() => Math.round(expRows.value.reduce((s, r) => s + (r.size_mb || 0), 0)))
+const expStaleRows = computed(() => expRows.value.filter(r => r.age_days >= pruneDays.value))
+// 独立加载：失败不牵连主流程（旧服务端可能还没这个端点）
+const loadExports = () => listExports().then(e => (expRows.value = e || [])).catch(() => {})
 // sock 必须是 ref：script setup 里 let 变量不会随赋值同步到模板上下文，
 // 旧写法下「刷新二维码」按钮拿到的永远是初始的 null
 const sock = ref(null)
@@ -308,14 +360,18 @@ const load = async () => {
   } finally {
     loading.value = false
   }
+  loadExports()                               // 首次进向导就要看到备份产物占用
 }
 load()
 
-// 静默刷新实例/待续跑列表（启动完成后待续跑条目应消失）
-const refreshLists = () =>
-  Promise.all([listInstances(), listPending()])
-    .then(([i, p]) => { instances.value = i || []; pending.value = p || [] })
-    .catch(() => {})
+// 静默刷新实例/待续跑列表（启动完成后待续跑条目应消失）+ 备份产物占用
+const refreshLists = async () => {
+  try {
+    const [i, p] = await Promise.all([listInstances(), listPending()])
+    instances.value = i || []; pending.value = p || []
+  } catch { /* 静默：刷新失败不阻断页面 */ }
+  loadExports()
+}
 
 // 程序包：上传后部署直接解压本地包，不再联网下载
 const pkgUp = ref(null)             // 上传进度 {loaded, total, sent, startAt}
@@ -343,7 +399,7 @@ const uploadPkg = e => {
   if (!file) return
   pkgBusy.value = true; pkgMsg.value = ''
   pkgUp.value = { loaded: 0, total: file.size, sent: false, startAt: Date.now() }
-  uploadPackage(dice.value, file, ({ loaded, total, sent }) => {
+  pkgJob.value = uploadPackage(dice.value, file, ({ loaded, total, sent }) => {
     const cur = pkgUp.value                    // sent 一旦为真不再回退；loaded 取单调最大值
     pkgUp.value = { loaded: Math.max(loaded, cur?.loaded || 0),
                     total: total || cur?.total || file.size,
@@ -355,19 +411,54 @@ const uploadPkg = e => {
       pkgMsg.value = `已上传 ${info.size_mb} MB，部署时将直接解压该包。`
     })
     .catch(ex => { pkgMsg.value = ''; err.value = ex.message || String(ex) })
-    .finally(() => { pkgBusy.value = false; pkgUp.value = null })
+    .finally(() => { pkgBusy.value = false; pkgUp.value = null; pkgJob.value = null })
 }
 
-const removePkg = () => {
-  pkgBusy.value = true; pkgMsg.value = ''
-  deletePackage(dice.value)
+const pkgJob = ref(null)             // 当前上传任务（Promise.abort() 取消 XHR）
+const cancelPkg = () => { pkgJob.value?.abort?.() }
+
+const removePkgOf = name => {
+  pkgBusy.value = true; pkgMsg.value = ''; pkgMsg2.value = ''
+  deletePackage(name)
     .then(() => {
-      const next = { ...pkgs.value }; delete next[dice.value]; pkgs.value = next
-      pkgMsg.value = '已删除本地包，下次部署将在线下载。'
+      const next = { ...pkgs.value }; delete next[name]; pkgs.value = next
+      const msg = `已删除 ${name} 的本地包，下次部署将在线下载。`
+      if (name === dice.value) pkgMsg.value = msg
+      else pkgMsg2.value = msg
     })
     .catch(ex => { err.value = ex.message || String(ex) })
     .finally(() => { pkgBusy.value = false })
 }
+const removePkg = () => removePkgOf(dice.value)
+
+// 一键清理死缓存：没有任何实例在用的种子包（菜单入口按需触发，不做自动删除）
+const cleanUnused = () => guard(async () => {
+  pkgMsg2.value = ''
+  const r = await deleteUnusedPackages()
+  const next = { ...pkgs.value }
+  ;(r.removed || []).forEach(n => delete next[n])
+  pkgs.value = next
+  pkgMsg2.value = r.removed && r.removed.length
+    ? `已清理 ${r.removed.join(' / ')}，释放约 ${r.freed_mb} MB。`
+    : '没有需要清理的未使用缓存。'
+})
+
+// 备份产物回收：升级每次留一份整目录快照，定时备份也在同一目录，长期只增不减
+const delExportFile = name => guard(async () => {
+  expMsg.value = ''
+  await deleteExport(name)
+  expRows.value = expRows.value.filter(r => r.name !== name)
+  expMsg.value = `已删除备份 ${name}。`
+})
+const pruneOldExports = () => guard(async () => {
+  expMsg.value = ''
+  const r = await pruneExports(pruneDays.value)
+  const names = r.removed || []
+  expRows.value = expRows.value.filter(x => !names.includes(x.name))
+  expMsg.value = names.length
+    ? `已清理 ${names.length} 份超过 ${pruneDays.value} 天的备份，释放约 ${r.freed_mb} MB。`
+    : `没有超过 ${pruneDays.value} 天的备份。`
+})
 
 const goOverview = () => (location.hash = '#/overview')
 
@@ -380,6 +471,7 @@ const reset = () => {
   started.value = false; tokenSaved.value = false
   loginRef.value = ''; instanceId = null
   pair.value = null; loginChoice.value = ''; loginHandled = false
+  stopDeployPoll(); deployMsg.value = ''
   refreshLists()
 }
 
@@ -389,6 +481,7 @@ const resume = p => {
   err.value = ''; conflict.value = false; preview.value = ''; manual.value = ''
   started.value = false; tokenSaved.value = false   // 续跑实例的 token 落盘状态未知，重新判定
   pair.value = null; mode.value = 'dice'; loginHandled = false
+  stopDeployPoll(); deployMsg.value = ''
   instanceId = p.id
   dice.value = p.dice
   loginRef.value = p.login_ref || ''
@@ -459,23 +552,45 @@ const enterPhaseStepOne = () => {
 }
 
 const doStep = async (n, payload) => {
-  const r = await wizardStep(instanceId, n, payload)
-  if (r.result === 'error') throw new Error(r.message || '操作失败')   // 如双击启动的竞态提示
-  if (r.result === 'conflict') {
-    conflict.value = true; conflictDir.value = r.dir || r.message || ''; return
-  }
-  if (r.manual) manual.value = r.manual
-  if (n === 3) { afterLoginDone(); return }        // 登录完成去向统一收口（含配对阶段切换）
-  step.value = n + 1
-  if (step.value === 3) {
-    loginHandled = false                            // 进入新一次登录步
-    if (loginType.value === 'qrcode') {
-      // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
-      if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
-      openLoginWS()
+  if (n === 2) { deployMsg.value = ''; startDeployPoll() }   // 部署期间轮询进度
+  try {
+    const r = await wizardStep(instanceId, n, payload)
+    if (r.result === 'error') throw new Error(r.message || '操作失败')   // 如双击启动的竞态提示
+    if (r.result === 'conflict') {
+      conflict.value = true; conflictDir.value = r.dir || r.message || ''; return
     }
+    if (r.manual) manual.value = r.manual
+    if (n === 3) { afterLoginDone(); return }        // 登录完成去向统一收口（含配对阶段切换）
+    step.value = n + 1
+    if (step.value === 3) {
+      loginHandled = false                            // 进入新一次登录步
+      if (loginType.value === 'qrcode') {
+        // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
+        if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
+        openLoginWS()
+      }
+    }
+    if (step.value === 4) preview.value = r.preview || ''
+  } finally {
+    if (n === 2) stopDeployPoll()
   }
-  if (step.value === 4) preview.value = r.preview || ''
+}
+
+// ---------- 部署进度轮询：step2 同步部署期间 1s 拉一次，大包下载不再「假死」 ----------
+const deployMsg = ref('')
+let deployTimer = null
+const stopDeployPoll = () => { if (deployTimer) { clearInterval(deployTimer); deployTimer = null } }
+const startDeployPoll = () => {
+  stopDeployPoll()
+  deployTimer = setInterval(async () => {
+    try {
+      const p = await deployProgress(instanceId)
+      if (p.stage === 'download')
+        deployMsg.value = `正在下载程序包 ${fmtMB(p.done)}${p.total ? ' / ' + fmtMB(p.total) + ' MB' : ' MB'}…`
+      else if (p.stage === 'extract') deployMsg.value = '下载完成，正在解压部署…'
+      else if (p.stage === 'prepare') deployMsg.value = '正在准备部署…'
+    } catch { /* 轮询失败不打扰主流程 */ }
+  }, 1000)
 }
 
 // 登录完成后的去向：
@@ -516,7 +631,12 @@ const startInst = () => guard(async () => {
 })
 
 const resolve = useExisting => guard(async () => {   // 冲突二选一：重发 step2（后端已实现）
-  await wizardStep(instanceId, 2, { use_existing: useExisting })
+  deployMsg.value = ''; startDeployPoll()
+  try {
+    await wizardStep(instanceId, 2, { use_existing: useExisting })
+  } finally {
+    stopDeployPoll()
+  }
   conflict.value = false; step.value = 3
   loginHandled = false                                // 重新进入登录步
   if (loginType.value === 'qrcode') openLoginWS()
@@ -528,6 +648,10 @@ const openLoginWS = () => {
     if (m.type === 'qrcode') qr.value = m.payload
     if (m.type === 'verify') verifyUrl.value = m.payload.url
     if (m.type === 'completed' || m.type === 'skipped') afterLoginDone()
+    if (m.type === 'login_failed') {               // 账号登录失败：明确反馈而非卡在原页
+      err.value = m.payload?.message || '登录失败，请检查账号信息后重试'
+      loginHandled = false
+    }
   })
 }
 
@@ -549,7 +673,7 @@ const doLogin = () => guard(async () => {              // Step3：登录（含�
   await doStep(3, { qq: cred.value.qq, credentials: { ...cred.value } })
 })
 
-onUnmounted(() => sock.value?.close())
+onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 </script>
 
 <style scoped>
@@ -557,9 +681,9 @@ onUnmounted(() => sock.value?.close())
 .steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 0; padding: 0; list-style: none; }
 .steps li {
   padding: 4px 12px; border-radius: 999px; font-size: 12px;
-  color: var(--muted); background: #eef1f5; border: 1px solid var(--border);
+  color: var(--muted); background: var(--code-bg); border: 1px solid var(--border);
 }
-.steps li.done { color: var(--ok); border-color: #bfe3cd; background: #eaf7ef; }
+.steps li.done { color: var(--ok); border-color: var(--step-done-border); background: var(--step-done-bg); }
 .steps li.now { color: #fff; background: var(--brand); border-color: var(--brand); }
 .wz-body { display: block; }
 .field { max-width: 420px; margin-bottom: 14px; }
@@ -567,18 +691,22 @@ onUnmounted(() => sock.value?.close())
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
 .err {
   padding: 8px 12px; margin-bottom: 14px; color: var(--danger);
-  background: #fdeced; border: 1px solid #f5c2c4; border-radius: 8px;
+  background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 8px;
 }
 .warn { color: var(--warn); }
-.qr img { max-width: 260px; display: block; margin-bottom: 10px; background: #fff; }
+.qr img { max-width: 260px; display: block; margin-bottom: 10px; background: var(--panel); }
 .dialog { padding: 14px; margin-bottom: 14px; border: 1px solid var(--danger); border-radius: 8px; }
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }
+.pkg-idle { color: var(--muted); }
+.cache-box { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.cache-box .pkg { font-size: 13px; }
+.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .pending-item { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .dialog code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 pre.preview {
-  padding: 12px; margin: 0 0 14px; background: #f6f8fa; border: 1px solid var(--border);
+  padding: 12px; margin: 0 0 14px; background: var(--code-bg); border: 1px solid var(--border);
   border-radius: 8px; font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap;
 }
 </style>

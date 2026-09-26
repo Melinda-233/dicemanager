@@ -32,7 +32,8 @@ def test_plain_password_never_persisted(auth_module, tmp_path):
     pwd = auth_module.auth.admin_password
     raw = (tmp_path / "auth.json").read_text("utf-8")
     assert pwd not in raw, "明文不得落盘"
-    assert set(json.loads(raw)) == {"password_hash", "salt", "token"}
+    # issued_at：2026-09-26 起 token 带 30 天 TTL（旧文件加载时迁移补写该字段）
+    assert set(json.loads(raw)) == {"password_hash", "salt", "token", "issued_at"}
 
 
 def test_restart_has_no_plain_but_still_accepts_password(auth_module, tmp_path):

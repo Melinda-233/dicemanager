@@ -104,3 +104,35 @@ class SealDiceAdapter(BaseAdapter):
         state = (mine or eps[-1:])[0].get("baseInfo", {}).get("state", 0)
         conn = "ok" if state == 1 else ("down" if state in (0, 3) else "none")
         return {"alive": is_alive, "conn": conn}               # 0断开1已连接2连接中3失败
+
+    def diagnose_conn(self, instance) -> list[dict]:
+        """专属诊断：serve.yaml/dice.yaml 端点存在性与连接状态（state: 0断1连3失败）。"""
+        items: list[dict] = []
+        path = self._endpoints_file(instance)
+        iid = getattr(instance, "id", None)
+        if not path.exists():
+            return [{"ok": False, "step": "config",
+                     "detail": f"互联配置文件不存在（{path}），请先在向导/总览重写互联配置"}]
+        try:
+            eps = (yaml.safe_load(path.read_text("utf-8")) or {}).get(
+                "imSession", {}).get("endPoints", [])
+        except Exception as e:
+            return [{"ok": False, "step": "config", "detail": f"配置解析失败: {e}"}]
+        mine = [ep for ep in eps if ep.get("baseInfo", {}).get("id") == iid]
+        if not mine:
+            items.append({"ok": False, "step": "config",
+                          "detail": "配置中没有本实例的 OneBot 端点，请重写互联配置"})
+            return items
+        ad = mine[0].get("adapter", {})
+        state = mine[0].get("baseInfo", {}).get("state", 0)
+        items.append({"ok": True, "step": "config",
+                      "detail": f"端点已配置：{'反向' if ad.get('isReverse') else '正向'} "
+                                f"{ad.get('connectUrl') or ad.get('reverseAddr') or '(空)'}"})
+        ok = state == 1
+        items.append({"ok": ok, "step": "state",
+                      "detail": {0: "端点未连接（海豹侧显示断开）",
+                                 1: "海豹侧已建立 WebSocket 连接",
+                                 2: "连接中（等待对端）",
+                                 3: "连接失败（地址/token 与登录端不一致？）"
+                                 }.get(state, f"未知状态 {state}")})
+        return items

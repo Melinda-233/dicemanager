@@ -17,6 +17,7 @@ AUTH_FILE = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager")) / "auth
 PBKDF2_ITER = 200_000
 LOGIN_MAX_FAILS = 5                     # 60s 窗口内 ≥5 次失败 → 限速
 LOGIN_WINDOW = 60
+AUTH_TTL = 30 * 86400                   # token 有效期 30 天（旧 auth.json 无 issued_at 时迁移为当前时间）
 
 def _ct_eq(a: str, b: str) -> bool:
     """恒定时间比较：转 bytes，兼容任意 UTF-8 输入（非 ASCII 不再 TypeError）。"""
@@ -42,7 +43,11 @@ class Auth:
         if "password_hash" not in d:    # 旧版明文字段：加载即迁移为哈希
             salt = secrets.token_hex(16)
             d = {"password_hash": _hash_password(d["password"], bytes.fromhex(salt)),
-                 "salt": salt, "token": d.get("token", secrets.token_urlsafe(32))}
+                 "salt": salt, "token": d.get("token", secrets.token_urlsafe(32)),
+                 "issued_at": time.time()}
+            write_atomic(state_file, json.dumps(d).encode("utf-8"))
+        if "issued_at" not in d:        # TTL 上线前签发的旧 token：从现在起算，避免升级即全体掉线
+            d["issued_at"] = time.time()
             write_atomic(state_file, json.dumps(d).encode("utf-8"))
         self._cred = d
         self._fails: list[float] = []   # 登录失败时间戳（滑动窗口限速）
@@ -85,16 +90,37 @@ class Auth:
             raise HTTPException(400, "新密码至少 6 位")
         salt = secrets.token_hex(16)
         self._cred = {"password_hash": _hash_password(new, bytes.fromhex(salt)),
-                      "salt": salt, "token": secrets.token_urlsafe(32)}
+                      "salt": salt, "token": secrets.token_urlsafe(32),
+                      "issued_at": time.time()}
         write_atomic(self._file, json.dumps(self._cred).encode("utf-8"))   # 原子写入
         return self._cred["token"]
 
+    def _expired(self) -> bool:
+        return time.time() - self._cred.get("issued_at", time.time()) > AUTH_TTL
+
     def verify_http(self, cred: HTTPAuthorizationCredentials | None) -> None:
-        if not cred or not _ct_eq(cred.credentials, self._cred["token"]):
+        if not cred or self._expired() or not _ct_eq(cred.credentials, self._cred["token"]):
+            if cred and self._expired():
+                raise HTTPException(401, "登录已过期，请重新登录")
             raise HTTPException(401, "未授权")
 
+    def ws_handshake(self, ws: WebSocket) -> tuple[bool, str | None]:
+        """WS 鉴权：优先 Sec-WebSocket-Protocol 头携带 token（不会进 access log，
+        替代原先的 ?token= 查询参数——后者会连同 token 一起落 nginx/uvicorn 日志）。
+        返回 (是否通过, 需回显的 subprotocol)；?token= 查询参数仍兼容旧前端。"""
+        proto = (ws.headers.get("sec-websocket-protocol") or "").split(",")[0].strip()
+        tok = self._cred["token"]
+        if self._expired():
+            return False, None
+        if proto and _ct_eq(proto, tok):
+            return True, proto
+        if ws.query_params.get("token") and _ct_eq(ws.query_params.get("token", ""), tok):
+            return True, None
+        return False, None
+
     def verify_ws(self, ws: WebSocket) -> bool:
-        return _ct_eq(ws.query_params.get("token", ""), self._cred["token"])
+        """旧入口：仅查询参数鉴权（保留兼容）。"""
+        return not self._expired() and _ct_eq(ws.query_params.get("token", ""), self._cred["token"])
 
 auth = Auth()
 

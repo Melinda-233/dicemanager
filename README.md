@@ -20,6 +20,7 @@
 - **日志中心**：实时 tail + 历史回放（进程重启不丢日志）、关键字过滤、错误行高亮、暂停跟随、复制与下载。
 - **端口管理**：按角色批量分配（webui/ob11/milky/satori），默认端口占用自动 +1 重试，实例删除时整体释放；文件锁 + 原子写保证多进程安全。
 - **进程守护**：自动重启（5 次 / 5 分钟退避），双限日志滚动（50MB 或 7 天）。
+- **磁盘回收**：程序包缓存标注是否有实例在用并支持一键清理死缓存；备份产物（升级前快照 / 定时备份）集中展示，可按天批量清理。
 - **安全**：随机管理密码（PBKDF2 哈希存储，登录失败限速）+ Bearer token（恒定时间比较），WS 经查询参数鉴权；启动命令一律后端构建，杜绝任意命令执行；首次启动密码打印在控制台，凭据持久化到本地；manifest 可选 `sha256` 字段校验安装包完整性。
 
 ## 技术栈
@@ -56,7 +57,12 @@ dice-manager/
 │   ├── locks.py        # 端口/目录/实例三类临界区（threading + fcntl 双层）
 │   ├── ports.py        # allocate_many 批量分配 + release_owner 整体释放
 │   ├── registry.py     # 实例状态机 UNDEPLOYED→…→RUNNING；墓碑式删除
-│   └── process.py      # Popen + tail 线程 + 环形缓冲 + 自动重启
+│   ├── process.py      # Popen + tail 线程 + 环形缓冲 + 自动重启
+│   ├── packages.py     # 程序包缓存（魔数识别 + 完整性校验 + 死缓存清理）
+│   ├── exports.py      # 备份产物目录（清单 / 单删 / 按天清理）
+│   ├── scanner.py      # 安装根扫描：游离目录与游离进程
+│   ├── scheduler.py    # 定时任务守护（每日重启 / 备份）
+│   └── backup.py       # 备份导出与导入（full 整目录 / data 应用数据）
 ├── adapters/    # 适配器层：每个骰子程序一份，实现统一契约
 │   ├── base.py         # deploy / build_start_cmd / configure_login / write_conn_config
 │   ├── sealdice.py     # serve.yaml 与 1.x 单文件 dice.yaml 双形态端点写入
@@ -66,9 +72,9 @@ dice-manager/
 │   └── olivadice.py    # OPK 组合部署，缺核阻断 / 缺件告警
 ├── services/    # 服务层
 │   ├── wizard.py       # 五步向导状态机（断点续跑 + 冲突弹窗）
-│   └── login.py        # 登录编排：进程承载 + WS 推送通道
+│   └── resume.py       # 面板重启后自动拉回 RUNNING 但已死的实例
 ├── api/         # Web 服务层
-│   ├── rest.py         # REST：向导 / 实例操作 / 快照 / 二次确认删除
+│   ├── rest.py         # REST：向导 / 实例操作 / 程序包 / 备份产物 / 二次确认删除
 │   ├── ws_overview.py  # 通道1：拓扑 + 资源水位（2s）
 │   ├── ws_logs.py      # 通道2：日志 tail（回放 + 过滤 + 错误标记）
 │   ├── ws_login.py     # 通道3：二维码/滑块验证推送，refresh/skip_login
@@ -84,6 +90,8 @@ dice-manager/
 | `/var/lib/dicemanager/instances.json` | 实例注册表（含墓碑） |
 | `/var/lib/dicemanager/ports.json` | 端口分配表 |
 | `/var/lib/dicemanager/auth.json` | 管理凭据（持久化） |
+| `/var/lib/dicemanager/packages/` | 程序包缓存（无 TTL，可一键清理未使用） |
+| `/var/lib/dicemanager/exports/` | 备份产物：升级前快照 / 定时备份（向导「备份文件」区回收） |
 | `/var/log/dicemanager/{id}.log(.1)` | 各实例日志（50MB / 7 天双限滚动） |
 | `/opt/{程序名}` 及序号后缀 | 程序安装目录 |
 
@@ -92,8 +100,7 @@ dice-manager/
 ```python
 STATE_DIR = Path("/var/lib/dicemanager")   # 状态持久化目录
 LOG_DIR   = Path("/var/log/dicemanager")   # 日志目录
-resmon_alert = 0.90                        # 内存 ≥90% 红色告警
-resmon_warn  = 0.80                        # 部署前预估 ≥80% 黄牌提示
+resmon_alert = 0.90                        # 内存 ≥90% 红色告警（由 /ws/overview 每 2s 推送）
 ```
 
 程序安装根目录由 manifests 的 `install_root` 决定，默认 `/opt`。

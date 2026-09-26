@@ -4,10 +4,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from adapters import load_registry
+from core.exports import exports_dir
 from core.ports import PortAllocator
 from core.process import ProcessManager
 from core.registry import Registry
-from services.login import LoginService
+from core.scheduler import Scheduler
 from services.wizard import Wizard
 
 # 默认 Linux 生产路径；Windows 开发 / 非 root 运行可用 DM_STATE_DIR / DM_LOG_DIR 覆盖
@@ -20,11 +21,10 @@ class AppContext:
     ports: PortAllocator
     pm: ProcessManager
     wizard: Wizard
-    login: LoginService
     adapters: dict
     log_dir: Path
+    scheduler: Scheduler
     resmon_alert: float = 0.90          # ≥90% 告警（可配置）
-    resmon_warn: float = 0.80           # 部署预估黄牌 80%
     _adapter_cache: dict = field(default_factory=dict)
 
     def get_adapter(self, name: str):
@@ -40,9 +40,19 @@ def build_context() -> AppContext:
     ports = PortAllocator(STATE_DIR / "ports.json")
     pm = ProcessManager(LOG_DIR)
     adapters = load_registry(Path(__file__).parent.parent / "manifests")
+    # 启动时回收孤儿日志：历史上实例删除不同步删日志，反复增删会累积一批无归属文件。
+    # 只看注册表存活 id，面板自身日志由 PANEL_LOG_STEM 排除。清理失败不影响启动。
+    try:
+        pm.sweep_orphan_logs({r["id"] for r in registry.all()})
+    except Exception:
+        pass
     wizard = Wizard(registry, adapters, ports, pm, LOG_DIR)
+    # 定时备份与手动导出/升级前快照统一落在 exports/（口径与回收入口见 core/exports.py）
+    scheduler = Scheduler(STATE_DIR / "schedules.json", exports_dir(),
+                          registry, wizard)
     return AppContext(registry=registry, ports=ports, pm=pm, wizard=wizard,
-                      login=LoginService(wizard, pm), adapters=adapters, log_dir=LOG_DIR)
+                      adapters=adapters, log_dir=LOG_DIR,
+                      scheduler=scheduler)
 
 # 模块级单例：import 时构建一次，所有模块拿到的是同一个实例
 # （此前 lifespan 里 global ctx 只改 app.py 自身名字空间，其余模块拿不到 —— 已修正）

@@ -18,6 +18,21 @@ from core.locks import program_dir_lock
 # 视为「仅本机监听」的绑定地址：开放 WebUI 时统一放开为 0.0.0.0
 LOOPBACK_HOSTS = ("", "127.0.0.1", "localhost", "::1")
 
+# 部署进度（inst_id → {stage, done, total}）：step2 同步部署期间前端轮询展示，
+# 避免大包下载数分钟里界面「假死」。进程内存态即可，管理器重启后部署本就要重跑。
+DEPLOY_PROGRESS: dict[str, dict] = {}
+# 部署完成的版本记录（inst_id → release tag）：base 不持有 registry，
+# 由向导 step2 部署完后取走落盘（升级通道比对基线）
+DEPLOY_VERSION: dict[str, str] = {}
+
+
+def deploy_version_of(inst_id: str) -> str | None:
+    return DEPLOY_VERSION.pop(inst_id, None)
+
+
+def deploy_progress_of(inst_id: str) -> dict:
+    return DEPLOY_PROGRESS.get(inst_id) or {"stage": "idle"}
+
 # 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
 # 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
 # 也可指向自建反代；留空则直连。
@@ -41,6 +56,7 @@ class WriteResult:
 class BaseAdapter(ABC):
     def __init__(self, manifest: dict):
         self.m = manifest
+        self._last_tag: str | None = None    # 最近一次解析到的上游 release tag
 
     # ---------- 部署 ----------
     def deploy(self, instance) -> str:
@@ -49,25 +65,54 @@ class BaseAdapter(ABC):
             if p.exists():
                 missing = self.verify_required(instance)
                 return "ok" if not missing else "conflict"    # 冲突 → 前端弹窗
-            archive = self._acquire_archive()     # 本地包优先，没有才在线下载
-            if expected := self.m.get("sha256"):
-                self._verify_sha256(archive, expected)
-            self._extract(archive, instance)
-            if missing := self.verify_required(instance):
-                raise RuntimeError(f"部署后缺失必备文件: {missing}")
+            # 进度键取 instance.id；测试桩常用无 id 的 SimpleNamespace，跳过进度跟踪
+            key = getattr(instance, "id", None)
+            if key:
+                DEPLOY_PROGRESS[key] = {"stage": "prepare", "done": 0, "total": 0}
+            try:
+                archive = self._acquire_archive(instance)  # 本地包优先，没有才在线下载
+                if expected := self.m.get("sha256"):
+                    self._verify_sha256(archive, expected)
+                if key:
+                    DEPLOY_PROGRESS[key] = {"stage": "extract", "done": 0, "total": 0}
+                self._extract(archive, instance)
+                if missing := self.verify_required(instance):
+                    raise RuntimeError(f"部署后缺失必备文件: {missing}")
+                if key and (tag := self._last_tag):
+                    DEPLOY_VERSION[key] = tag     # 升级通道的比对基线
+            finally:
+                if key:
+                    DEPLOY_PROGRESS.pop(key, None)
         return "ok"
 
-    def _acquire_archive(self) -> Path:
+    def _acquire_archive(self, instance) -> Path:
         """取包：本地 packages/<dice>.<ext> 直接用；否则下载并缓存供后续复用。"""
         cached = pkgstore.find_archive(self.m["name"])
         if cached:
             return cached
         url = mirror_url(self._resolve_download())
         tmp = pkgstore.pkg_dir() / f"{self.m['name']}.dl.tmp"
+        key = getattr(instance, "id", None)
         try:
             with urllib.request.urlopen(url, timeout=600) as resp, \
                     open(tmp, "wb") as f:
-                shutil.copyfileobj(resp, f)
+                total = 0                            # 假响应/无 Content-Length 时退化为未知总量
+                try:
+                    total = int(resp.headers.get("Content-Length") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    total = 0
+                if key:
+                    DEPLOY_PROGRESS[key] = {"stage": "download", "done": 0, "total": total}
+                done = 0
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done += len(chunk)
+                    if key:
+                        DEPLOY_PROGRESS[key] = {
+                            "stage": "download", "done": done, "total": max(total, done)}
             if pkgstore.detect_kind(tmp) is None:
                 raise RuntimeError("下载内容不是有效的 zip/tar 压缩包")
             pkgstore.commit_archive(self.m["name"], tmp, "download")
@@ -113,9 +158,13 @@ class BaseAdapter(ABC):
             sub.rmdir()
 
     def _resolve_download(self) -> str:
+        return self._resolve_release()[0]
+
+    def _resolve_release(self) -> tuple[str, str | None]:
+        """解析下载地址；返回 (url, release_tag|None)。tag 供升级通道记录版本基线。"""
         strat = self.m.get("download_strategy", "direct")
         if strat == "direct":
-            return self.m["download"]
+            return self.m["download"], None
         if strat == "manual":
             # 上游不发行可直接运行的程序包（如 Dice! 只发平台 dll 模块）：
             # 本地无包时明确引导上传离线包，避免下到「能解压但跑不起来」的错包
@@ -134,22 +183,68 @@ class BaseAdapter(ABC):
                 api,
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "DiceManager"})
             mreq = urllib.request.Request(mirror_url(req.full_url), headers=req.headers)
-            assets = json.load(urllib.request.urlopen(mreq, timeout=30))["assets"]
+            release = json.load(urllib.request.urlopen(mreq, timeout=30))
+            tag = release.get("tag_name") or tag
+            assets = release["assets"]
             pattern = self.m.get("asset_name_pattern")
             if pattern:                               # 正则精确选资产（如 linux-x64 完整包）
                 for a in assets:
                     if re.search(pattern, a["name"]):
-                        return a["browser_download_url"]
+                        self._last_tag = tag
+                        return a["browser_download_url"], tag
             suffix = self.m.get("asset_suffix", ".zip")   # 退化为后缀匹配
             for a in assets:
                 if a["name"].endswith(suffix):
-                    return a["browser_download_url"]
+                    self._last_tag = tag
+                    return a["browser_download_url"], tag
             raise RuntimeError(f"release 未找到匹配资产（pattern={pattern}, suffix={suffix}）")
         raise ValueError(f"未知下载策略: {strat}")
 
     def verify_required(self, instance) -> list:
         return [f for f in self.m["required_files"]
                 if not (Path(instance.dir) / f).exists()]
+
+    # ---------- 升级通道 ----------
+    def latest_tag(self) -> str | None:
+        """上游最新版本号；无法判定（直链固定 URL / manual）返回 None。"""
+        strat = self.m.get("download_strategy", "direct")
+        if strat == "manual":
+            return None
+        if strat == "direct":
+            return None
+        _, tag = self._resolve_release()
+        return tag
+
+    def upgrade(self, instance) -> str | None:
+        """原地升级（实例须已停机，调用方负责备份与重启）：
+
+        绕过缓存重新下载最新包 → 覆盖解压（包内文件覆盖、包外文件保留 =
+        数据/存档不动）→ 校验必备文件。返回新版本 tag（直链策略为 None）。
+        """
+        with program_dir_lock(self.m["name"]):
+            url, tag = self._resolve_release()
+            archive = pkgstore.find_archive(self.m["name"])
+            tmp = pkgstore.pkg_dir() / f"{self.m['name']}.dl.tmp"
+            try:
+                with urllib.request.urlopen(mirror_url(url), timeout=600) as resp, \
+                        open(tmp, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+                if pkgstore.detect_kind(tmp) is None:
+                    raise RuntimeError("下载内容不是有效的 zip/tar 压缩包")
+                # 覆盖本地缓存：升级后新装实例也拿到新版本
+                pkgstore.commit_archive(self.m["name"], tmp, "download")
+                archive = pkgstore.find_archive(self.m["name"])
+                assert archive is not None           # 刚 commit 过，必然命中
+            finally:
+                tmp.unlink(missing_ok=True)
+            if not archive:                    # 理论不可能（刚 commit 过），但类型与防御都要收紧
+                raise RuntimeError("程序包缺失：下载缓存后仍找不到本地包，无法升级")
+            if expected := self.m.get("sha256"):
+                self._verify_sha256(archive, expected)
+            self._extract(archive, instance)
+            if missing := self.verify_required(instance):
+                raise RuntimeError(f"升级后缺失必备文件: {missing}（程序包内容不完整？）")
+        return tag
 
     # ---------- 启动命令：唯一权威入口（安全修正：前端不再传 cmd）----------
     @abstractmethod
@@ -206,6 +301,11 @@ class BaseAdapter(ABC):
         return {"alive": is_alive,
                 "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
 
+    def diagnose_conn(self, instance) -> list[dict]:
+        """互联诊断钩子（拓展2）：返回 [{ok, step, detail}]，只管「本端配置」这层。
+        进程/端口/token 一致性等通用层由 REST 端点统一检测。默认无专属项。"""
+        return []
+
     def get_actual_port(self, lines) -> int | None:
         return None
 
@@ -227,3 +327,8 @@ class BaseAdapter(ABC):
     def extract_verify(self, line: str, instance=None):
         m = re.search(r"ticket url:\s*(https?://\S+)", line)      # 滑块验证锚点
         return {"url": m.group(1)} if m else None
+
+    def extract_login_failed(self, line: str, instance=None):
+        """登录失败锚点（密码错误/账号冻结等）。默认无——各适配器按上游实际文案
+        覆写后，登录页才会收到 login_failed 事件（避免猜测文案造成误报）。"""
+        return None

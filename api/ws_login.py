@@ -14,9 +14,10 @@ router = APIRouter()
 
 @router.websocket("/ws/login/{inst_id}")
 async def ws_login(ws: WebSocket, inst_id: str):
-    if not auth.verify_ws(ws):
+    ok, sub = auth.ws_handshake(ws)
+    if not ok:
         return await ws.close(code=4401)
-    await ws.accept()
+    await ws.accept(subprotocol=sub)
     inst = ctx.registry.get(inst_id)
     adapter = ctx.get_adapter(inst.dice)
     loop = asyncio.get_running_loop()
@@ -24,7 +25,8 @@ async def ws_login(ws: WebSocket, inst_id: str):
 
     # 类型与提取器绑定：事件类型由这里声明，不再从 payload 形状反推
     EXTRACTORS = (("qrcode", adapter.extract_qrcode),
-                  ("verify", adapter.extract_verify))
+                  ("verify", adapter.extract_verify),
+                  ("login_failed", adapter.extract_login_failed))
 
     # 二维码去重：Lagrange 把二维码打成多行字符画，每行都会命中提取器；
     # 同一张码只推一次（按连接保存，重连时仍会补发当前这张）
@@ -72,13 +74,18 @@ async def ws_login(ws: WebSocket, inst_id: str):
         # 不得触碰实例目录 —— 曾因 prepare_start 建出残缺目录致部署 conflict（2026-09-24）。
         def runner(cmd, cwd, label):    # 与 REST start 同路：首启写回端口 + 一次性 --update
             ctx.pm.run_once(inst_id, cmd, cwd, label=label)
-        try:
-            adapter.expose_webui(inst)  # 登录同时开放 WebUI（绑定修正 + ufw，尽力而为）
-        except Exception:
-            pass
+        # 顺序固定：先 prepare_start（写 token 等前置配置）再 expose_webui（改监听绑定），
+        # 反过来首启时绑定修正可能被 prepare 覆盖、或改了个寂寞
         try:
             if adapter.prepare_start(inst, runner):
                 ctx.registry.update(inst_id, first_run_done=True)
+        except Exception as e:
+            ctx.pm.get(inst_id).note(f"prepare_start 失败（不阻断启动）: {e}")
+        try:
+            adapter.expose_webui(inst)  # 登录同时开放 WebUI（绑定修正 + ufw，尽力而为）
+        except Exception as e:
+            ctx.pm.get(inst_id).note(f"WebUI 开放失败（不阻断启动）: {e}")
+        try:
             ctx.pm.launch(inst_id, adapter.build_start_cmd(inst), inst.dir)
         except (RuntimeError, OSError):
             pass                        # 已在运行等竞态：不打死 WS，进程状态经总览暴露
