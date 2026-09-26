@@ -1,10 +1,10 @@
 <template>
   <div class="wizard">
     <div class="wz-head">
-      <h3>{{ wizTitle }} — 第 {{ Math.min(step, stepNames.length) }}/{{ stepNames.length }} 步</h3>
+      <h3>{{ wizTitle }} — 第 {{ curStepIdx }}/{{ stepNames.length }} 步</h3>
       <ol class="steps">
-        <li v-for="s in stepNames" :key="s" :class="{ done: step > stepNames.indexOf(s) + 1,
-                                                      now: step === stepNames.indexOf(s) + 1 }">{{ s }}</li>
+        <li v-for="(s, i) in stepNames" :key="s" :class="{ done: curStepIdx > i + 1,
+                                                      now: curStepIdx === i + 1 }">{{ s }}</li>
       </ol>
     </div>
 
@@ -32,8 +32,8 @@
       <div class="field">
         <label>部署模式</label>
         <select v-model="mode" :disabled="!!pair">
-          <option value="dice">先选骰子端（默认）</option>
-          <option value="pair">先选登录端 · 配对（登录端 → 兼容骰子端 → 互联）</option>
+          <option value="dice">标准：先建骰子端，稍后可关联登录端</option>
+          <option value="pair">配对：先建登录端，再选兼容骰子端（自动互联）</option>
         </select>
         <p class="hint" v-if="mode === 'pair' && !pair">
           先创建并登录一个登录端（自动写入它的互联配置并拉起），随后只列出与它兼容的骰子端，
@@ -80,9 +80,9 @@
           </select>
         </div>
         <div class="field" v-if="loginOptions.length">
-          <label>登录端（可留空，稍后再关联）</label>
+          <label>登录端（{{ loginCandidates.length ? '可留空稍后关联' : '暂无实例可选' }}）</label>
           <select v-model="loginRef">
-            <option value="">不关联</option>
+            <option value="">暂不关联</option>
             <option v-for="o in loginCandidates" :key="o.id" :value="o.id">
               {{ o.dice }} · {{ o.id }}{{ o.qq ? ' (QQ ' + o.qq + ')' : '' }}</option>
           </select>
@@ -116,9 +116,11 @@
         </div>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
       </div>
-      <!-- 缓存管理：程序包下载/上传后永久驻留，这里集中展示占用与是否仍被实例使用 -->
-      <div class="field cache-box">
-        <label>本地缓存（{{ pkgTotalMb }} MB）</label>
+      <!-- 缓存管理：程序包下载/上传后永久驻留，这里集中展示占用与是否仍被实例使用。
+           有死缓存/超龄备份时默认展开提醒，否则收起（管理功能不该压过新建流程） -->
+      <details class="cache-box" :open="unusedRows.length > 0">
+        <summary>本地缓存（{{ pkgTotalMb }} MB）{{ unusedRows.length
+          ? ' · ' + unusedRows.length + ' 个未使用' : ' · 点击管理' }}</summary>
         <p v-if="!pkgRows.length" class="hint">暂无本地缓存。</p>
         <div v-for="r in pkgRows" :key="r.dice" class="pkg">
           <span :class="r.in_use ? 'pkg-ok' : 'pkg-idle'">
@@ -133,10 +135,11 @@
         </div>
         <p class="hint">删除只是清掉种子包，已部署的实例不受影响；再次部署该程序需重新下载或上传。</p>
         <p v-if="pkgMsg2" class="hint">{{ pkgMsg2 }}</p>
-      </div>
+      </details>
       <!-- 备份产物：手动导出 / 升级前快照 / 定时备份都落在 exports/，此前没有任何回收入口 -->
-      <div class="field cache-box">
-        <label>备份文件（{{ expTotalMb }} MB）</label>
+      <details class="cache-box" :open="expStaleRows.length > 0">
+        <summary>备份文件（{{ expTotalMb }} MB）{{ expStaleRows.length
+          ? ' · ' + expStaleRows.length + ' 份超龄' : ' · 点击管理' }}</summary>
         <p v-if="!expRows.length" class="hint">暂无备份文件。</p>
         <div v-for="r in expRows" :key="r.name" class="pkg">
           <span :class="r.age_days >= pruneDays ? 'pkg-idle' : 'pkg-ok'">
@@ -153,7 +156,7 @@
         </div>
         <p class="hint">升级前会自动留一份整目录快照，定时备份也在这里；确认回滚无需要的旧备份可安全清理。</p>
         <p v-if="expMsg" class="hint">{{ expMsg }}</p>
-      </div>
+      </details>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
         <button class="primary" :disabled="!canCreate || busy" @click="create">
@@ -215,26 +218,44 @@
       <p class="hint" v-if="needAuthToken && tokenSaved">TOKEN 已保存，二维码生成中；扫码后点击「我已完成扫码」继续。</p>
     </div>
 
-    <!-- Step4：互联配置 -->
+    <!-- Step4：互联配置。
+         正向/反向在两端是镜像语义：登录端 forward=开 WS 服务端口，骰子端 forward=主动连入
+         ——两端同选「正向」即可连通。旧文案把 forward 一刀切成「本程序监听」，对骰子端
+         恰好说反，按文案选会配出「两端都拨号/都监听」的死局。 -->
     <div v-else-if="step === 4" class="wz-body">
+      <div v-if="loginTarget" class="conn-peer">
+        对端：{{ loginTarget.dice }} · {{ loginTarget.id }}{{ loginTarget.qq
+          ? '（QQ ' + loginTarget.qq + '）' : '' }}
+        <span v-if="peerOb11Port"> · ob11 ws {{ peerOb11Port }}</span>
+      </div>
+      <p v-else-if="needsLoginEnd" class="warn">
+        尚未关联登录端：写入的地址 {{ defaultAddr }} 当前没有程序监听，启动后会持续连接失败。
+        可先继续（稍后在总览关联登录端并「重写互联配置」），但建议现在就回去关联。
+      </p>
       <div class="field">
-        <label>连接方向</label>
+        <label>WS 模式</label>
         <select v-model="conn.direction">
-          <option value="forward">正向 WS：本程序监听端口，等待对端连接</option>
-          <option value="reverse">反向 WS：本程序主动连接对端</option>
+          <option value="forward">正向 WS — {{ isLoginEnd
+            ? '本程序监听端口，等待骰子端连入' : '本程序主动连接登录端' }}（推荐）</option>
+          <option value="reverse">反向 WS — {{ isLoginEnd
+            ? '本程序主动连接骰子端' : '本程序监听端口，等待登录端连入' }}</option>
         </select>
-        <p class="hint">不确定就保持默认：两端一个监听、一个连接即可。</p>
+        <p class="hint">两端选同一模式即可连通（一端监听、另一端连接）；保持默认「正向」适配
+          绝大多数部署，登录端与骰子端都这么选即互通。</p>
       </div>
-      <div class="field">
-        <label>地址（host:port，留空使用端口分配的默认值）</label>
-        <input v-model="conn.addr" placeholder="例如 127.0.0.1:3001"/>
-      </div>
-      <div class="field">
-        <label>互联 Token（两端必须一致，留空自动生成/沿用）</label>
-        <input v-model="conn.token" placeholder="留空自动生成"/>
-      </div>
+      <details class="adv-box">
+        <summary>高级：地址 / Token（默认自动推导，一般无需修改）</summary>
+        <div class="field">
+          <label>地址 host:port</label>
+          <input v-model="conn.addr" :placeholder="'留空 = ' + defaultAddr"/>
+        </div>
+        <div class="field">
+          <label>互联 Token（两端必须一致）</label>
+          <input v-model="conn.token" placeholder="留空自动生成 / 沿用登录端的"/>
+        </div>
+      </details>
       <div class="ops">
-        <button class="primary" :disabled="busy" @click="doConn">确认写入互联配置</button>
+        <button class="primary" :disabled="busy" @click="doConn">写入互联配置</button>
       </div>
       <pre class="preview" v-if="preview">{{ preview }}</pre>
       <p v-if="manual" class="warn">{{ manual }}</p>
@@ -251,7 +272,14 @@
         </div>
       </template>
       <template v-else>
-        <p>已下发启动命令，总览图出现新节点即完成。</p>
+        <p>已启动 <code>{{ instanceId }}</code>，总览图出现新节点即完成。</p>
+        <div v-if="webuiInfo" class="start-info">
+          <a class="webui-link" :href="webuiUrl" target="_blank" rel="noreferrer">
+            打开 WebUI（{{ webuiUrl }}）</a>
+          <p v-if="webuiInfo.token" class="hint">
+            WebUI 令牌：<code class="tok">{{ webuiInfo.token }}</code>（登录页粘贴使用）</p>
+          <p v-else class="hint">令牌将从启动日志中回读，稍后可在总览查看。</p>
+        </div>
         <div class="ops">
           <button class="primary" @click="goOverview">完成，回到总览</button>
           <button @click="reset">再建一个</button>
@@ -266,7 +294,7 @@ import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
          deletePackage, deleteUnusedPackages, listExports, deleteExport, pruneExports,
-         createInstance, wizardStep, delInstance, deployProgress } from '../api'
+         createInstance, wizardStep, delInstance, deployProgress, instanceWebui } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']   // 默认模式（断点续跑文案也用它）
 
@@ -313,6 +341,41 @@ const loginCandidates = computed(() =>
 // 默认选中项要在切换程序时同步，否则默认骰子（未触发 change）永远拿不到该标记
 const needAuthToken = computed(() => !!manifest.value.auth_token_conditional)
 
+// ---------- 向导步进（面向有基础用户）----------
+// 本程序是否 WS 服务端角色：持有 ob11 端口（登录端）→ 正向=监听；骰子端 → 正向=主动连入
+const isLoginEnd = computed(() => !!manifest.value.ob11_default_port)
+// none/external 没有独立登录环节：Step3 自动跳过，步骤条同步少一步
+const skipLoginStep = computed(() =>
+  loginType.value === 'none' || loginType.value === 'external')
+// 后端步号 1-5；跳过登录时把 >3 的步号在显示层左移一位
+const curStepIdx = computed(() => {
+  const s = Math.min(step.value, 5)
+  return Math.min(skipLoginStep.value && s > 3 ? s - 1 : s, stepNames.value.length)
+})
+// 当前实例在列表中的记录（进入 Step4 时 refreshLists 已带回）
+const curInst = computed(() =>
+  instanceId ? instances.value.find(i => i.id === instanceId) || null : null)
+// 互联对端：实例记录里的 login_ref 优先，配对模式/表单选择兜底
+const loginTarget = computed(() => {
+  const ref = curInst.value?.login_ref || loginRef.value ||
+    (pair.value?.phase === 'dice' ? pair.value.loginId : '')
+  return ref ? instances.value.find(i => i.id === ref) || null : null
+})
+const peerOb11Port = computed(() =>
+  (loginTarget.value?.allocated_ports || {}).ob11)
+// 骰子端（兼容矩阵非空）却没关联登录端 → Step4 明确警告，别让用户造出连不通的实例
+const needsLoginEnd = computed(() =>
+  loginOptions.value.length > 0 && !loginTarget.value)
+// 与后端 wizard.step4 同口径的默认地址预览：自己有 ob11 用自己的，否则对端的
+const defaultAddr = computed(() => {
+  const own = (curInst.value?.allocated_ports || {}).ob11 || manifest.value.ob11_default_port
+  return `127.0.0.1:${own || peerOb11Port.value || 3001}`
+})
+// Step5 启动完成后的 WebUI 直达信息
+const webuiInfo = ref(null)
+const webuiUrl = computed(() => webuiInfo.value?.port
+  ? `http://${location.hostname}:${webuiInfo.value.port}` : '')
+
 // ---------- 配对模式 ----------
 // 登录端程序 = 在任意骰子端 manifest 的 compatible_login 里出现过的程序（纯清单驱动，无名字分支）
 const loginPrograms = computed(() => {
@@ -336,10 +399,13 @@ const createLabel = computed(() => {
   return pkgInfo.value ? '解压本地包部署（自动关联登录端）' : '下载部署（自动关联登录端）'
 })
 const stepNames = computed(() => {
-  if (mode.value !== 'pair' || !pair.value) return STEP_NAMES
+  if (mode.value !== 'pair' || !pair.value)
+    return skipLoginStep.value ? STEP_NAMES.filter(s => s !== '登录') : STEP_NAMES
   return pair.value.phase === 'login'
     ? ['选登录端', '部署', '登录']                    // 登录端启动在登录完成后自动进行
-    : ['选骰子端', '部署', '登录', '互联', '启动']
+    : skipLoginStep.value
+      ? ['选骰子端', '部署', '互联', '启动']
+      : ['选骰子端', '部署', '登录', '互联', '启动']
 })
 const wizTitle = computed(() => {
   if (mode.value !== 'pair' || !pair.value) return '新建骰子'
@@ -468,7 +534,7 @@ const reset = () => {
   qr.value = {}; verifyUrl.value = ''; preview.value = ''; manual.value = ''
   cred.value = { qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' }
   conn.value = { direction: 'forward', addr: '', token: '' }
-  started.value = false; tokenSaved.value = false
+  started.value = false; tokenSaved.value = false; webuiInfo.value = null
   loginRef.value = ''; instanceId = null
   pair.value = null; loginChoice.value = ''; loginHandled = false
   stopDeployPoll(); deployMsg.value = ''
@@ -486,7 +552,7 @@ const resume = p => {
   dice.value = p.dice
   loginRef.value = p.login_ref || ''
   step.value = Math.min(p.next_step || 1, 5)
-  if (step.value === 3 && loginType.value === 'qrcode') openLoginWS()
+  if (step.value === 3) enterStep3().catch(e => { err.value = e.message || String(e) })
 }
 
 // 停止并删除未完成实例（如下载失败卡在部署中的）：未完成实例无存档，目录一并清理
@@ -545,7 +611,7 @@ const enterPhaseStepOne = () => {
   qr.value = {}; verifyUrl.value = ''; preview.value = ''; manual.value = ''
   cred.value = { qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' }
   conn.value = { direction: 'forward', addr: '', token: '' }
-  started.value = false; tokenSaved.value = false
+  started.value = false; tokenSaved.value = false; webuiInfo.value = null
   sock.value?.close(); sock.value = null
   loginHandled = false
   step.value = 1
@@ -562,17 +628,27 @@ const doStep = async (n, payload) => {
     if (r.manual) manual.value = r.manual
     if (n === 3) { afterLoginDone(); return }        // 登录完成去向统一收口（含配对阶段切换）
     step.value = n + 1
-    if (step.value === 3) {
-      loginHandled = false                            // 进入新一次登录步
-      if (loginType.value === 'qrcode') {
-        // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
-        if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
-        openLoginWS()
-      }
+    if (step.value === 3) await enterStep3()
+    if (step.value === 4) {
+      preview.value = r.preview || ''
+      refreshLists()          // Step4 要展示对端（login_ref）与它的 ob11 端口，先刷新实例列表
     }
-    if (step.value === 4) preview.value = r.preview || ''
   } finally {
     if (n === 2) stopDeployPoll()
+  }
+}
+
+// 进入第 3 步（登录）的统一入口：
+// · qrcode/account → 开 WS 推二维码（LLBot 的 TOKEN 先落盘再拉起）
+// · none/external  → 无独立登录环节，自动提交 step3（后端直接转 CONFIGURED）跳过空转页
+const enterStep3 = async () => {
+  loginHandled = false
+  if (loginType.value === 'qrcode') {
+    // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
+    if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
+    openLoginWS()
+  } else if (skipLoginStep.value) {
+    await doStep(3, {})
   }
 }
 
@@ -627,6 +703,10 @@ const doConn = () => guard(async () => {
 const startInst = () => guard(async () => {
   await doStep(5, {})
   started.value = true
+  // 就地反馈：WebUI 直达 + 令牌（actual_port 由启动日志回读，等一拍再取更准）
+  setTimeout(() => instanceWebui(instanceId)
+    .then(w => { webuiInfo.value = w })
+    .catch(() => {}), 2500)
   refreshLists()
 })
 
@@ -638,8 +718,7 @@ const resolve = useExisting => guard(async () => {   // 冲突二选一：重发
     stopDeployPoll()
   }
   conflict.value = false; step.value = 3
-  loginHandled = false                                // 重新进入登录步
-  if (loginType.value === 'qrcode') openLoginWS()
+  await enterStep3()                                 // 登录步统一入口（none/external 自动跳过）
 })
 
 const openLoginWS = () => {
@@ -700,8 +779,21 @@ onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }
 .pkg-idle { color: var(--muted); }
-.cache-box { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.cache-box { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.cache-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.cache-box[open] summary { margin-bottom: 10px; }
 .cache-box .pkg { font-size: 13px; }
+.conn-peer {
+  padding: 8px 12px; margin-bottom: 14px; font-size: 13px;
+  border: 1px solid var(--step-done-border, var(--border));
+  background: var(--step-done-bg, var(--code-bg)); border-radius: 8px;
+}
+.adv-box { max-width: 480px; margin-bottom: 14px; }
+.adv-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.adv-box[open] summary { margin-bottom: 10px; }
+.start-info { margin-bottom: 12px; }
+.webui-link { color: var(--brand); }
+.tok { user-select: all; font-family: ui-monospace, Menlo, Consolas, monospace; }
 .inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .pending-item { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .dialog code { font-family: ui-monospace, Menlo, Consolas, monospace; }

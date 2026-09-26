@@ -4,7 +4,7 @@
   "exe": "sealdice-core", "install_root": "/opt",
   "webui_default_port": 3211,
   "login_type": "external",
-  "compatible_login": ["napcat", "llbot", "lagrange", "builtin"],
+  "compatible_login": ["napcat", "llbot", "lagrange"],
   "recommended_protocols": ["onebot11-ws-forward", "onebot11-ws-reverse"],
   "config_strategy": "dice.yaml:diceConfigs[].dataDir + serve.yaml:imSession.endPoints",
   "data_paths": ["data"],
