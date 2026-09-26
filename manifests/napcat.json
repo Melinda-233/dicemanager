@@ -10,5 +10,7 @@
   "prerequisite": "linuxqq-deb",
   "release_page": "https://github.com/NapNeko/NapCatQQ/releases",
   "download": "https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.zip",
-  "download_strategy": "direct", "required_files": []
+  // 非空校验不能省：本地缓存包优先于在线下载，空值时误传的源码包也会被判「部署成功」
+  // （仓库源码里根本没有 NapCat.sh —— 它是 CI 构建产物里的启动脚本，正好用来区分）
+  "download_strategy": "direct", "required_files": ["NapCat.sh"]
 }

@@ -112,14 +112,22 @@ systemctl daemon-reload
 systemctl enable --now dicemanager
 
 # ---------- 8. Nginx ----------
-log "配置 Nginx 反向代理"
+# 面板对外端口一律以 nginx 配置为准（该机 80 被既有站点 default_server 占用 → 实际 8888）。
+# 硬编码 80 会让「放行端口」与「访问地址」两处提示同时指错，换机部署必然踩坑。
+PANEL_PORT=$(sed -n 's/^[[:space:]]*listen[[:space:]]*\([0-9]\{1,5\}\).*/\1/p' \
+    "$APP_DIR/deploy/nginx-dicemanager.conf" | head -1)
+PANEL_PORT=${PANEL_PORT:-8888}
+log "配置 Nginx 反向代理（对外端口 $PANEL_PORT）"
 cp "$APP_DIR/deploy/nginx-dicemanager.conf" /etc/nginx/conf.d/dicemanager.conf
 if command -v nginx >/dev/null 2>&1; then
   nginx -t && systemctl enable --now nginx && systemctl reload nginx
 fi
+# 放行的是面板实际端口，不是 http(80)：两者不一致时按 80 放行等于没放行
 if command -v firewall-cmd >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-service=http >/dev/null 2>&1 || true
+  firewall-cmd --permanent --add-port="${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
   firewall-cmd --reload >/dev/null 2>&1 || true
+elif command -v ufw >/dev/null 2>&1; then
+  ufw allow "${PANEL_PORT}/tcp" >/dev/null 2>&1 || true
 fi
 
 # ---------- 9. 输出 ----------
@@ -130,5 +138,10 @@ echo
 echo "查看本次管理密码（首次启动随机生成）："
 echo "    journalctl -u dicemanager -n 50 | grep '\\[auth\\]'"
 echo
-echo "浏览器访问：  http://$(curl -s --max-time 3 http://100.100.100.200/latest/meta-data/public-ipv4 2>/dev/null || echo '<你的公网IP>')"
-echo "（记得在阿里云安全组放行 80 端口）"
+PUBLIC_IP=$(curl -s --max-time 3 http://100.100.100.200/latest/meta-data/public-ipv4 2>/dev/null || echo '<你的公网IP>')
+if [ "$PANEL_PORT" = "80" ]; then
+  echo "浏览器访问：  http://$PUBLIC_IP"
+else
+  echo "浏览器访问：  http://$PUBLIC_IP:$PANEL_PORT"
+fi
+echo "（记得在云厂商安全组放行 ${PANEL_PORT} 端口）"

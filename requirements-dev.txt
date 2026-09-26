@@ -4,3 +4,5 @@
 pytest>=9.1,<10
 ruff>=0.16,<0.17
 mypy>=2.3,<3
+# WS 通道集成测试需要 starlette TestClient（httpx 是其底层依赖）
+httpx>=0.28,<0.29

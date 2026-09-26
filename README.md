@@ -1,17 +1,34 @@
 # DiceManager — 骰子管理器
 
-在 Linux 服务器上统一管理多个 QQ 骰子程序的 Web 管理器。支持 **5 个骰子程序**的
-一键部署、登录承载、互联配置与进程守护，通过拓扑总览实时掌握每个骰子的运行与连接状态。
+在 Linux 服务器上统一管理多个 QQ 骰子程序的 Web 管理器。支持 **4 个骰子端 + 6 个登录端**
+（共 10 份程序清单）的一键部署、登录承载、互联配置与进程守护，通过拓扑总览实时掌握
+每个骰子的运行与连接状态。
 
 ## 支持的程序
+
+### 骰子端（4）
 
 | 程序 | 架构 | 登录方式 | 互联说明 |
 |---|---|---|---|
 | [海豹 SealDice](https://sealdice.com/download) | 独立程序 | 外置登录端 | WS 正向/反向均可，配置自动写入 serve.yaml |
-| LLBot | 独立程序 | 二维码（v8.0.9+ 需申请 AUTH TOKEN） | ob11/milky/satori 多端口，JSON5 配置热更新 |
-| NapCatQQ | 独立程序 | 二维码（WebUI） | WebUI API 写互联配置，不可达时给出手动兜底指引 |
-| 溯洄 Dice! | 整合包（allinone） | 账号密码（推荐 PAD/WATCH 协议） | 自包含，无外部 WS 配置 |
+| 溯洄 Dice! | 独立程序 | 外置登录端（离线上传） | AutoLogin.yml / config.txt 双版本识别 |
 | 青果 OlivaDice | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
+| Dice!Next | 独立程序 | 外置登录端 | OneBot v11 适配器写入 config/adapters.json |
+
+### 登录端（6）
+
+| 程序 | 架构 | 登录方式 | 说明 |
+|---|---|---|---|
+| NapCatQQ | 独立程序 | 二维码（WebUI） | WebUI API 写互联配置，不可达时给出手动兜底指引 |
+| Lagrange.OneBot | 独立程序 | 二维码（stdout 字符画 + 落盘 qr-*.png） | 无头部署需预置配置，否则等按键 |
+| Lagrange.Milky | 独立程序 | 二维码 | Milky 协议端口，与 OneBot 分开分配 |
+| LLBot | 独立程序 | 二维码（v8.0.9+ 需申请 AUTH TOKEN） | ob11/milky/satori 多端口，JSON5 配置热更新 |
+| SnowLuma | 独立程序 | WebUI | launcher.sh 启动，WebUI 内完成登录 |
+| Yogurt | 独立程序 | 二维码 | 可作为海豹的登录端 |
+
+> 骰子端 / 登录端的划分由清单驱动：登录端 = 在任意骰子端 manifest 的
+> `compatible_login` 里出现过的程序，代码里没有程序名分支。新增程序只需
+> 加 `manifests/<name>.json` + `adapters/<name>.py` + 适配器注册一行。
 
 ## 功能特性
 
@@ -54,32 +71,42 @@ dice-manager/
 ├── requirements.txt
 ├── core/        # 核心层：原子写、锁、端口分配、实例注册表、进程管理
 │   ├── atomicio.py     # mkstemp + os.replace + fsync 原子写；JSON5 兼容读
-│   ├── locks.py        # 端口/目录/实例三类临界区（threading + fcntl 双层）
+│   ├── locks.py        # 端口/目录/实例三类临界区（RLock + 引用计数文件锁）
 │   ├── ports.py        # allocate_many 批量分配 + release_owner 整体释放
 │   ├── registry.py     # 实例状态机 UNDEPLOYED→…→RUNNING；墓碑式删除
 │   ├── process.py      # Popen + tail 线程 + 环形缓冲 + 自动重启
 │   ├── packages.py     # 程序包缓存（魔数识别 + 完整性校验 + 死缓存清理）
+│   ├── metrics.py      # 资源采样（含子进程，进程句柄复用）
+│   ├── firewall.py     # ufw/firewalld 端口放行
+│   ├── logutil.py      # 实例日志滚动与读取（50MB / 7 天双限）
 │   ├── exports.py      # 备份产物目录（清单 / 单删 / 按天清理）
 │   ├── scanner.py      # 安装根扫描：游离目录与游离进程
 │   ├── scheduler.py    # 定时任务守护（每日重启 / 备份）
 │   └── backup.py       # 备份导出与导入（full 整目录 / data 应用数据）
-├── adapters/    # 适配器层：每个骰子程序一份，实现统一契约
+├── adapters/    # 适配器层：每个程序一份，实现统一契约
 │   ├── base.py         # deploy / build_start_cmd / configure_login / write_conn_config
 │   ├── sealdice.py     # serve.yaml 与 1.x 单文件 dice.yaml 双形态端点写入
-│   ├── llbot.py        # JSON5 配置热更新；v8 需 AUTH TOKEN
-│   ├── napcat.py       # WebUI API 写配置 + 手动兜底 WriteResult
 │   ├── shiki.py        # AutoLogin.yml / config.txt 双版本识别；删实例保留存档
-│   └── olivadice.py    # OPK 组合部署，缺核阻断 / 缺件告警
+│   ├── olivadice.py    # OPK 组合部署，缺核阻断 / 缺件告警
+│   ├── dicenext.py     # config/adapters.json 的 OneBot v11 适配器条目
+│   ├── napcat.py       # WebUI API 写配置 + 手动兜底 WriteResult
+│   ├── lagrange.py     # 无头部署预置配置；二维码落盘 qr-{uin}.png
+│   ├── lagrange_milky.py # Milky 协议变体
+│   ├── llbot.py        # JSON5 配置热更新；v8 需 AUTH TOKEN
+│   ├── snowluma.py     # launcher.sh 启动 + WebUI 登录
+│   └── yogurt.py       # Yogurt 登录端
 ├── services/    # 服务层
 │   ├── wizard.py       # 五步向导状态机（断点续跑 + 冲突弹窗）
+│   ├── login.py        # 登录流程（二维码/滑块链接转发）
 │   └── resume.py       # 面板重启后自动拉回 RUNNING 但已死的实例
 ├── api/         # Web 服务层
 │   ├── rest.py         # REST：向导 / 实例操作 / 程序包 / 备份产物 / 二次确认删除
+│   ├── auth.py         # 随机密码 + PBKDF2 + Bearer token（恒定时间比较）
 │   ├── ws_overview.py  # 通道1：拓扑 + 资源水位（2s）
 │   ├── ws_logs.py      # 通道2：日志 tail（回放 + 过滤 + 错误标记）
 │   ├── ws_login.py     # 通道3：二维码/滑块验证推送，refresh/skip_login
 │   └── app.py          # 组装 + lifespan + 监听 127.0.0.1:8765
-├── manifests/   # 5 个程序清单：下载地址、端口、配置路径、兼容矩阵
+├── manifests/   # 10 份程序清单（4 骰子端 + 6 登录端）：下载地址、端口、配置路径、兼容矩阵
 └── web/         # Vue3 前端：Overview（拓扑）/ LogCenter（日志）/ Wizard（向导）
 ```
 
@@ -112,7 +139,7 @@ Windows 开发 / 非 root 运行可用环境变量覆盖路径：`DM_STATE_DIR`�
 ```bash
 pip install -r requirements-dev.txt
 ruff check .                          # Lint（紧凑单行风格已豁免，见 pyproject.toml）
-mypy                                  # 类型检查（core + services）
+mypy                                  # 类型检查（core + services + api + adapters）
 pytest tests/                         # 进程守护回归测试（自动重启线程/计数/seq 一致性）
 python tests/smoke_local.py           # Windows 可跑的本地冒烟（fcntl 自动打桩）
 ```

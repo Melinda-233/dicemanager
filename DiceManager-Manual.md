@@ -759,12 +759,13 @@ systemctl restart dicemanager
 
 ```bash
 ruff check .     # E/F/W/I/B/SIM；刻意豁免 E701/E702（本项目紧凑单行风格）
-mypy             # 只查 core/ + services/，platform=linux
+mypy             # core/ + services/ + api/ + adapters/ 全量，platform=linux
 ```
 
 `pyproject.toml` 里的关键取舍：
 - `platform = "linux"`：让 `fcntl` / `killpg` / `SIGKILL` 参与检查而不报「Windows 上不存在」。**代价**是平台条件导入不能写成 `if posix: import fcntl else: fcntl = None`（会被判赋值错误 + else 分支永不可达），必须显式声明成 `ModuleType | None` 再在使用处 `assert` 收窄。
-- `files = ["core", "services"]`：adapters/api 大量依赖 FastAPI/pydantic 动态特性，信噪比低，暂未纳入。
+- `files = ["core", "services", "api", "adapters"]`：放开全量后实测 38 文件零问题，
+  FastAPI/pydantic 动态特性没有带来预期中的噪声。
 
 ### 9.3 测试
 
@@ -773,7 +774,7 @@ pytest tests/ -v              # 回归测试
 python tests/smoke_local.py   # Windows 可跑的本地冒烟（自动打桩 fcntl）
 ```
 
-已知测试文件：`test_process.py`（进程守护：重启后线程不翻倍、计数、seq 一致）、`test_patch_regress.py`、`test_pkg_deploy.py`、`test_shiki_offline.py`、`test_snowluma_dicenext.py`，以及两个冒烟脚本。
+已知测试文件：`test_process.py`（进程守护：重启后线程不翻倍、计数、seq 一致）、`test_patch_regress.py`、`test_pkg_deploy.py`、`test_shiki_offline.py`、`test_snowluma_dicenext.py`、`test_ws_channels.py`（三条 WS 通道，`httpx` 依赖见 requirements-dev）、`test_manifest_integrity.py`（清单完整性：`required_files` 非空、`compatible_login` 引用存在、骰子端/登录端划分自洽），以及两个冒烟脚本。
 
 **Windows 本地注意事项**：`fcntl` 不可用，`smoke_local.py` 会打桩；`process.py` 和 `locks.py` 都做了 POSIX 守卫（`_POSIX` / `msvcrt`）。所以本地能跑通不等于线上没问题——**真机验证不可省**。
 
@@ -823,7 +824,7 @@ cd web && npm run build     # 或直接用 node 跑 vite
 2. **实例配置的可视化编辑**：目前改配置要么走向导重跑，要么手工进服务器。
 3. **备份与还原**：「导入」（上传压缩包 → 停机 → 覆盖解压 → 重启，总览页「上传备份」按钮）已实现；「导出」（把实例目录打成压缩包下载）待做。
 4. **通知渠道**：进程熔断、连接断开目前只能靠人看总览。可接 Webhook / 邮件。
-5. **mypy 覆盖面扩大**：先把 `adapters/` 纳入（给适配器加 `manifest: dict[str, Any]` 的类型标注后信噪比会好转）。
+5. ~~**mypy 覆盖面扩大**~~：已于 2026-09-26 完成，`core/ + services/ + api/ + adapters/` 全量纳入且零报错。
 6. **协议扩展**：manifest 已预留 `milky_default_port` / `satori_default_port` 两个端口角色与 `compatible_login` 机制，接入 Milky 协议端时主要工作在于「连接配置的读写形态与 OneBot 不同」——需要给适配器区分协议类型，不能复用现有 OneBot 写法。
 
 ---

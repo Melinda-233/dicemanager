@@ -13,6 +13,8 @@ web/dist/
 .workbuddy/
 *.log
 *.log.1
+# pytest 临时根目录（本地跑测试时用 --basetemp 指向仓库内，避免系统 TEMP 的清理限制）
+.pytest_tmp*/
 
 # 编辑器
 .vscode/

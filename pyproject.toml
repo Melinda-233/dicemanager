@@ -24,5 +24,6 @@ platform = "linux"              # 本项目仅部署 Linux：fcntl/killpg/SIGKIL
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unreachable = true
-# 只查核心层：adapters/api 大量依赖 FastAPI/pydantic 动态特性，信噪比低，后续逐步放开
-files = ["core", "services"]
+# 全量类型检查：core/services/api/adapters 均已无错（38 文件）。
+# 此前只查核心层是怕 FastAPI/pydantic 动态特性噪声，实测放开后是干净的。
+files = ["core", "services", "api", "adapters"]

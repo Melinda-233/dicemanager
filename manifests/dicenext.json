@@ -10,6 +10,6 @@
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",
   "download_strategy": "resolve_latest_via_api",
   "asset_name_pattern": "DiceNext-.*-linux-amd64-.*\\.tar\\.gz",
-  "required_files": [],
+  "required_files": ["DiceNext"],
   "approx_memory_mb": 150
 }

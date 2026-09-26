@@ -18,7 +18,7 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Lint (ruff)
         run: ruff check .
-      - name: Type check (mypy, core+services)
+      - name: Type check (mypy, core+services+api+adapters)
         run: mypy
       - name: Regression tests
         run: pytest tests/ -v

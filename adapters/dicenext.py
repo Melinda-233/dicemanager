@@ -15,6 +15,19 @@ from core.atomicio import atomic_write_json
 
 
 class DiceNextAdapter(BaseAdapter):
+    def verify_required(self, instance) -> list:
+        """二进制名随版本变（DiceNext / dicenext-linux-amd64…），与 build_start_cmd
+        用同一套兜底判定，而不是写死单一文件名——否则上游改个名字就全实例误报缺件。
+
+        非空校验不能省：本地缓存包优先于在线下载，此前 required_files 为空 →
+        误传的源码 tar 也被判「部署成功」，启动才炸在找不到可执行文件上。
+        """
+        d = Path(instance.dir)
+        if d.exists() and any(f.is_file() and f.name.lower().startswith("dicenext")
+                              for f in d.iterdir()):
+            return []
+        return list(self.m["required_files"])   # 缺失时报清单登记名，提示更具体
+
     def build_start_cmd(self, instance) -> list[str]:
         d = Path(instance.dir)
         exe = d / self.m["exe"]

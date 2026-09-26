@@ -47,7 +47,7 @@ SNOWLUMA_MANIFEST = {
 }
 DICENEXT_MANIFEST = {
     "name": "dicenext", "exe": "DiceNext",
-    "config_path": "config/adapters.json", "required_files": [],
+    "config_path": "config/adapters.json", "required_files": ["DiceNext"],
 }
 
 
@@ -87,6 +87,9 @@ def test_deploy_tar_gz_normalizes_top_level(tmp_path, monkeypatch):
     assert not (tmp_path / "sl" / "SnowLuma-linux-x64").exists()   # 顶层目录已归一化
     # build_start_cmd 指向归一化后的 launcher.sh
     assert ad.build_start_cmd(inst) == [str(tmp_path / "sl" / "launcher.sh")]
+    # 包缓存目录是模块级单例、跨测试模块共享：留着会让 test_pkg_deploy 的
+    # 「缓存里只有 d1」断言变成顺序依赖（单独跑都绿、换顺序就红）。用完即清。
+    pkgstore.remove_archive("snowluma")
 
 
 # ---------- 下载策略：asset_name_pattern 选资 ----------
@@ -198,3 +201,68 @@ def test_dicenext_build_start_cmd_glob_fallback(tmp_path):
     ad = DiceNextAdapter(DICENEXT_MANIFEST)
     inst = SimpleNamespace(dir=str(tmp_path), allocated_ports={}, actual_port=None)
     assert ad.build_start_cmd(inst) == [str(exe)]
+
+
+def test_dicenext_verify_required_tolerates_renamed_binary(tmp_path):
+    """上游改名（DiceNext-1.2.3 等）不能误报缺件：与 build_start_cmd 同一套兜底。"""
+    (tmp_path / "DiceNext-1.2.3").write_text("ELF")
+    ad = DiceNextAdapter(DICENEXT_MANIFEST)
+    inst = SimpleNamespace(dir=str(tmp_path), allocated_ports={}, actual_port=None)
+    assert ad.verify_required(inst) == []
+
+
+def test_dicenext_verify_required_rejects_source_tarball(tmp_path):
+    """误传源码包（没有可执行文件）必须判缺件——此前 required_files 为空会静默 ok。"""
+    (tmp_path / "README.md").write_text("source")
+    (tmp_path / "src").mkdir()
+    ad = DiceNextAdapter(DICENEXT_MANIFEST)
+    inst = SimpleNamespace(dir=str(tmp_path), allocated_ports={}, actual_port=None)
+    assert ad.verify_required(inst) == ["DiceNext"]
+
+
+# ---------- 解压降级路径（Python < 3.10.12 无 tarfile filter=） ----------
+def _patch_no_filter_extractall(monkeypatch):
+    """让 tarfile.extractall 拒绝 filter= 关键字，模拟旧版本 Python。"""
+    real = tarfile.TarFile.extractall
+
+    def _reject_filter(self, path=".", members=None, **kw):
+        if "filter" in kw:
+            raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+        return real(self, path, members, **kw)
+    monkeypatch.setattr(tarfile.TarFile, "extractall", _reject_filter)
+
+
+def test_deploy_tar_gz_without_filter_support(tmp_path, monkeypatch):
+    """旧 Python 没有 filter="data"：必须走降级路径解压成功，而不是崩在 TypeError。
+
+    install.sh 允许 Python 3.10+，而 filter= 参数要到 3.10.12 / 3.12 才有。
+    """
+    _patch_no_filter_extractall(monkeypatch)
+    put_package("snowluma", _tar_gz_bytes("SnowLuma-linux-x64",
+                                          {"launcher.sh": "#!/bin/sh"}), source="upload")
+    ad = SnowLumaAdapter(SNOWLUMA_MANIFEST)
+    inst = SimpleNamespace(dir=str(tmp_path / "sl"), allocated_ports={}, actual_port=None)
+    assert ad.deploy(inst) == "ok"
+    assert (tmp_path / "sl" / "launcher.sh").exists()
+    pkgstore.remove_archive("snowluma")
+
+
+def test_deploy_fallback_rejects_path_traversal(tmp_path, monkeypatch):
+    """降级路径同样要挡 tar 穿越：绝对路径与 ../ 成员一律剔除（等价于 filter="data"）。"""
+    _patch_no_filter_extractall(monkeypatch)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name in ("../../evil.txt", "/abs/evil.txt", "ok.txt"):
+            data = b"pwned"
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    put_package("snowluma", buf.getvalue(), source="upload")
+
+    ad = SnowLumaAdapter({**SNOWLUMA_MANIFEST, "required_files": []})
+    inst = SimpleNamespace(dir=str(tmp_path / "sl"), allocated_ports={}, actual_port=None)
+    ad.deploy(inst)
+    assert (tmp_path / "sl" / "ok.txt").read_bytes() == b"pwned"
+    assert not (tmp_path / "evil.txt").exists()          # ../ 被剥掉
+    assert not (tmp_path.parent / "evil.txt").exists()   # 更外层也没有
+    pkgstore.remove_archive("snowluma")

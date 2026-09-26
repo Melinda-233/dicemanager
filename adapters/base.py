@@ -33,6 +33,24 @@ def deploy_version_of(inst_id: str) -> str | None:
 def deploy_progress_of(inst_id: str) -> dict:
     return DEPLOY_PROGRESS.get(inst_id) or {"stage": "idle"}
 
+
+def _safe_tar_members(tf, target: Path):
+    """tarfile 无 filter= 参数时的降级成员筛选（Python < 3.10.12）。
+
+    手工复刻 filter="data" 的关键约束：剔除绝对路径/盘符、剔除向上穿越的 ..、
+    剔除符号链接与设备文件（否则可用链接把实例目录外的文件替换掉）。
+    """
+    kept = []
+    for m in tf.getmembers():
+        if m.issym() or m.islnk() or not (m.isfile() or m.isdir()):
+            continue
+        rel = os.path.normpath(m.name.replace("\\", "/"))
+        if os.path.isabs(rel) or ":" in rel.split("/")[0] or rel.startswith(".."):
+            continue
+        m.name = rel                             # 归一化后再交给 extractall
+        kept.append(m)
+    return kept
+
 # 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
 # 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
 # 也可指向自建反代；留空则直连。
@@ -147,7 +165,10 @@ class BaseAdapter(ABC):
             import tarfile
             # filter="data" 防 tar 内绝对路径/../ 穿越解压（等价 zip 的取成员名安全做法）
             with tarfile.open(archive, "r:*") as tf:
-                tf.extractall(target, filter="data")
+                try:
+                    tf.extractall(target, filter="data")
+                except TypeError:                # Python < 3.10.12 无 filter 参数
+                    tf.extractall(target, members=_safe_tar_members(tf, target))
         # 归一化：压缩包常带唯一顶层目录（如 SnowLuma-linux-x64/），
         # 把其内容直接上移到实例目录，避免 instance.dir/xxx/launcher.sh 这种错位
         entries = [p for p in target.iterdir()]
