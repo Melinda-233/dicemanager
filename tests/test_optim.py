@@ -156,3 +156,33 @@ def test_valid_ops_guard():
         instance_op("ghost", "reboot")
     assert e.value.status_code == 404
     assert "restart" in VALID_OPS and "reboot" not in VALID_OPS
+
+
+def test_concrete_instance_routes_precede_op_wildcard():
+    """/instances/{inst_id}/{op} 是通配路由，FastAPI 按注册顺序匹配：任何注册在它之后
+    的同形子路由都会被当成 op 吞掉（同源事故：/instances/{id}/backup 曾被 {op} 抢先，
+    导入请求静默走了 stop 分支）。这条断言原先只写在 tests/smoke_local.py 里，
+    pytest 不收集该文件 → CI 保护不到，故移进来并做成通用形式：以后新增子路由自动受保护。"""
+    from api.app import app
+    prefix = "/api/instances/{inst_id}/"
+    wild = prefix + "{op}"
+    paths = [getattr(r, "path", "") for r in app.routes]
+    assert wild in paths, "通配路由不存在，本断言已失去意义"
+    wild_at = paths.index(wild)
+    concrete = [(i, p) for i, p in enumerate(paths)
+                if p.startswith(prefix) and p != wild and "{" not in p[len(prefix):]]
+    assert concrete, "没找到任何具体子路由，断言失效（路由结构变了？）"
+    shadowed = [(i, p) for i, p in concrete if i > wild_at]
+    assert not shadowed, f"以下子路由注册在 {{op}} 之后，会被通配吞掉: {shadowed}"
+
+
+def test_all_op_targets_have_no_concrete_route():
+    """反向约束：VALID_OPS 里的操作不能同时存在具体路由，否则两路由语义分叉。"""
+    from api.app import app
+    prefix = "/api/instances/{inst_id}/"
+    concrete = {getattr(r, "path", "")[len(prefix):]
+                for r in app.routes
+                if getattr(r, "path", "").startswith(prefix)
+                and "{" not in getattr(r, "path", "")[len(prefix):]}
+    clash = sorted(set(VALID_OPS) & concrete)
+    assert not clash, f"操作名与具体路由重名，{clash} 会走两套实现"

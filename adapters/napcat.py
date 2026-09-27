@@ -82,16 +82,11 @@ class NapCatAdapter(BaseAdapter):
 
     def webui_credentials(self, instance):
         """WebUI 的 (port, token)：webui.json 优先，其次日志回读落盘的字段。"""
-        wf = self._webui_json(instance)
-        if wf.exists():
-            try:
-                d = json.loads(wf.read_text("utf-8"))
-                if d.get("token"):
-                    port = (d.get("port") or instance.actual_port
-                            or instance.allocated_ports.get("webui"))
-                    return int(port), d["token"]
-            except (ValueError, OSError):
-                pass
+        d = self.read_json(self._webui_json(instance))     # 缺失/损坏 → {} → 走日志回读
+        if d.get("token"):
+            port = (d.get("port") or instance.actual_port
+                    or instance.allocated_ports.get("webui"))
+            return int(port), d["token"]
         return (instance.actual_port or instance.allocated_ports.get("webui"),
                 instance.webui_token)
 

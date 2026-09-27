@@ -15,6 +15,9 @@ from core.atomicio import atomic_write_json
 
 
 class DiceNextAdapter(BaseAdapter):
+    # 骰子不直接监听 ob11（正向模式连出），用 WebUI 端口作存活探针
+    HEALTH_PORT_KEYS = ["webui"]
+
     def verify_required(self, instance) -> list:
         """二进制名随版本变（DiceNext / dicenext-linux-amd64…），与 build_start_cmd
         用同一套兜底判定，而不是写死单一文件名——否则上游改个名字就全实例误报缺件。
@@ -76,11 +79,3 @@ class DiceNextAdapter(BaseAdapter):
 
     def get_actual_port(self, lines) -> int | None:
         return None                                 # 端口由 allocated/webui 决定，无需日志回读
-
-    def health_check(self, instance, is_alive: bool = False) -> dict:
-        # 骰子不直接监听 ob11（正向模式连出），用 WebUI 端口作存活探针
-        port = instance.allocated_ports.get("webui") or instance.actual_port
-        if not port:
-            return {"alive": is_alive, "conn": "none"}
-        return {"alive": is_alive,
-                "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}

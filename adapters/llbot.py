@@ -21,6 +21,10 @@ from core.atomicio import atomic_write_json
 class LLBotAdapter(BaseAdapter):
     V8 = (8, 0, 9)
 
+    # LLBot 的 ob11 端口在配置里固定存在，探测不到即为断连（不是「未配置」）
+    HEALTH_USE_ACTUAL_PORT = False
+    HEALTH_NO_PORT = "down"
+
     @staticmethod
     def _parse_ver(v) -> tuple:
         try:
@@ -185,8 +189,3 @@ class LLBotAdapter(BaseAdapter):
                 return {"url": None, "base64": f"data:image/png;base64,{b64}"}
             time.sleep(0.2)
         return None
-
-    def health_check(self, instance, is_alive=False) -> dict:
-        port = instance.allocated_ports.get("ob11")
-        ok = self.tcp_probe("127.0.0.1", port) if port else False
-        return {"alive": is_alive, "conn": "ok" if ok else "down"}

@@ -18,7 +18,6 @@
 - 自更新默认关闭（UpdaterConfig.EnableAutoUpdate=false），无需干预。
 """
 import copy
-import json
 
 from adapters.base import WriteResult
 from adapters.lagrange_base import LagrangeBase
@@ -58,13 +57,7 @@ class LagrangeAdapter(LagrangeBase):
     # ---------- 互联配置 ----------
     def get_conn_token(self, instance) -> str | None:
         """回读 AccessToken，供骰子端经 login_ref 继承，保证两端 token 一致。"""
-        p = self._config(instance)
-        if not p.exists():
-            return None
-        try:
-            data = json.loads(p.read_text("utf-8", errors="ignore"))
-        except (OSError, ValueError):
-            return None
+        data = self.read_json(self._config(instance))       # 缺失/损坏 → {} → None
         for impl in data.get("Implementations") or []:
             if isinstance(impl, dict) and impl.get("AccessToken"):
                 return str(impl["AccessToken"])

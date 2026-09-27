@@ -8,7 +8,6 @@
   骰子端（Dice-Next 等）forward_ws 指向该地址并携带同一 token 才能互通。
 - 登录在 SnowLuma 自带 WebUI 完成（接入 QQ 进程），dicemanager 不代劳。
 """
-import json
 import re
 from pathlib import Path
 
@@ -81,18 +80,14 @@ class SnowLumaAdapter(BaseAdapter):
         # onebot.json 里记录账号，优先从这里取
         for cand in (d / "config" / "onebot.json", d / "onebot.json",
                      d / ".snowluma" / "config" / "onebot.json"):
-            if cand.exists():
-                try:
-                    data = json.loads(cand.read_text("utf-8", errors="ignore"))
-                except (OSError, ValueError):
-                    continue
-                for acc in (data.get("accounts") or []):
-                    if str(acc.get("uin") or acc.get("qq") or ""):
-                        return str(acc["uin"] or acc["qq"])
-                # 新版可能在 networks 里
-                for srv in (data.get("networks", {}).get("wsServers") or []):
-                    if str(srv.get("account") or ""):
-                        return str(srv["account"])
+            data = self.read_json(cand)                   # 缺失/损坏 → {} → 继续下一个候选
+            for acc in (data.get("accounts") or []):
+                if str(acc.get("uin") or acc.get("qq") or ""):
+                    return str(acc["uin"] or acc["qq"])
+            # 新版可能在 networks 里
+            for srv in (data.get("networks") or {}).get("wsServers") or []:
+                if str(srv.get("account") or ""):
+                    return str(srv["account"])
         return None
 
     def get_conn_token(self, instance) -> str | None:
@@ -102,20 +97,8 @@ class SnowLumaAdapter(BaseAdapter):
                  d / ".snowluma" / "config" / "onebot.json",
                  Path.home() / ".snowluma" / "config" / "onebot.json")
         for cand in cands:
-            if not cand.exists():
-                continue
-            try:
-                data = json.loads(cand.read_text("utf-8", errors="ignore"))
-            except (OSError, ValueError):
-                continue
-            for srv in (data.get("networks", {}).get("wsServers") or []):
+            data = self.read_json(cand)                   # 缺失/损坏 → {} → 继续下一个候选
+            for srv in ((data.get("networks") or {}).get("wsServers") or []):
                 if srv.get("accessToken"):
                     return str(srv["accessToken"])
         return None
-
-    def health_check(self, instance, is_alive: bool = False) -> dict:
-        port = instance.allocated_ports.get("ob11") or instance.actual_port
-        if not port:
-            return {"alive": is_alive, "conn": "none"}
-        return {"alive": is_alive,
-                "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}

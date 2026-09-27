@@ -6,6 +6,8 @@ from adapters.base import BaseAdapter, WriteResult
 
 
 class OlivaDiceAdapter(BaseAdapter):
+    # 整合包（内置客户端，无外部 WS 端口）：进程存活即视为已连接
+    HEALTH_PORT_KEYS: list[str] = []
     def deploy(self, instance) -> str:
         from core.locks import program_dir_lock
         with program_dir_lock("olivadice"):
@@ -31,6 +33,3 @@ class OlivaDiceAdapter(BaseAdapter):
 
     def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
         return WriteResult(ok=True)                            # 内置客户端无外部 WS
-
-    def health_check(self, instance, is_alive=False) -> dict:
-        return {"alive": is_alive, "conn": "ok" if is_alive else "down"}

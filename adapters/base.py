@@ -301,6 +301,18 @@ class BaseAdapter(ABC):
         import secrets
         return secrets.token_urlsafe(n)
 
+    @staticmethod
+    def read_json(path) -> dict:
+        """异常安全的配置读取：文件缺失/损坏/非对象一律返回 {}。
+
+        各适配器回读 token、UIN 时四处重复 try/except + exists 判空，口径容易走偏
+        （有的吞 OSError、有的只吞 ValueError），统一由此收敛。"""
+        try:
+            data = json.loads(Path(path).read_text("utf-8", errors="ignore"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     # ---------- 登录与互联 ----------
     @abstractmethod
     def configure_login(self, instance, credentials: dict) -> dict: ...
@@ -314,11 +326,33 @@ class BaseAdapter(ABC):
             s.settimeout(timeout)
             return s.connect_ex((host, int(port))) == 0
 
+    # ---------- 健康检查的端口口径（子类只需声明，不必复写 health_check）----------
+    # 依次探测的端口键；空列表 = 本程序不监听互联端口（如整合包），直接以进程存活为准
+    HEALTH_PORT_KEYS: list[str] = ["ob11"]
+    # 端口键全部落空时，是否退回实例实际监听端口（正向 WS 监听型才是 True）
+    HEALTH_USE_ACTUAL_PORT = True
+    # 无端口可探时的 conn 取值（LLBot 必定有 ob11，缺了就是 down 而非 none）
+    HEALTH_NO_PORT = "none"
+
+    def _health_port(self, instance) -> int:
+        ports = instance.allocated_ports or {}
+        for key in self.HEALTH_PORT_KEYS:
+            if ports.get(key):
+                return int(ports[key])                       # type: ignore[arg-type]
+        if self.HEALTH_USE_ACTUAL_PORT:
+            return int(getattr(instance, "actual_port", 0) or 0)
+        return 0
+
     def health_check(self, instance, is_alive: bool = False) -> dict:
-        """默认：进程存活 + 端口 TCP 探测；conn: ok/down/none。"""
-        port = instance.allocated_ports.get("ob11") or instance.actual_port
+        """默认：进程存活 + 端口 TCP 探测；conn: ok/down/none。
+
+        各程序只差「探测哪个端口」，统一由 HEALTH_PORT_KEYS 声明；需要按进程存活判定的
+        整合包把键列表置空即可，无需各写一份近乎逐字相同的覆写。"""
+        if not self.HEALTH_PORT_KEYS:                        # 整合包：进程活着即视为已连接
+            return {"alive": is_alive, "conn": "ok" if is_alive else "down"}
+        port = self._health_port(instance)
         if not port:
-            return {"alive": is_alive, "conn": "none"}
+            return {"alive": is_alive, "conn": self.HEALTH_NO_PORT}
         return {"alive": is_alive,
                 "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
 

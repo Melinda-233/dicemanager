@@ -13,7 +13,6 @@
 - 自更新默认关，无需干预。
 """
 import copy
-import json
 
 from adapters.base import WriteResult
 from adapters.lagrange_base import LagrangeBase
@@ -39,6 +38,10 @@ DEFAULT_CONFIG = {
 
 
 class LagrangeMilkyAdapter(LagrangeBase):
+    # Milky 对外服务端口是独立分配的 milky 端口，与 actual_port 无关
+    HEALTH_PORT_KEYS = ["milky"]
+    HEALTH_USE_ACTUAL_PORT = False
+
     # ---------- 配置合并（深合并，保留用户已改的嵌套键）----------
     @staticmethod
     def _fill_defaults(cfg: dict) -> dict:
@@ -77,14 +80,8 @@ class LagrangeMilkyAdapter(LagrangeBase):
 
     def get_conn_token(self, instance) -> str | None:
         """回读 Milky.AccessToken，供骰子端经 login_ref 继承，保证两端 token 一致。"""
-        p = self._config(instance)
-        if not p.exists():
-            return None
-        try:
-            data = json.loads(p.read_text("utf-8", errors="ignore"))
-        except (OSError, ValueError):
-            return None
-        return data.get("Milky", {}).get("AccessToken")
+        data = self.read_json(self._config(instance))     # 缺失/损坏 → {} → None
+        return (data.get("Milky") or {}).get("AccessToken")
 
     # ---------- 互联配置（写 Milky 服务端）----------
     def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
@@ -107,11 +104,3 @@ class LagrangeMilkyAdapter(LagrangeBase):
             manual=f"已写入 appsettings.json（Milky.HttpServer 0.0.0.0:{port}，"
                    f"AccessToken 已设）。骰子端用 Milky 基址 http://<本机IP>:{port} 连接，"
                    f"Token={token}。改配置后需重启实例生效。")
-
-    # ---------- 健康检查 ----------
-    def health_check(self, instance, is_alive: bool = False) -> dict:
-        port = (instance.allocated_ports or {}).get("milky")
-        if not port:
-            return {"alive": is_alive, "conn": "none"}
-        return {"alive": is_alive,
-                "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}

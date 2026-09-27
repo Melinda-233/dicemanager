@@ -15,6 +15,9 @@ from adapters.base import BaseAdapter, WriteResult
 
 
 class ShikiAdapter(BaseAdapter):
+    # 整合包（allinone，QQ 登录由外部登录端完成，本端不监听互联端口）
+    HEALTH_PORT_KEYS: list[str] = []
+
     def build_start_cmd(self, instance) -> list[str]:
         return [str(Path(instance.dir) / self.m["exe"])]
 
@@ -37,6 +40,3 @@ class ShikiAdapter(BaseAdapter):
             ok=True,
             manual=f"{guide}\n  Token：{token}\n"
                    f"Dice! 的 OneBot 连接配置暂请在程序侧按上面填写（两端务必一致）。")
-
-    def health_check(self, instance, is_alive=False) -> dict:
-        return {"alive": is_alive, "conn": "ok" if is_alive else "down"}

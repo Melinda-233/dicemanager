@@ -484,7 +484,8 @@ def write_conn_config(self, instance, mode: str, direction: str,
 | `deploy(instance) -> "ok" \| "conflict"` | 锁目录 → 已有目录则校验必备文件 → 取包（本地优先）→ 校验 sha256 → 解压 → 归一化顶层目录 → 校验必备文件 | 部署流程本身特殊（如 Olivadice 的 OPK 组合、缺核阻断、缺件告警） |
 | `verify_required(instance) -> list` | 返回缺失的 `required_files` | 缺件判定要更复杂时 |
 | `prepare_start(instance, runner) -> bool` | 返回 `False`（不做事） | 启动前需要改配置或执行一次性命令。返回 `True` 表示「做了一次性动作」，调用方会落盘 `first_run_done`。`runner(cmd, cwd, label)` 用于跑一次性命令并把输出汇入本实例日志 |
-| `health_check(instance, is_alive) -> dict` | 有 ob11 端口则 TCP 探测，返回 `{alive, conn: ok/down/none}` | 需要更准的判定（SealDice 读 `serve.yaml` 的 `state`，Dice!Next 探 WebUI 端口） |
+| `health_check(instance, is_alive) -> dict` | 按 `HEALTH_PORT_KEYS` 依次探端口（默认 `["ob11"]`），返回 `{alive, conn: ok/down/none}`；键列表置空则「进程存活即已连接」 | 判定口径不是端口探测时（SealDice 读 `serve.yaml` 的 `state`） |
+| `HEALTH_PORT_KEYS = ["ob11"]` | — | 只差探测哪个端口时**声明即可**，不必覆写方法（Dice!Next 探 `webui`、Milky 系探 `milky`、整合包置 `[]`） |
 | `get_actual_port(lines) -> int \| None` | `None` | 真实端口只能从日志回读时（NapCat 端口冲突自动 +1） |
 | `get_webui_token(lines) -> str \| None` | `None` | WebUI 令牌只打印在启动日志里 |
 | `detect_account(instance) -> str \| None` | `None` | 能从配置文件回读 QQ 号时（首选，最可靠） |
@@ -524,7 +525,7 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
 **A. 骰子端 · 独立程序**（`login_type: external`，范例 `shiki.py` / `dicenext.py`）
 - `configure_login` 返回 `{"needs_login": False}`
 - `write_conn_config` 写自己的适配器/端点配置（Dice!Next 写 `config/adapters.json`；Dice! 因上游格式未确认只给指引）
-- `health_check` 若在正向模式下自己不监听端口，就探 WebUI 端口当存活信号
+- 正向模式下自己不监听端口时，用 `HEALTH_PORT_KEYS = ["webui"]` 声明探 WebUI 端口当存活信号
 
 **B. 登录端**（`login_type: qrcode|webui`，范例 `napcat.py` / `snowluma.py` / `llbot.py`）
 - `write_conn_config` 通常需要处理「正向 = 自己监听」与「反向 = 自己连出」两种条目结构
@@ -630,12 +631,9 @@ class FooAdapter(BaseAdapter):
         return WriteResult(ok=True, path=str(path),
                            manual="已写入 config/adapters.json，面板启用后生效。")
 
-    def health_check(self, instance, is_alive: bool = False) -> dict:
-        port = instance.allocated_ports.get("ob11") or instance.actual_port
-        if not port:
-            return {"alive": is_alive, "conn": "none"}
-        return {"alive": is_alive,
-                "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
+    # 端口探测型：声明探测哪个端口键即可，无需覆写 health_check
+    # （整合包内置客户端、不监听互联端口时写 HEALTH_PORT_KEYS = []）
+    HEALTH_PORT_KEYS = ["ob11"]
 ```
 
 **Step 4｜注册**

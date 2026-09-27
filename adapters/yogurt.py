@@ -12,7 +12,6 @@
 """
 import base64
 import copy
-import json
 import re
 from pathlib import Path
 
@@ -44,6 +43,10 @@ DEFAULT_CONFIG = {
 
 
 class YogurtAdapter(BaseAdapter):
+    # Milky 服务端口独立分配，与 actual_port 无关
+    HEALTH_PORT_KEYS = ["milky"]
+    HEALTH_USE_ACTUAL_PORT = False
+
     # ---------- 路径 ----------
     def _config(self, instance) -> Path:
         return Path(instance.dir) / self.m.get("config_path", "config.json")
@@ -103,14 +106,9 @@ class YogurtAdapter(BaseAdapter):
 
     # ---------- 账号回读 ----------
     def detect_account(self, instance) -> str | None:
-        p = self._config(instance)
-        if p.exists():
-            try:
-                d = json.loads(p.read_text("utf-8", errors="ignore"))
-                if d.get("quickLoginUin"):
-                    return str(d["quickLoginUin"])
-            except (OSError, ValueError):
-                pass
+        d = self.read_json(self._config(instance))
+        if d.get("quickLoginUin"):
+            return str(d["quickLoginUin"])
         # 回退：日志里找 5-12 位纯数字（保守，仅作兜底）
         return None
 
@@ -124,13 +122,7 @@ class YogurtAdapter(BaseAdapter):
         return None
 
     def get_conn_token(self, instance) -> str | None:
-        p = self._config(instance)
-        if not p.exists():
-            return None
-        try:
-            data = json.loads(p.read_text("utf-8", errors="ignore"))
-        except (OSError, ValueError):
-            return None
+        data = self.read_json(self._config(instance))          # 缺失/损坏 → {} → None
         return (data.get("httpConfig") or {}).get("accessToken") or None
 
     # ---------- 互联配置（写 Milky 服务端）----------
@@ -154,11 +146,3 @@ class YogurtAdapter(BaseAdapter):
             manual=f"已写入 config.json（httpConfig 0.0.0.0:{port}，AccessToken 已设）。"
                    f"骰子端用 Milky 基址 http://<本机IP>:{port} 连接，Token={token}。"
                    f"注意：需 PMHQ 已在 ws://localhost:13000/ws 运行。改配置后需重启实例生效。")
-
-    # ---------- 健康检查 ----------
-    def health_check(self, instance, is_alive: bool = False) -> dict:
-        port = (instance.allocated_ports or {}).get("milky")
-        if not port:
-            return {"alive": is_alive, "conn": "none"}
-        return {"alive": is_alive,
-                "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
