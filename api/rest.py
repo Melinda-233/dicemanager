@@ -69,7 +69,20 @@ def run_wizard_step(inst_id: str, req: StepReq):
 
 @router.get("/instances")
 def list_instances():
-    return [{**r, "process": ctx.pm.get(r["id"]).probe()} for r in ctx.registry.all()]
+    out = []
+    for r in ctx.registry.all():
+        proc = ctx.pm.get(r["id"])
+        p = proc.probe()
+        # 句柄失效但服务端口仍通（launcher 重启 / 面板重启后 worker reparent）→ 视为存活，
+        # 与 /ws/overview 同口径，避免首屏把仍在跑的 llbot 等判为已停止
+        if not p["alive"]:
+            try:
+                if ctx.get_adapter(r["dice"]).is_up(SimpleNamespace(**r)):
+                    p = {**p, "alive": True}
+            except Exception:
+                pass
+        out.append({**r, "process": p})
+    return out
 
 class LinkReq(BaseModel):
     login_ref: str | None = None         # None = 解除关联
@@ -663,7 +676,7 @@ def download_log(inst_id: str):
     return FileResponse(p, filename=f"{inst_id}.log")
 
 
-# ---------- 定时任务（拓展7）：每日定时重启 / 定时备份 ----------
+# ---------- 定时任务（拓展7）：按「每 X 天 X 小时」间隔定时重启 / 定时备份 ----------
 
 @router.get("/schedules")
 def list_schedules():
@@ -675,8 +688,8 @@ def list_schedules():
 class SchedReq(BaseModel):
     inst_id: str
     kind: str                                    # restart | backup
-    hh: int
-    mm: int
+    every_days: int = 0                          # 每 X 天
+    every_hours: int = 0                         # 每 X 小时（合计须 ≥ 1 小时）
     scope: str = "data"                          # backup 专用：full | data
     keep: int = 7                                # backup 专用：保留份数
 
@@ -685,7 +698,8 @@ class SchedReq(BaseModel):
 def add_schedule(req: SchedReq):
     _inst_or_404(req.inst_id)
     try:
-        return ctx.scheduler.add(req.inst_id, req.kind, req.hh, req.mm,
+        return ctx.scheduler.add(req.inst_id, req.kind,
+                                 req.every_days, req.every_hours,
                                  scope=req.scope, keep=req.keep)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
@@ -700,7 +714,7 @@ def del_schedule(task_id: str):
 
 @router.post("/schedules/{task_id}/run")
 def run_schedule(task_id: str):
-    """手动立即执行（补跑/测试）；执行后记 last_day，今晚到点不再重复跑。"""
+    """手动立即执行（补跑/测试）；执行后记 last_run，未满间隔不再重复跑。"""
     try:
         return ctx.scheduler.run_now(task_id)
     except KeyError as e:

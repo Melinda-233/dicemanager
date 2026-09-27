@@ -5,6 +5,7 @@
 自己，不放大为整条 WS 断连。actual_port 由本循环从 ring 延迟回填——启动瞬间
 进程尚未打印端口，向导 step5 的即时回读恒为 None（已移除）。"""
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import psutil
@@ -14,6 +15,7 @@ from api.auth import auth
 from api.context import ctx
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 EDGE_STATES = {"ok": "solid-green",        # 实线绿：已连接
                "none": "dashed-gray",      # 虚线灰：已配置未连接
@@ -63,7 +65,7 @@ def _backfill_from_logs(rec: dict, lines: list[str]) -> dict:
         ct = adapter.get_conn_token(SimpleNamespace(**rec))
         if ct and ct != rec.get("conn_token"):
             upd["conn_token"] = ct
-    if not rec.get("qq"):
+    if not rec.get("qq") and hasattr(adapter, "detect_account"):
         qq = adapter.detect_account(SimpleNamespace(**rec))
         if qq:
             upd["qq"] = qq
@@ -72,14 +74,30 @@ def _backfill_from_logs(rec: dict, lines: list[str]) -> dict:
         return {**rec, **upd}
     return rec
 
+
+def _service_reachable(rec: dict) -> bool:
+    """句柄失效但服务端口仍通 → 程序实际在跑（总览显示兜底）。
+
+    llbot 等是 launcher+worker 结构：面板只持有 launcher 的 Popen 句柄，worker(node)
+    才是真正监听端口的进程。launcher 重启 / 面板重启后 worker 被 reparent 到 init 时，
+    句柄失效会让总览误判「已停止」，但 worker 仍在 3001/3080 上服务。这里用 adapter.is_up
+    （端口 TCP 探测，与 health_check 同口径）作真相兜底，避免节点变灰/消失。"""
+    try:
+        return bool(ctx.get_adapter(rec["dice"]).is_up(SimpleNamespace(**rec)))
+    except Exception:
+        return False
+
+
 async def overview_loop(ws: WebSocket):
     while True:
         nodes, edges = [], []
         for rec in ctx.registry.all():
             try:
                 proc = ctx.pm.get(rec["id"])
-                alive = proc.is_alive()
-                if alive:
+                handle_alive = proc.is_alive()
+                # 句柄失效但端口仍通（launcher 重启 / 面板重启后 worker reparent）→ 视为存活
+                alive = handle_alive or _service_reachable(rec)
+                if handle_alive:
                     rec = _backfill_from_logs(rec, _consume_new_lines(proc))
                 nodes.append({"id": rec["id"], "dice": rec["dice"],
                               "arch": rec["arch"],              # allinone → 单节点渲染
@@ -106,7 +124,8 @@ async def overview_loop(ws: WebSocket):
                     except Exception:
                         edges.append({"src": rec["id"], "dst": rec["login_ref"],
                                       "state": "solid-red"})
-            except Exception:                                  # 单实例异常不拖垮整条推送
+            except Exception as e:                             # 单实例异常不拖垮整条推送，但留痕
+                logger.warning("overview skip %s: %r", rec.get("id"), e)
                 continue
         vm = psutil.virtual_memory()
         try:

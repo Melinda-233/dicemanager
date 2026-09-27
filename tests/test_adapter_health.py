@@ -93,3 +93,22 @@ def test_read_json_tolerates_missing_and_broken(tmp_path):
     ok = tmp_path / "ok.json"
     ok.write_text('{"a": 1}', encoding="utf-8")
     assert BaseAdapter.read_json(ok) == {"a": 1}
+
+
+def test_is_up_reflects_port_not_handle(probe):
+    """is_up 只看端口可达，不看进程句柄——这是总览在 launcher 重启 / 面板重启后
+    worker reparent 场景下不误判「已停止」的兜底机制。
+
+    LLBot 必有 ob11：端口通即视为可达；端口不通即不可达。"""
+    ad = LLBotAdapter({})
+    probe.add(3001)
+    assert ad.is_up(_inst({"ob11": 3001})) is True
+    assert ad.is_up(_inst({"ob11": 3999})) is False
+
+
+def test_is_up_swallows_health_check_errors(probe, monkeypatch):
+    """health_check 意外抛错时 is_up 必须返回 False 而非冒泡，否则会拖垮整条推送。"""
+    ad = LLBotAdapter({})
+    monkeypatch.setattr(ad, "health_check",
+                        lambda instance, is_alive=False: (_ for _ in ()).throw(RuntimeError("x")))
+    assert ad.is_up(_inst({"ob11": 3001})) is False

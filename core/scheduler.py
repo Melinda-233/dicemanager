@@ -1,18 +1,20 @@
-"""定时任务守护：每日定时重启 / 定时备份（导出到状态目录 backups/，滚动保留）
+"""定时任务守护：按「每 X 天 X 小时」间隔定时重启 / 定时备份（导出到状态目录 backups/，滚动保留）
 
-- schedules.json（STATE_DIR）：[{id, inst_id, kind, hh, mm, enabled, scope, keep, last_day}]
-- 守护线程 30s 一跳：匹配「当前时刻的 HH:MM 且今天还没跑过」即执行；
-  last_day 持久化防重启后同一分钟重复执行。
+- schedules.json（STATE_DIR）：
+  [{id, inst_id, kind, every_days, every_hours, enabled, scope, keep, last_run}]
+- 守护线程 30s 一跳：now - last_run ≥ 间隔即执行；last_run 持久化防重启后重复执行。
+  新建任务 last_run 置空 → 下一个调度轮（≤30s）先执行一次，之后按间隔重复。
+- 旧版「每日 hh:mm」任务读取时自动迁移为「每 1 天 0 小时」（last_run 置空，先补跑一次）。
 - 备份复用 core.backup.export_dir（scope=full 整目录 / data 应用数据局部），
   与手动导出同一实现——「整实例目录备份」与「应用端数据局部备份」两种口径在
   kind=backup 时同样成立。
-- 执行失败写管理器日志，绝不重试到死：错过就等下一天。
+- 执行失败写管理器日志，绝不重试到死：错过就等下一个间隔。
 """
 import json
 import logging
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from core.atomicio import write_atomic
@@ -21,6 +23,20 @@ from core.locks import instance_lock
 log = logging.getLogger("dicemanager.scheduler")
 
 CHECK_INTERVAL = 30
+
+
+def _due(task: dict, now: datetime) -> bool:
+    """now - last_run ≥ 间隔即到期；last_run 为空（新建 / 旧版迁移）视为立即到期。"""
+    last = task.get("last_run") or ""
+    try:
+        prev = datetime.fromisoformat(last) if last else None
+    except ValueError:
+        prev = None
+    if prev is None:
+        return True
+    interval = timedelta(days=int(task.get("every_days", 0)),
+                         hours=int(task.get("every_hours", 0)))
+    return now - prev >= interval
 
 
 class Scheduler:
@@ -37,19 +53,21 @@ class Scheduler:
     def list_all(self) -> list[dict]:
         return self._load()
 
-    def add(self, inst_id: str, kind: str, hh: int, mm: int,
+    def add(self, inst_id: str, kind: str, every_days: int, every_hours: int,
             scope: str = "data", keep: int = 7) -> dict:
         if kind not in ("restart", "backup"):
             raise ValueError(f"未知任务类型: {kind}")
         if kind == "backup" and scope not in ("full", "data"):
             raise ValueError(f"未知备份口径: {scope}")
-        if not (0 <= hh <= 23 and 0 <= mm <= 59):
-            raise ValueError("时间需为 0-23 时 / 0-59 分")
+        if not (0 <= int(every_days) <= 365 and 0 <= int(every_hours) <= 23) \
+                or int(every_days) * 24 + int(every_hours) < 1:
+            raise ValueError("间隔需为 每 0-365 天 0-23 小时，且合计不少于 1 小时")
         self._reg.get(inst_id)                   # 不存在直接 KeyError → 404
         task = {"id": uuid.uuid4().hex[:8], "inst_id": inst_id, "kind": kind,
-                "hh": int(hh), "mm": int(mm), "enabled": True,
+                "every_days": int(every_days), "every_hours": int(every_hours),
+                "enabled": True,
                 "scope": scope, "keep": max(1, min(int(keep), 60)),
-                "last_day": ""}
+                "last_run": ""}                  # 空 → 下一调度轮先跑一次再进间隔
         with instance_lock("schedules"):        # 与写盘互斥（轻量，读写都短）
             data = self._load()
             data.append(task)
@@ -66,7 +84,7 @@ class Scheduler:
         return True
 
     def run_now(self, task_id: str) -> dict:
-        """手动立即执行（测试/补跑）；记 last_day 防止今晚到点再自动跑一次。"""
+        """手动立即执行（测试/补跑）；记 last_run 防止到间隔后再自动跑一次。"""
         task = next((t for t in self._load() if t["id"] == task_id), None)
         if not task:
             raise KeyError(f"任务不存在: {task_id}")
@@ -75,12 +93,11 @@ class Scheduler:
         self._running.add(task["id"])
         try:
             self._run(task, datetime.now())
-            today = datetime.now().strftime("%Y-%m-%d")
             with instance_lock("schedules"):
                 data = self._load()
                 for t in data:
                     if t["id"] == task_id:
-                        t["last_day"] = today
+                        t["last_run"] = datetime.now().isoformat(timespec="seconds")
                 self._flush(data)
             return {"ok": True, "task": task["id"], "kind": task["kind"]}
         finally:
@@ -92,9 +109,18 @@ class Scheduler:
             return []
         try:
             d = json.loads(self._path.read_text("utf-8"))
-            return d if isinstance(d, list) else []
         except (OSError, ValueError):
             return []
+        if not isinstance(d, list):
+            return []
+        for t in d:
+            if isinstance(t, dict) and "every_days" not in t:
+                # 旧版「每日 hh:mm」→「每 1 天 0 小时」；last_run 置空，下一轮先补跑一次
+                t["every_days"] = 1
+                t["every_hours"] = 0
+                t.pop("last_day", None)
+                t.setdefault("last_run", "")
+        return [t for t in d if isinstance(t, dict)]
 
     def _flush(self, data: list[dict]) -> None:
         write_atomic(self._path, json.dumps(data, ensure_ascii=False).encode("utf-8"))
@@ -125,20 +151,18 @@ class Scheduler:
         for task in self._load():
             if not task.get("enabled") or task["id"] in self._running:
                 continue
-            if (task["hh"], task["mm"]) != (now.hour, now.minute):
-                continue
-            if task.get("last_day") == now.strftime("%Y-%m-%d"):
+            if not _due(task, now):
                 continue
             self._running.add(task["id"])
             try:
                 self._run(task, now)
                 ran.append(task["id"])
-                task["last_day"] = now.strftime("%Y-%m-%d")
+                task["last_run"] = now.isoformat(timespec="seconds")
                 with instance_lock("schedules"):
                     data = self._load()
                     for t in data:
                         if t["id"] == task["id"]:
-                            t["last_day"] = task["last_day"]
+                            t["last_run"] = task["last_run"]
                     self._flush(data)
             except Exception as e:
                 log.warning("[scheduler] 任务 %s(%s) 执行失败: %s",

@@ -70,6 +70,16 @@ class FakeAdapter:
     def detect_account(self, instance):
         return None
 
+    def is_up(self, instance) -> bool:
+        """替身：真探 ob11 端口，让「句柄失效但端口通」的 reparent 回归测试能跑通。"""
+        import socket as _s
+        port = (getattr(instance, "allocated_ports", {}) or {}).get("ob11")
+        if not port:
+            return False
+        with _s.socket() as s:
+            s.settimeout(1.0)
+            return s.connect_ex(("127.0.0.1", int(port))) == 0
+
 
 def _mk(iid, dice, state=State.CONFIGURED.value, **kw):
     """建实例 + 注入替身适配器；返回该实例的 ManagedProcess（ring 入口）。"""
@@ -112,6 +122,27 @@ def test_ws_overview_payload_carries_login_ref_and_qq(client):
     assert any(e["src"] == "sealdice-w1" and e["dst"] == "napcat-w1"
                for e in payload["edges"])
     assert {"ratio", "total_mb", "used_mb", "alert"} <= set(payload["resmon"])
+
+
+def test_ws_overview_shows_alive_when_handle_stale_but_port_up(client):
+    """回归：llbot 等 launcher+worker 结构，面板句柄失效（launcher 重启 / 面板重启后
+    worker reparent 到 init）但端口仍在监听时，总览必须把节点判为存活，而非凭空变灰/消失。"""
+    import socket
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    proc = _mk("llbot-r1", "llbot", state=State.RUNNING.value,
+               allocated_ports={"webui": 3080, "ob11": port})
+    proc.is_alive = lambda: False          # 模拟句柄失效：launcher 已退出 / 被 reparent
+    try:
+        with client.websocket_connect("/ws/overview", headers=HEADERS) as ws:
+            payload = ws.receive_json()["payload"]
+        nodes = {n["id"]: n for n in payload["nodes"]}
+        assert nodes["llbot-r1"]["process_alive"] is True
+    finally:
+        srv.close()
 
 
 def test_ws_overview_rejects_bad_token(client):

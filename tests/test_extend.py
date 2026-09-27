@@ -109,14 +109,27 @@ def _stub_wizard(monkeypatch):
 def test_scheduler_backup_and_restart_run(monkeypatch):
     sched, w = _stub_wizard(monkeypatch)
     now = datetime(2026, 9, 26, 8, 30)
-    b = sched.add("sealdice-s1", "backup", 8, 30, scope="data", keep=2)
-    r = sched.add("sealdice-s1", "restart", 8, 30)
-    assert sched.tick(now) and set(sched.tick(now)) == set()   # last_day 防重复
+    b = sched.add("sealdice-s1", "backup", 1, 0, scope="data", keep=2)
+    r = sched.add("sealdice-s1", "restart", 1, 0)
+    assert sched.tick(now) and set(sched.tick(now)) == set()   # last_run 防重复
     out = Path(tmp, "backups")
     tars = list(out.glob("*sealdice-s1-*.tar.gz"))
     assert len(tars) == 1                                      # backup 任务产出 1 份
     # restart 任务确实走了向导启动路径
     assert "sealdice-s1" in w.started
+
+
+def test_scheduler_interval_every_days_hours(monkeypatch):
+    """「每 X 天 X 小时」间隔语义：新建先跑一次，未满间隔不重复，满间隔再跑。"""
+    from datetime import timedelta
+    sched, _ = _stub_wizard(monkeypatch)
+    t0 = datetime(2026, 9, 26, 8, 0)
+    sched.add("sealdice-s1", "restart", 1, 2)                  # 每 1 天 2 小时
+    assert sched.tick(t0)                                      # 新建 → 下一轮先执行一次
+    assert not sched.tick(t0 + timedelta(minutes=5))           # 未满间隔
+    assert not sched.tick(t0 + timedelta(hours=1))             # 未满间隔
+    assert sched.tick(t0 + timedelta(hours=26))                # 满 1 天 2 小时 → 到期
+    assert not sched.tick(t0 + timedelta(hours=27))            # 刚跑过，未满间隔
 
 
 def test_scheduler_backup_prune_keeps_n(monkeypatch):
@@ -132,7 +145,7 @@ def test_scheduler_backup_prune_keeps_n(monkeypatch):
             ti.size = 0
             tf.addfile(ti, io.BytesIO(b""))
         p.write_bytes(p.read_bytes())                          # 触碰 mtime 顺序
-    task = sched.add("sealdice-s1", "backup", 9, 0, scope="data", keep=2)
+    task = sched.add("sealdice-s1", "backup", 1, 0, scope="data", keep=2)
     sched.run_now(task["id"])
     left = [p for p in out.glob("*sealdice-s1-*.tar.gz")]
     assert len(left) == 2                                      # 5 旧 + 1 新 → 只留 2 份最新
@@ -153,7 +166,7 @@ def test_scheduler_prune_isolated_by_scope(monkeypatch):
                 ti = tarfile.TarInfo("marker")
                 ti.size = 0
                 tf.addfile(ti, io.BytesIO(b""))
-    task = sched.add("sealdice-s1", "backup", 9, 0, scope="data", keep=2)
+    task = sched.add("sealdice-s1", "backup", 1, 0, scope="data", keep=2)
     sched.run_now(task["id"])
     assert len(list(out.glob("*-sched-data-*.tar.gz"))) == 2   # 4 旧 + 1 新 → 留 2
     assert len(list(out.glob("*-sched-full-*.tar.gz"))) == 4   # full 口径不受牵连
@@ -162,11 +175,31 @@ def test_scheduler_prune_isolated_by_scope(monkeypatch):
 def test_scheduler_rejects_bad_input(monkeypatch):
     sched, _ = _stub_wizard(monkeypatch)
     with pytest.raises(ValueError):
-        sched.add("sealdice-s1", "reboot", 8, 30)
+        sched.add("sealdice-s1", "reboot", 1, 0)
     with pytest.raises(ValueError):
-        sched.add("sealdice-s1", "restart", 25, 30)
+        sched.add("sealdice-s1", "restart", 0, 30)             # 小时超出 0-23
+    with pytest.raises(ValueError):
+        sched.add("sealdice-s1", "restart", 0, 0)              # 合计不足 1 小时
+    with pytest.raises(ValueError):
+        sched.add("sealdice-s1", "restart", 366, 0)            # 天数超出上限
     with pytest.raises(KeyError):
-        sched.add("ghost-instance", "restart", 8, 30)
+        sched.add("ghost-instance", "restart", 1, 0)
+
+
+def test_scheduler_legacy_daily_task_migrates(monkeypatch):
+    """旧版「每日 hh:mm」任务读取时迁移为「每 1 天 0 小时」：last_run 空 → 下轮先补跑一次。"""
+    from datetime import timedelta
+    sched, w = _stub_wizard(monkeypatch)
+    Path(tmp, "schedules_test.json").write_text(json.dumps([
+        {"id": "legacy1", "inst_id": "sealdice-s1", "kind": "restart",
+         "hh": 8, "mm": 30, "enabled": True, "scope": "data", "keep": 7,
+         "last_day": "2026-09-25"}]), encoding="utf-8")
+    now = datetime(2026, 9, 26, 8, 0)
+    assert sched.tick(now) == ["legacy1"]                      # 迁移后立即可跑
+    assert "sealdice-s1" in w.started
+    assert not sched.tick(now + timedelta(hours=1))            # 未满 1 天间隔不重复
+    task = sched.list_all()[0]
+    assert task["every_days"] == 1 and task["every_hours"] == 0
 
 
 # ---------- 拓展10：日志检索 ----------

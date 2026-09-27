@@ -382,6 +382,19 @@ class BaseAdapter(ABC):
         return {"alive": is_alive,
                 "conn": "ok" if self.tcp_probe("127.0.0.1", port) else "down"}
 
+    def is_up(self, instance) -> bool:
+        """服务端口是否可达（与 health_check 同口径，但只关心端口、不关心进程句柄）。
+
+        用于总览/实例列表的「存活」展示兜底：launcher+worker 结构的程序（llbot 等），
+        面板只持有 launcher 句柄，worker(node) 才是真正监听端口的进程；launcher 重启或
+        面板重启后 worker 被 reparent 到 init 时句柄失效，但端口仍通——此时应以端口为准
+        判为存活，否则节点会在总览里凭空变灰/消失。控制面（stop/restart 闸门）仍用
+        is_alive() 的句柄口径，二者职责分离。"""
+        try:
+            return self.health_check(instance, is_alive=False).get("conn") == "ok"
+        except Exception:
+            return False
+
     def diagnose_conn(self, instance) -> list[dict]:
         """互联诊断钩子（拓展2）：返回 [{ok, step, detail}]，只管「本端配置」这层。
         进程/端口/token 一致性等通用层由 REST 端点统一检测。默认无专属项。"""

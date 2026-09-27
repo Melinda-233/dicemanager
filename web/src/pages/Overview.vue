@@ -62,6 +62,46 @@
       <span><i class="lg-line lg-gray"/>已配置未连接</span>
       <span><i class="lg-line lg-red"/>连接失败</span>
     </div>
+    <!-- 缓存/备份管理（自 Wizard 移入）：程序包与备份产物都长期驻留，集中在拓扑下方展示占用
+         与是否仍被实例使用；有死缓存/超龄备份时默认展开提醒 -->
+    <details class="cache-box" :open="unusedRows.length > 0">
+      <summary>本地缓存（{{ pkgTotalMb }} MB）{{ unusedRows.length
+        ? ' · ' + unusedRows.length + ' 个未使用' : ' · 点击管理' }}</summary>
+      <p v-if="!pkgRows.length" class="hint">暂无本地缓存。</p>
+      <div v-for="r in pkgRows" :key="r.dice" class="pkg">
+        <span :class="r.in_use ? 'pkg-ok' : 'pkg-idle'">
+          {{ r.dice }} · {{ r.size_mb }} MB ·
+          {{ r.source === 'upload' ? '上传' : '下载' }}于 {{ r.updated_at }} —
+          {{ r.in_use ? '已有实例在用' : '无实例使用（死缓存，可安全删除）' }}</span>
+        <button :disabled="cacheBusy" @click="removePkgOf(r.dice)">删除</button>
+      </div>
+      <div class="ops" v-if="unusedRows.length">
+        <button class="danger" :disabled="cacheBusy" @click="cleanUnused">
+          清理 {{ unusedRows.length }} 个未使用包（释放约 {{ unusedMb }} MB）</button>
+      </div>
+      <p class="hint">删除只是清掉种子包，已部署的实例不受影响；再次部署该程序需重新下载或上传。</p>
+      <p v-if="pkgMsg2" class="hint">{{ pkgMsg2 }}</p>
+    </details>
+    <details class="cache-box" :open="expStaleRows.length > 0">
+      <summary>备份文件（{{ expTotalMb }} MB）{{ expStaleRows.length
+        ? ' · ' + expStaleRows.length + ' 份超龄' : ' · 点击管理' }}</summary>
+      <p v-if="!expRows.length" class="hint">暂无备份文件。</p>
+      <div v-for="r in expRows" :key="r.name" class="pkg">
+        <span :class="r.age_days >= pruneDays ? 'pkg-idle' : 'pkg-ok'">
+          {{ r.name }} · {{ r.size_mb }} MB · {{ r.mtime }}（已存放 {{ r.age_days }} 天）</span>
+        <button :disabled="cacheBusy" @click="delExportFile(r.name)">删除</button>
+      </div>
+      <div class="ops" v-if="expRows.length">
+        <label class="inline">清理超过
+          <input type="number" min="1" max="365" v-model.number="pruneDays" style="width:64px"/>
+          天的备份</label>
+        <button class="danger" :disabled="cacheBusy" @click="pruneOldExports">
+          清理 {{ expStaleRows.length }} 份（释放约
+          {{ Math.round(expStaleRows.reduce((s, r) => s + (r.size_mb || 0), 0)) }} MB）</button>
+      </div>
+      <p class="hint">升级前会自动留一份整目录快照，定时备份也在这里；确认回滚无需要的旧备份可安全清理。</p>
+      <p v-if="expMsg" class="hint">{{ expMsg }}</p>
+    </details>
       </div>
       <aside v-if="sel" class="panel">
         <div class="panel-top">
@@ -125,9 +165,9 @@
           {{ d.ok ? '✓' : '✗' }} {{ d.detail }}</p>
       </div>
       <div class="sched">
-        <p class="hint" style="margin:4px 0">定时任务（每日到点自动执行）</p>
+        <p class="hint" style="margin:4px 0">定时任务（每 X 天 X 小时自动执行一次）</p>
         <div v-for="s in schedules" :key="s.id" class="sched-row">
-          <span>{{ s.hh }}:{{ String(s.mm).padStart(2, '0') }}
+          <span>每{{ s.every_days }}天{{ s.every_hours }}小时
             · {{ s.kind === 'restart' ? '定时重启'
                 : '定时备份（' + (s.scope === 'full' ? '整目录' : '数据') + '）' }}
             <template v-if="s.inst_id === sel.id">· 本实例</template></span>
@@ -144,8 +184,12 @@
             <option value="data">数据备份</option>
             <option value="full">整目录备份</option>
           </select>
-          <input v-model="newSched.time" type="time" style="width:120px"/>
-          <button :disabled="!newSched.time" @click="addSched">添加</button>
+          <label class="hint" style="margin:0">每</label>
+          <input v-model.number="newSched.days" type="number" min="0" max="365" style="width:70px"/>
+          <label class="hint" style="margin:0">天</label>
+          <input v-model.number="newSched.hours" type="number" min="0" max="23" style="width:70px"/>
+          <label class="hint" style="margin:0">小时</label>
+          <button :disabled="!(newSched.days > 0 || newSched.hours > 0)" @click="addSched">添加</button>
         </div>
       </div>
       <p v-if="webuiInfo" class="hint">
@@ -180,7 +224,9 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          instanceMetrics, wizardStep,
          scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
-         runSchedule, upgradeCheck, upgradeInstance } from '../api'
+         runSchedule, upgradeCheck, upgradeInstance,
+         listPackages, deletePackage, deleteUnusedPackages,
+         listExports, deleteExport, pruneExports } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -188,6 +234,27 @@ const connected = ref(false)             // WS 是否已连上：用于区分「
 const webuiInfo = ref(null), connMsg = ref(''), linkChoice = ref('')
 let sock
 listManifests().then(m => (manifests.value = m)).catch(() => {})   // 拉不到不阻塞总览
+
+// ---------- 缓存 / 备份管理（自 Wizard 移入，拓扑图下方） ----------
+const pkgs = ref({})                    // {dice: {size_mb,source,updated_at,in_use}}
+const cacheBusy = ref(false), pkgMsg2 = ref('')
+// 缓存管理视图：全部本地包 / 未被任何实例使用的那部分（可安全删除的死缓存）
+const pkgRows = computed(() => Object.values(pkgs.value))
+const unusedRows = computed(() => pkgRows.value.filter(r => !r.in_use))
+const sumMb = rows => Math.round(rows.reduce((s, r) => s + (r.size_mb || 0), 0))
+const pkgTotalMb = computed(() => sumMb(pkgRows.value))
+const unusedMb = computed(() => sumMb(unusedRows.value))
+// 备份产物（exports/）：升级前快照 + 定时备份 + 手动导出，长期不回收会堆到几百 MB
+const expRows = ref([]), expMsg = ref(''), pruneDays = ref(30)
+const expTotalMb = computed(() => Math.round(expRows.value.reduce((s, r) => s + (r.size_mb || 0), 0)))
+const expStaleRows = computed(() => expRows.value.filter(r => r.age_days >= pruneDays.value))
+// 独立加载：失败不牵连主流程（旧服务端可能还没这个端点）
+const loadPackages = () => listPackages()
+  .then(p => (pkgs.value = Object.fromEntries((p || []).filter(x => x.exists).map(x => [x.dice, x]))))
+  .catch(() => {})
+const loadExports = () => listExports().then(e => (expRows.value = e || [])).catch(() => {})
+const refreshCache = () => { loadPackages(); loadExports() }
+loadPackages(); loadExports()           // 已登录的整页刷新场景直接拉；未登录由 WS onOpen 兜底
 // ---------- 两栏布局：登录端在左、应用端在右 ----------
 // 登录端程序 = 在任意骰子端 manifest 的 compatible_login 里出现过的程序
 // （纯清单驱动，与 Wizard 配对模式同口径，不写程序名分支）
@@ -219,7 +286,10 @@ onMounted(() => {
     if (m.type !== 'overview') return
     nodes.value = m.payload.nodes; edges.value = m.payload.edges
     resmon.value = m.payload.resmon
-  }, () => (connected.value = true))
+  }, () => {
+    connected.value = true
+    refreshCache()                      // WS 连上=登录完成，此时才拉得到缓存/备份占用
+  })
 })
 onUnmounted(() => sock?.close())
 
@@ -275,6 +345,40 @@ const del = () => {
 const guard = async fn => {              // 面板操作统一报错出口，失败不静默
   try { await fn() } catch (e) { connMsg.value = e.message || String(e) }
 }
+
+// ---------- 缓存 / 备份回收操作（与 Wizard 原实现同口径） ----------
+const removePkgOf = dice_ => guard(async () => {
+  pkgMsg2.value = ''
+  await deletePackage(dice_)
+  const next = { ...pkgs.value }; delete next[dice_]; pkgs.value = next
+  pkgMsg2.value = `已删除 ${dice_} 的本地包，下次部署将在线下载。`
+})
+// 一键清理死缓存：没有任何实例在用的种子包（按需触发，不做自动删除）
+const cleanUnused = () => guard(async () => {
+  pkgMsg2.value = ''
+  const r = await deleteUnusedPackages()
+  const next = { ...pkgs.value }
+  ;(r.removed || []).forEach(n => delete next[n])
+  pkgs.value = next
+  pkgMsg2.value = r.removed && r.removed.length
+    ? `已清理 ${r.removed.join(' / ')}，释放约 ${r.freed_mb} MB。`
+    : '没有需要清理的未使用缓存。'
+})
+const delExportFile = name => guard(async () => {
+  expMsg.value = ''
+  await deleteExport(name)
+  expRows.value = expRows.value.filter(r => r.name !== name)
+  expMsg.value = `已删除备份 ${name}。`
+})
+const pruneOldExports = () => guard(async () => {
+  expMsg.value = ''
+  const r = await pruneExports(pruneDays.value)
+  const names = r.removed || []
+  expRows.value = expRows.value.filter(x => !names.includes(x.name))
+  expMsg.value = names.length
+    ? `已清理 ${names.length} 份超过 ${pruneDays.value} 天的备份，释放约 ${r.freed_mb} MB。`
+    : `没有超过 ${pruneDays.value} 天的备份。`
+})
 
 // ---------- 上传备份：停机 → 覆盖导入 → 自动重启（后端 /instances/{id}/backup） ----------
 const backupInput = ref(null)
@@ -441,15 +545,17 @@ const doUpgrade = () => guard(async () => {
 
 // ---------- 定时任务（拓展7） ----------
 const schedules = ref([])
-const newSched = ref({ kind: 'restart', scope: 'data', time: '' })
+const newSched = ref({ kind: 'restart', scope: 'data', days: 1, hours: 0 })
 const loadSchedules = () => listSchedules()
   .then(ts => (schedules.value = ts)).catch(() => {})
 const addSched = () => guard(async () => {
-  const [hh, mm] = newSched.value.time.split(':').map(Number)
   await addSchedule({ inst_id: sel.value.id, kind: newSched.value.kind,
-                      hh, mm, scope: newSched.value.scope, keep: 7 })
-  connMsg.value = '定时任务已添加（每日到点自动执行）。'
-  newSched.value.time = ''
+                      every_days: newSched.value.days || 0,
+                      every_hours: newSched.value.hours || 0,
+                      scope: newSched.value.scope, keep: 7 })
+  connMsg.value = `定时任务已添加（每 ${newSched.value.days || 0} 天 ${newSched.value.hours || 0} 小时自动执行一次）。`
+  newSched.value.days = 1
+  newSched.value.hours = 0
   await loadSchedules()
 })
 const delSched = s => guard(async () => {
@@ -533,6 +639,14 @@ button.danger { color: #e5484d; }
 .sched-add { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .sched-add select, .sched-add input { width: auto; margin: 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+/* 缓存/备份管理（自 Wizard 移入） */
+.cache-box { margin-top: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.cache-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+.cache-box[open] summary { margin-bottom: 10px; }
+.pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; font-size: 13px; }
+.pkg-ok { color: var(--ok); }
+.pkg-idle { color: var(--muted); }
+.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .tok { cursor: pointer; background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
 /* 资源曲线：两条线各自归一化，颜色语义与图例一致 */
 .metrics { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }

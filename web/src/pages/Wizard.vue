@@ -129,47 +129,6 @@
         </div>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
       </div>
-      <!-- 缓存管理：程序包下载/上传后永久驻留，这里集中展示占用与是否仍被实例使用。
-           有死缓存/超龄备份时默认展开提醒，否则收起（管理功能不该压过新建流程） -->
-      <details class="cache-box" :open="unusedRows.length > 0">
-        <summary>本地缓存（{{ pkgTotalMb }} MB）{{ unusedRows.length
-          ? ' · ' + unusedRows.length + ' 个未使用' : ' · 点击管理' }}</summary>
-        <p v-if="!pkgRows.length" class="hint">暂无本地缓存。</p>
-        <div v-for="r in pkgRows" :key="r.dice" class="pkg">
-          <span :class="r.in_use ? 'pkg-ok' : 'pkg-idle'">
-            {{ r.dice }} · {{ r.size_mb }} MB ·
-            {{ r.source === 'upload' ? '上传' : '下载' }}于 {{ r.updated_at }} —
-            {{ r.in_use ? '已有实例在用' : '无实例使用（死缓存，可安全删除）' }}</span>
-          <button :disabled="pkgBusy" @click="removePkgOf(r.dice)">删除</button>
-        </div>
-        <div class="ops" v-if="unusedRows.length">
-          <button class="danger" :disabled="pkgBusy" @click="cleanUnused">
-            清理 {{ unusedRows.length }} 个未使用包（释放约 {{ unusedMb }} MB）</button>
-        </div>
-        <p class="hint">删除只是清掉种子包，已部署的实例不受影响；再次部署该程序需重新下载或上传。</p>
-        <p v-if="pkgMsg2" class="hint">{{ pkgMsg2 }}</p>
-      </details>
-      <!-- 备份产物：手动导出 / 升级前快照 / 定时备份都落在 exports/，此前没有任何回收入口 -->
-      <details class="cache-box" :open="expStaleRows.length > 0">
-        <summary>备份文件（{{ expTotalMb }} MB）{{ expStaleRows.length
-          ? ' · ' + expStaleRows.length + ' 份超龄' : ' · 点击管理' }}</summary>
-        <p v-if="!expRows.length" class="hint">暂无备份文件。</p>
-        <div v-for="r in expRows" :key="r.name" class="pkg">
-          <span :class="r.age_days >= pruneDays ? 'pkg-idle' : 'pkg-ok'">
-            {{ r.name }} · {{ r.size_mb }} MB · {{ r.mtime }}（已存放 {{ r.age_days }} 天）</span>
-          <button :disabled="busy" @click="delExportFile(r.name)">删除</button>
-        </div>
-        <div class="ops" v-if="expRows.length">
-          <label class="inline">清理超过
-            <input type="number" min="1" max="365" v-model.number="pruneDays" style="width:64px"/>
-            天的备份</label>
-          <button class="danger" :disabled="busy" @click="pruneOldExports">
-            清理 {{ expStaleRows.length }} 份（释放约
-            {{ Math.round(expStaleRows.reduce((s, r) => s + (r.size_mb || 0), 0)) }} MB）</button>
-        </div>
-        <p class="hint">升级前会自动留一份整目录快照，定时备份也在这里；确认回滚无需要的旧备份可安全清理。</p>
-        <p v-if="expMsg" class="hint">{{ expMsg }}</p>
-      </details>
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
         <button class="primary" :disabled="!canCreate || busy" @click="create">
@@ -322,7 +281,7 @@
 import { ref, computed, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
-         deletePackage, deleteUnusedPackages, listExports, deleteExport, pruneExports,
+         deletePackage,
          createInstance, wizardStep, delInstance, deployProgress, instanceWebui } from '../api'
 
 const STEP_NAMES = ['选程序', '部署', '登录', '互联', '启动']   // 默认模式（断点续跑文案也用它）
@@ -341,19 +300,8 @@ const preview = ref(''), manual = ref('')
 const pending = ref([])          // 中间态实例（断点续跑入口）
 const started = ref(false)       // Step5 是否已下发启动命令
 const pkgs = ref({})             // {dice: {exists,size_mb,source,updated_at}}
-const pkgBusy = ref(false), pkgMsg = ref(''), pkgMsg2 = ref('')
-// 缓存管理视图：全部本地包 / 未被任何实例使用的那部分（可安全删除的死缓存）
-const pkgRows = computed(() => Object.values(pkgs.value))
-const unusedRows = computed(() => pkgRows.value.filter(r => !r.in_use))
-const sumMb = rows => Math.round(rows.reduce((s, r) => s + (r.size_mb || 0), 0))
-const pkgTotalMb = computed(() => sumMb(pkgRows.value))
-const unusedMb = computed(() => sumMb(unusedRows.value))
-// 备份产物（exports/）：升级前快照 + 定时备份，长期不回收会堆到几百 MB
-const expRows = ref([]), expMsg = ref(''), pruneDays = ref(30)
-const expTotalMb = computed(() => Math.round(expRows.value.reduce((s, r) => s + (r.size_mb || 0), 0)))
-const expStaleRows = computed(() => expRows.value.filter(r => r.age_days >= pruneDays.value))
+const pkgBusy = ref(false), pkgMsg = ref('')
 // 独立加载：失败不牵连主流程（旧服务端可能还没这个端点）
-const loadExports = () => listExports().then(e => (expRows.value = e || [])).catch(() => {})
 // sock 必须是 ref：script setup 里 let 变量不会随赋值同步到模板上下文，
 // 旧写法下「刷新二维码」按钮拿到的永远是初始的 null
 const sock = ref(null)
@@ -466,17 +414,15 @@ const load = async () => {
   } finally {
     loading.value = false
   }
-  loadExports()                               // 首次进向导就要看到备份产物占用
 }
 load()
 
-// 静默刷新实例/待续跑列表（启动完成后待续跑条目应消失）+ 备份产物占用
+// 静默刷新实例/待续跑列表（启动完成后待续跑条目应消失）
 const refreshLists = async () => {
   try {
     const [i, p] = await Promise.all([listInstances(), listPending()])
     instances.value = i || []; pending.value = p || []
   } catch { /* 静默：刷新失败不阻断页面 */ }
-  loadExports()
 }
 
 // 程序包：上传后部署直接解压本地包，不再联网下载
@@ -524,47 +470,16 @@ const pkgJob = ref(null)             // 当前上传任务（Promise.abort() 取
 const cancelPkg = () => { pkgJob.value?.abort?.() }
 
 const removePkgOf = name => {
-  pkgBusy.value = true; pkgMsg.value = ''; pkgMsg2.value = ''
+  pkgBusy.value = true; pkgMsg.value = ''
   deletePackage(name)
     .then(() => {
       const next = { ...pkgs.value }; delete next[name]; pkgs.value = next
-      const msg = `已删除 ${name} 的本地包，下次部署将在线下载。`
-      if (name === dice.value) pkgMsg.value = msg
-      else pkgMsg2.value = msg
+      pkgMsg.value = `已删除 ${name} 的本地包，下次部署将在线下载。`
     })
     .catch(ex => { err.value = ex.message || String(ex) })
     .finally(() => { pkgBusy.value = false })
 }
 const removePkg = () => removePkgOf(dice.value)
-
-// 一键清理死缓存：没有任何实例在用的种子包（菜单入口按需触发，不做自动删除）
-const cleanUnused = () => guard(async () => {
-  pkgMsg2.value = ''
-  const r = await deleteUnusedPackages()
-  const next = { ...pkgs.value }
-  ;(r.removed || []).forEach(n => delete next[n])
-  pkgs.value = next
-  pkgMsg2.value = r.removed && r.removed.length
-    ? `已清理 ${r.removed.join(' / ')}，释放约 ${r.freed_mb} MB。`
-    : '没有需要清理的未使用缓存。'
-})
-
-// 备份产物回收：升级每次留一份整目录快照，定时备份也在同一目录，长期只增不减
-const delExportFile = name => guard(async () => {
-  expMsg.value = ''
-  await deleteExport(name)
-  expRows.value = expRows.value.filter(r => r.name !== name)
-  expMsg.value = `已删除备份 ${name}。`
-})
-const pruneOldExports = () => guard(async () => {
-  expMsg.value = ''
-  const r = await pruneExports(pruneDays.value)
-  const names = r.removed || []
-  expRows.value = expRows.value.filter(x => !names.includes(x.name))
-  expMsg.value = names.length
-    ? `已清理 ${names.length} 份超过 ${pruneDays.value} 天的备份，释放约 ${r.freed_mb} MB。`
-    : `没有超过 ${pruneDays.value} 天的备份。`
-})
 
 const goOverview = () => (location.hash = '#/overview')
 
@@ -830,11 +745,6 @@ onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }
-.pkg-idle { color: var(--muted); }
-.cache-box { padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
-.cache-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-.cache-box[open] summary { margin-bottom: 10px; }
-.cache-box .pkg { font-size: 13px; }
 .conn-peer {
   padding: 8px 12px; margin-bottom: 14px; font-size: 13px;
   border: 1px solid var(--step-done-border, var(--border));
@@ -846,7 +756,6 @@ onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 .start-info { margin-bottom: 12px; }
 .webui-link { color: var(--brand); }
 .tok { user-select: all; font-family: ui-monospace, Menlo, Consolas, monospace; }
-.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .pending-item { display: flex; gap: 10px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .dialog code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 pre.preview {
