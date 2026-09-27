@@ -150,6 +150,32 @@ def test_ws_logs_marks_error_lines(client):
     assert got[1]["error"] is True
 
 
+def test_ws_logs_uses_manifest_error_keywords(client):
+    """清单声明的 error_keywords 必须生效。
+
+    该字段此前写了却无人读取，程序特有的错误行（如 C# 的 Unhandled exception）
+    会被通用正则漏标。
+    """
+    proc = _mk("sealdice-w7", "sealdice")
+    ctx._adapter_cache["sealdice"] = FakeAdapter(
+        {"name": "sealdice", "exe": "fake",
+         "error_keywords": ["Unhandled exception"]})
+    proc.note("Unhandled exception.  ")          # 通用关键字抓不到
+    proc.note("all good")
+
+    with client.websocket_connect("/ws/logs/sealdice-w7", headers=HEADERS) as ws:
+        got = [ws.receive_json() for _ in range(2)]
+
+    assert got[0]["error"] is True
+    assert got[1]["error"] is False
+
+
+def test_error_re_for_falls_back_when_instance_unknown():
+    """实例不存在 / 程序已下架：退回通用关键字，不能把整条通道搞挂。"""
+    from api.ws_logs import ERROR_RE, error_re_for
+    assert error_re_for("no-such-instance") is ERROR_RE
+
+
 def test_ws_login_replays_qrcode_with_dedup(client):
     """Lagrange 把二维码打成多行字符画：同一张码回放里只推一次，换码要能推新的。"""
     proc = _mk("napcat-w4", "napcat")

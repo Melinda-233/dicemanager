@@ -90,14 +90,14 @@ dice-manager/
 │   ├── olivadice.py    # OPK 组合部署，缺核阻断 / 缺件告警
 │   ├── dicenext.py     # config/adapters.json 的 OneBot v11 适配器条目
 │   ├── napcat.py       # WebUI API 写配置 + 手动兜底 WriteResult
-│   ├── lagrange.py     # 无头部署预置配置；二维码落盘 qr-{uin}.png
-│   ├── lagrange_milky.py # Milky 协议变体
+│   ├── lagrange.py     # OneBot 前端：Implementations[] 正/反向 WS（正向无 Suffix）
+│   ├── lagrange_milky.py # Milky 前端：Milky.HttpServer + Signer Token
+│   └── lagrange_base.py  # 两者共用：预置配置 / 执行位 / 二维码读盘 / 账号回读
 │   ├── llbot.py        # JSON5 配置热更新；v8 需 AUTH TOKEN
 │   ├── snowluma.py     # launcher.sh 启动 + WebUI 登录
 │   └── yogurt.py       # Yogurt 登录端
 ├── services/    # 服务层
 │   ├── wizard.py       # 五步向导状态机（断点续跑 + 冲突弹窗）
-│   ├── login.py        # 登录流程（二维码/滑块链接转发）
 │   └── resume.py       # 面板重启后自动拉回 RUNNING 但已死的实例
 ├── api/         # Web 服务层
 │   ├── rest.py         # REST：向导 / 实例操作 / 程序包 / 备份产物 / 二次确认删除

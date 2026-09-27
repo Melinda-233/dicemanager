@@ -583,18 +583,21 @@ const reset = () => {
 }
 
 // 断点续跑：跳到该实例下一步（二维码登录需重开推送通道）——续跑只支持默认模式，退出配对态
-const resume = p => {
+// 续跑不会重新挂载向导，故进入前先刷新实例/待续跑列表：否则 Step4 取对端 login_ref 与
+// ob11 端口时可能读到 load() 留下的旧数据（仅 refreshLists 后才纠正），造成互联错配。
+const resume = async p => {
   sock.value?.close(); sock.value = null
   err.value = ''; conflict.value = false; preview.value = ''; manual.value = ''
   started.value = false; tokenSaved.value = false   // 续跑实例的 token 落盘状态未知，重新判定
   pair.value = null; mode.value = 'dice'; loginHandled = false
   stopDeployPoll(); deployMsg.value = ''
+  await refreshLists()                              // 确保后续 Step4 读到的实例列表是最新的
   instanceId = p.id
   dice.value = p.dice
   loginRef.value = p.login_ref || ''
   botMode.value = p.bot_mode || 'onebot'          // 续跑官方通道实例才能跳过登录/互联步
   step.value = Math.min(p.next_step || 1, 5)
-  if (step.value === 3) enterStep3().catch(e => { err.value = e.message || String(e) })
+  if (step.value === 3) await enterStep3().catch(e => { err.value = e.message || String(e) })
 }
 
 // 停止并删除未完成实例（如下载失败卡在部署中的）：未完成实例无存档，目录一并清理

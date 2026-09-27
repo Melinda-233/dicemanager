@@ -58,6 +58,40 @@ def test_role_split_is_consistent():
             assert ALL[d].get("compatible_login"), f"{d}: 骰子端未声明 compatible_login"
 
 
+DEAD_FIELDS = {
+    "config_strategy": "纯注释性质，说明已写在 adapters/sealdice.py 的 docstring 里",
+    "download_page_official": "无人读取；manual 策略的程序才有意义，而它们并不声明该字段",
+    "framework_repo": "无人读取，来源已由 release_page 表达",
+    "onebot_config": "无人读取，路径在适配器里构造",
+    "recommended_protocols": "已从 /api/manifests 白名单移除，前端不再消费",
+    "webui_port_bump_limit": "无人读取，端口上限由 PortAllocator 决定",
+}
+
+
+def test_no_dead_fields_in_manifests():
+    """清单里不得出现代码从不读取的字段。
+
+    死字段最危险的地方是「看起来生效」：后来者以为改清单就能改行为，实际毫无作用
+    （error_keywords 就曾是这类字段，2026-09-27 已接线到 ws_logs 使其真正生效）。
+    需要新增字段时，请连同读取它的代码一起提交。
+    """
+    for name, m in ALL.items():
+        for bad, why in DEAD_FIELDS.items():
+            assert bad not in m, f"{name}: 死字段 {bad}（{why}）"
+
+
+def test_error_keywords_is_wired_to_log_channel():
+    """反向约束：error_keywords 既然保留，就必须真被日志通道消费。
+
+    只做静态核对（本文件不 import api，避免触发 build_context 建真实状态目录）；
+    真实消费路径的回归在 tests/test_ws_channels.py，那里才有 WS 环境。
+    """
+    owner = [n for n, m in ALL.items() if m.get("error_keywords")]
+    assert owner, "没有程序声明 error_keywords，该字段也应一并清理"
+    src = (ROOT / "api" / "ws_logs.py").read_text(encoding="utf-8")
+    assert "error_keywords" in src, "ws_logs 不再读取该字段，应把它列入 DEAD_FIELDS"
+
+
 def test_napcat_and_dicenext_guard_their_executable():
     """本次修复的定点回归：这两个包的必备文件就是各自的启动体。
 

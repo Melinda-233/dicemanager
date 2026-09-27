@@ -13,6 +13,23 @@ from api.context import ctx
 router = APIRouter()
 ERROR_RE = re.compile(r"\b(ERROR|FATAL|Traceback|panic)\b", re.I)  # 通用错误关键字
 
+def error_re_for(inst_id: str) -> re.Pattern[str]:
+    """通用错误关键字 + 清单声明的 error_keywords。
+
+    各程序日志格式不同（海豹的 panic 是小写、Lagrange 用 Unhandled exception），
+    只靠通用正则会漏标。清单里的 error_keywords 此前声明了却无人读取，这里接线，
+    让声明真正生效；实例不存在或程序已下架时退回通用关键字。
+    """
+    extra: list[str] = []
+    try:
+        dice = ctx.registry.get(inst_id).dice
+        extra = [k for k in (ctx.get_adapter(dice).m.get("error_keywords") or []) if k]
+    except (KeyError, AttributeError):
+        extra = []
+    if not extra:
+        return ERROR_RE
+    return re.compile("|".join([ERROR_RE.pattern, *(re.escape(k) for k in extra)]), re.I)
+
 def compile_filter(kw: str | None):
     return re.compile(re.escape(kw), re.I) if kw else None
 
@@ -23,6 +40,7 @@ async def ws_logs(ws: WebSocket, inst_id: str):
         return await ws.close(code=4401)
     await ws.accept(subprotocol=sub)
     proc = ctx.pm.get(inst_id)
+    error_re = error_re_for(inst_id)
     loop = asyncio.get_running_loop()
     paused = False
     filter_re = None
@@ -40,7 +58,7 @@ async def ws_logs(ws: WebSocket, inst_id: str):
 
     async def send_line(s: int, line: str):
         await ws.send_json({"type": "line", "seq": s, "text": line,
-                            "error": bool(ERROR_RE.search(line))})
+                            "error": bool(error_re.search(line))})
 
     proc.on_line(hook)                  # 先注册 hook，再取快照（顺序不能反，否则丢行）
     snapshot = list(proc.ring)          # 历史回放（重启不丢）

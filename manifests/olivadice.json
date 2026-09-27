@@ -9,6 +9,5 @@
   "download_opk_pattern": "https://github.com/OlivOS-Team/{mod}/releases/latest/download/{mod}.opk",
   "release_page": "https://github.com/OlivOS-Team/OlivaDiceCore/releases",
   "download_strategy": "olivos_bundle_or_opk",
-  "framework_repo": "https://github.com/OlivOS-Team/OlivOS",
   "required_files": ["OlivaDiceCore.opk"]
 }

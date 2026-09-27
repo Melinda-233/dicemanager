@@ -850,8 +850,8 @@ dicemanager/
 ├─ adapters/          适配层（base + 每程序一个 + __init__ 注册与校验）
 ├─ api/               FastAPI（app / rest / ws_* / auth / context）
 ├─ core/              基础设施（registry / ports / process / packages / locks / atomicio / logutil）
-├─ services/          编排（wizard / login）
-├─ manifests/         7 个声明式清单
+├─ services/          编排（wizard / resume；login.py 早期遗留、零引用，已删）
+├─ manifests/         10 个声明式清单（4 骰子端 + 6 登录端）
 ├─ tests/             回归测试 + 本地冒烟
 ├─ web/               Vue 3 源码 + dist 构建产物
 ├─ deploy/            install.sh / systemd unit / nginx conf / 部署说明
