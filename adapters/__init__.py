@@ -16,6 +16,9 @@ from adapters import (
     yogurt,
 )
 
+# 必填字段。注意 multi_account 是「前端提示性」字段（仅 Step1 文案用），后端无任何分支；
+# recommended_protocols / webui_port_bump_limit 等是纯文档字段，既不在此处要求、也不进
+# /api/manifests 白名单（见 rest.list_manifests 注释），前端从不消费。
 REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")
 ALLOWED_ARCH = ("standalone", "allinone")

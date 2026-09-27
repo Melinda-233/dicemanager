@@ -1,4 +1,5 @@
 """适配器基类与公共契约（终检后统一签名）"""
+import base64
 import json
 import os
 import re
@@ -12,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core import packages as pkgstore
+from core.atomicio import atomic_write_json
 from core.firewall import open_port
 from core.locks import program_dir_lock
 
@@ -292,8 +294,32 @@ class BaseAdapter(ABC):
 
     def _ensure_webui_binding(self, instance) -> None:
         """有 WebUI 监听配置文件的适配器覆写：把回环绑定放开为 0.0.0.0。
-        默认无配置文件可改（如 Lagrange 无 WebUI）。"""
+        默认无配置文件可改（如 Lagrange 无 WebUI）。具体实现复用 _open_bind_host。"""
         return None
+
+    @staticmethod
+    def _open_bind_host(cfg: Path, *, host_key: str, port: int | None = None,
+                        port_key: str | None = None,
+                        extra_defaults: dict | None = None) -> None:
+        """把「监听在 JSON 配置里的 WebUI」从回环放开为 0.0.0.0。
+
+        文件已存在 → 仅把 host_key 在回环集合内时改写（端口/其余字段不动，避免丢用户改动）；
+        文件缺失且给了 port → 按 {host_key:0.0.0.0, port_key:port, **extra_defaults} 新建。
+        NapCat（host/port/loginRate）/ SnowLuma（webuiHost/webuiPort）共用，消除近字重复。
+        """
+        def _open(c: dict) -> dict:
+            if str(c.get(host_key) or "").strip().lower() in LOOPBACK_HOSTS:
+                c[host_key] = "0.0.0.0"
+            return c
+
+        if cfg.exists():
+            atomic_write_json(cfg, _open)
+        elif port:
+            base = dict(extra_defaults or {})
+            base[host_key] = "0.0.0.0"
+            if port_key:
+                base[port_key] = int(port)
+            atomic_write_json(cfg, lambda c: {**c, **base})
 
     @staticmethod
     def gen_token(n: int = 16) -> str:
@@ -378,6 +404,36 @@ class BaseAdapter(ABC):
         m = re.search(r"data:image/png;base64,[A-Za-z0-9+/=]+|https?://\S+qrcode\S*", line)
         return {"url": m.group(0) if m.group(0).startswith("http") else None,
                 "base64": m.group(0) if m.group(0).startswith("data:") else None} if m else None
+
+    @staticmethod
+    def _qr_from_disk(instance, *patterns: str) -> dict | None:
+        """回读落盘二维码 png：patterns 为 glob（如 'qr-*.png'）或具体文件名。
+
+        取最新一个非空的，返回 {url:None, base64:...}；无盘文件返回 None。
+        Lagrange（qr-*.png）/ Yogurt（qrcode.png 等）共用，消除 base64 编码重复。
+        """
+        d = Path(getattr(instance, "dir", "") or "")
+        if not d.is_dir():
+            return None
+        cands = []
+        for pat in patterns:
+            if "*" in pat:
+                cands += [p for p in d.glob(pat) if p.is_file()]
+            else:
+                p = d / pat
+                if p.is_file():
+                    cands.append(p)
+        if not cands:
+            return None
+        png = max(cands, key=lambda p: p.stat().st_mtime)
+        try:
+            raw = png.read_bytes()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        return {"url": None,
+                "base64": "data:image/png;base64," + base64.b64encode(raw).decode("ascii")}
 
     def extract_verify(self, line: str, instance=None):
         m = re.search(r"ticket url:\s*(https?://\S+)", line)      # 滑块验证锚点

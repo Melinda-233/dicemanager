@@ -1,4 +1,10 @@
-"""本地冒烟：DM_STATE_DIR 覆盖、明文密码迁移、登录限速、清单加载、tombstone 清理"""
+"""本地冒烟：DM_STATE_DIR 覆盖、明文密码迁移、登录限速、清单加载、tombstone 清理
+
+由 CI 以**独立进程**执行（`python tests/smoke_local.py`），也可本地手跑。
+不要改名为 test_ 前缀并入 pytest 会话：api.context.ctx 是 import 即初始化的模块级
+单例，本脚本靠先设 DM_STATE_DIR 再 import 来接管路径；一旦别的测试文件先 import 了
+ctx，下面的路径断言就会失效（同类事故：路由顺序断言曾因脚本不被收集而在 CI 裸奔）。
+"""
 import json, os, sys, tempfile, time
 from pathlib import Path
 

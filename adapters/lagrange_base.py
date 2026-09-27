@@ -7,7 +7,6 @@
 仅互联通道（ob11 Implementations[] vs Milky.HttpServer）、token 路径、配置合并策略不同，
 由各自子类实现（子类必须提供 _fill_defaults）。
 """
-import base64
 import re
 from abc import abstractmethod
 from pathlib import Path
@@ -78,26 +77,7 @@ class LagrangeBase(BaseAdapter):
         """命中字符画行 → 读盘 qr-*.png 回传；字符画有多行，相同图片由 ws_login 去重。"""
         if instance is None or not QR_ART_RE.match(line.rstrip()):
             return None
-        png = self._latest_qr_png(instance)
-        if png is None:
-            return None
-        try:
-            raw = png.read_bytes()
-        except OSError:
-            return None
-        if not raw:
-            return None
-        return {"url": None,
-                "base64": "data:image/png;base64,"
-                          + base64.b64encode(raw).decode("ascii")}
-
-    @staticmethod
-    def _latest_qr_png(instance):
-        d = Path(getattr(instance, "dir", "") or "")
-        if not d.is_dir():
-            return None
-        cands = [p for p in d.glob("qr-*.png") if p.is_file()]
-        return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+        return self._qr_from_disk(instance, "qr-*.png")
 
     # ---------- 账号回读 ----------
     def detect_account(self, instance) -> str | None:

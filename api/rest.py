@@ -370,6 +370,8 @@ async def upload_backup(inst_id: str, request: Request):
     finally:
         tmp.unlink(missing_ok=True)
 
+# 必须注册在所有具体的 POST 子路由（/backup、/webui、/metrics…）之后：否则 {op} 会按
+# 注册顺序抢先匹配到 backup 等字面路径（同源坑见 /packages/unused、/exports/prune）。
 @router.post("/instances/{inst_id}/{op}")
 def instance_op(inst_id: str, op: str):
     if op not in VALID_OPS:                              # 显式校验（assert 会被 -O 剥离）

@@ -10,7 +10,6 @@
   上游文档未明确，extract_qrcode 做尽力而为（data: URL / http 链接 / 常见图片文件名），
   真机部署时若未自动弹出，可在 PMHQ 侧扫码。
 """
-import base64
 import copy
 import re
 from pathlib import Path
@@ -89,19 +88,10 @@ class YogurtAdapter(BaseAdapter):
             s = m.group(0)
             return {"url": s if s.startswith("http") else None,
                     "base64": s if s.startswith("data:") else None}
-        # 落盘图片：常见文件名兜底（原生模式未完全确认，尽力而为）
+        # 落盘图片兜底（原生模式未完全确认，尽力而为）：复用基类盘读逻辑
         if instance is not None:
-            d = Path(getattr(instance, "dir", "") or "")
-            for cand in ("qrcode.png", "qr.png", "login-qrcode.png"):
-                p = d / cand
-                if p.is_file() and p.stat().st_size:
-                    try:
-                        raw = p.read_bytes()
-                        return {"url": None,
-                                "base64": "data:image/png;base64,"
-                                          + base64.b64encode(raw).decode("ascii")}
-                    except OSError:
-                        pass
+            return self._qr_from_disk(instance, "qrcode.png", "qr.png",
+                                      "login-qrcode.png")
         return None
 
     # ---------- 账号回读 ----------

@@ -1,4 +1,10 @@
-"""修补项端到端冒烟：/api/pending、Step4 token 两端继承、互联配置落盘。"""
+"""修补项端到端冒烟：/api/pending、Step4 token 两端继承、互联配置落盘。
+
+由 CI 以**独立进程**执行（`python tests/smoke_patch.py`），也可本地手跑。
+不要改名为 test_ 前缀并入 pytest 会话：本脚本先写明文 auth.json 到自己的 tmp、
+再 import ctx 让其指向该目录，靠的是「本进程第一个初始化 ctx」；一旦与 pytest
+会话共享 ctx，登录用的就是别人的 state 目录，预置密码不再生效。
+"""
 import json, os, sys, tempfile
 from pathlib import Path
 
