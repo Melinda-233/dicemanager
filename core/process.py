@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
+from core.adopt import find_pid_on_port, kill_process_tree, pid_alive
+
 _POSIX = os.name == "posix"
 
 LOG_RETENTION_DAYS = 7
@@ -25,7 +27,7 @@ ROTATE_CHECK_INTERVAL = 5.0    # 滚动检查节流（秒），避免每行日�
 PANEL_LOG_STEM = "dicemanager"
 
 class ManagedProcess:
-    def __init__(self, inst_id: str, log_dir: Path):
+    def __init__(self, inst_id: str, log_dir: Path, port_resolver=None):
         self.id = inst_id
         self.log_path = Path(log_dir) / f"{inst_id}.log"
         self.ring: deque = deque(maxlen=RING_MAX)     # (seq, line) 对，seq 单调递增
@@ -44,6 +46,11 @@ class ManagedProcess:
         self.crash_looped = False                 # 熔断触发：停止自动重启（总览可见告警）
         self._busy_once = False                   # run_once 执行中（与 start() 互斥的硬保证）
         self.started_at: float | None = None
+        # re-adopt：句柄失效但端口仍被外部进程占用时，接管其真实 pid（面板重启 / launcher
+        # reparent 场景）。_port_resolver(iid)->set[int] 提供本实例的监听端口用于端口→pid 自愈。
+        self._adopted_pid: int | None = None
+        self._port_resolver = port_resolver
+        self._last_adopt_scan = 0.0               # is_alive 端口自愈扫描的节流时间戳
         self._load_log_copy()
 
     def _load_log_copy(self):
@@ -63,6 +70,8 @@ class ManagedProcess:
                 raise RuntimeError("一次性命令正在执行，请稍后再试")
             if self._proc and self._proc.poll() is None:
                 raise RuntimeError("进程已在运行")
+            # 我们亲自拉起了进程：清掉任何外部接管态
+            self._adopted_pid = None
             try:
                 proc = subprocess.Popen(
                     cmd, cwd=cwd, env={**os.environ, **(env or {})},
@@ -90,6 +99,7 @@ class ManagedProcess:
                 raise RuntimeError("常驻进程正在运行")
             if self._busy_once:                    # 与并发 run_once / start() 的互斥硬保证
                 raise RuntimeError("一次性命令正在执行")
+            self._adopted_pid = None               # 一次性命令也以本面板为源头
             self._busy_once = True
         try:
             self._append_log(f"[manager] 执行一次性命令: {label or ' '.join(cmd)}")
@@ -204,6 +214,14 @@ class ManagedProcess:
                     os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
                 else:
                     self._proc.kill()
+        elif self._adopted_pid is not None:
+            # 接管自外部进程（面板重启 / launcher reparent 后）：按 pid 杀整棵树，
+            # 一并干掉 launcher，避免只杀 worker 被 launcher 重新拉起。
+            try:
+                kill_process_tree(self._adopted_pid)
+            except Exception:
+                pass
+            self._adopted_pid = None
         with self._lock:
             if self._log_fp:
                 self._log_fp.close(); self._log_fp = None
@@ -211,19 +229,68 @@ class ManagedProcess:
     def probe(self) -> dict:
         alive = self.is_alive()
         mem_mb = None
-        if alive and self._proc:
+        pid = (self._proc.pid if self._proc
+               else (self._adopted_pid if self._adopted_pid else None))
+        if alive and pid:
             try:
                 import psutil
-                mem_mb = round(psutil.Process(self._proc.pid).memory_info().rss / 1048576, 1)
+                mem_mb = round(psutil.Process(pid).memory_info().rss / 1048576, 1)
             except Exception:
                 pass                                # 进程恰好退出 / psutil 异常：不致命
         return {"alive": alive, "restarts": self.restarts,
-                "pid": self._proc.pid if self._proc else None,
+                "pid": pid,
                 "uptime": time.time() - self.started_at if self.started_at else 0,
                 "mem_mb": mem_mb, "crash_looped": self.crash_looped}
 
+    def re_adopt(self, pid: int) -> bool:
+        """端口探活发现实例仍在跑（面板重启 / launcher reparent 致句柄失效）时，接管真实 pid。
+
+        接管后 is_alive / stop / probe 都针对真实进程：既不会误判为已停止，也能正确停止
+        （stop 按 pid 杀整棵树）。返回是否成功接管。
+
+        安全：本面板自己刚拉起的存活子进程句柄存在时绝不抢；pid 不存在直接失败。
+        """
+        if not pid_alive(pid):
+            return False
+        if self._proc and self._proc.poll() is None and self._proc.pid != pid:
+            return False                            # 自己的子进程还在跑，不接管外部 pid
+        with self._lock:
+            # 外部进程无 stdout 可 tail：停掉任何旧 tail 线程并丢弃旧句柄
+            self._stop_flag.set()
+            self._proc = None
+            self._adopted_pid = pid
+            self._stop_flag.clear()
+            if self.started_at is None:
+                self.started_at = time.time()
+        return True
+
     def is_alive(self) -> bool:
-        return bool(self._proc and self._proc.poll() is None)
+        if self._proc and self._proc.poll() is None:
+            return True
+        if self._adopted_pid is not None:
+            if pid_alive(self._adopted_pid):
+                return True
+            self._adopted_pid = None                # 接管进程已死，清空以便后续重新接管
+        # 句柄失效但端口可能仍被外部进程占用（面板重启 / launcher reparent）：
+        # 尝试按端口找回真实 pid 并接管，避免误判死亡。（带节流，避免每次轮询都扫全连接表）
+        return self._try_readopt_now()
+
+    def _try_readopt_now(self) -> bool:
+        if self._port_resolver is None:
+            return False
+        now = time.time()
+        if now - self._last_adopt_scan < 15:        # 每实例最多约每 15s 扫一次连接表
+            return False
+        self._last_adopt_scan = now
+        try:
+            ports = set(self._port_resolver(self.id) or [])
+        except Exception:
+            return False
+        for port in ports:
+            pid = find_pid_on_port(port)
+            if pid and pid_alive(pid) and self.re_adopt(pid):
+                return True
+        return False
 
     def on_line(self, cb):
         """cb 签名 cb(seq, line)：seq 与 ring 中一致，供回放/实时去重。"""
@@ -238,8 +305,9 @@ class ManagedProcess:
                 f.unlink()
 
 class ProcessManager:
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path, port_resolver=None):
         self.log_dir = Path(log_dir); self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._port_resolver = port_resolver
         self._procs: dict[str, ManagedProcess] = {}
         self._lock = threading.Lock()
         ManagedProcess.cleanup_old_copies(self.log_dir)
@@ -247,7 +315,8 @@ class ProcessManager:
     def get(self, inst_id: str) -> ManagedProcess:
         with self._lock:
             if inst_id not in self._procs:
-                self._procs[inst_id] = ManagedProcess(inst_id, self.log_dir)
+                self._procs[inst_id] = ManagedProcess(
+                    inst_id, self.log_dir, port_resolver=self._port_resolver)
             return self._procs[inst_id]
 
     def is_alive(self, inst_id: str) -> bool:

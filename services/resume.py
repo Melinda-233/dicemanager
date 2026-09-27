@@ -17,6 +17,7 @@ import os
 import time
 from typing import Callable
 
+from core.adopt import find_pid_on_port, pid_alive
 from core.locks import instance_lock
 from core.registry import State
 
@@ -43,11 +44,14 @@ def resume_running_instances(registry, pm, start_fn: Callable[[str], object],
                              logger: logging.Logger | None = None,
                              delay: float | None = None,
                              stagger: float | None = None) -> dict[str, str]:
-    """把面板重启前处于 RUNNING 的实例重新拉起。
+    """把面板重启前处于 RUNNING 的实例重新拉起 / 接管。
 
     registry / pm 取 API 侧同名对象；start_fn(iid) 复用 Wizard.start_instance
     （与 REST start、向导 step5 完全同一条路径，杜绝第二个启动实现漂移）。
-    返回 {实例id: "alive" | "started" | "error: xxx"} 便于测试与排障。
+    返回 {实例id: "alive" | "adopted" | "started" | "error: xxx"} 便于测试与排障。
+
+    顺序：① 端口→pid 接管（句柄失效但进程仍在跑，如 llbot worker reparent）→
+    不重复拉起；② 句柄仍存活 → alive；③ 都不满足 → 真正拉起。
     """
     lg = logger or log
     result: dict[str, str] = {}
@@ -55,7 +59,7 @@ def resume_running_instances(registry, pm, start_fn: Callable[[str], object],
         lg.info("[resume] DM_AUTO_RESUME 已关闭，跳过实例自动拉起")
         return result
 
-    targets = [r["id"] for r in registry.all()
+    targets = [r for r in registry.all()
                if r.get("state") == State.RUNNING.value]
     if not targets:
         lg.info("[resume] 无 RUNNING 实例需要恢复")
@@ -68,7 +72,17 @@ def resume_running_instances(registry, pm, start_fn: Callable[[str], object],
     st = stagger if stagger is not None else _float_env("DM_RESUME_STAGGER",
                                                         DEFAULT_STAGGER)
     pending: list[str] = []
-    for iid in targets:
+    for rec in targets:
+        iid = rec["id"]
+        # ① 端口→pid 接管：避免句柄失效却仍跑着的实例被重复拉起第二个
+        try:
+            adopted = _try_readopt(registry, pm, iid, rec, lg)
+        except Exception as e:
+            lg.warning("[resume] 接管实例 %s 时异常：%s", iid, e)
+            adopted = None
+        if adopted == "adopted":
+            result[iid] = "adopted"
+            continue
         try:
             if pm.get(iid).is_alive():
                 result[iid] = "alive"       # 进程还在（本机连跑两个面板时可能出现）
@@ -97,3 +111,36 @@ def resume_running_instances(registry, pm, start_fn: Callable[[str], object],
             except Exception:
                 pass                        # 连日志都写不了时不要掩盖上层结论
     return result
+
+
+def _instance_ports(rec: dict) -> list[int]:
+    """从实例记录抽取监听端口用于端口→pid 接管：port / actual_port / allocated_ports。"""
+    ports: list[int] = []
+    for key in ("port", "actual_port"):
+        v = rec.get(key)
+        if isinstance(v, int) and v > 0:
+            ports.append(v)
+    for v in (rec.get("allocated_ports") or {}).values():
+        if isinstance(v, int) and v > 0:
+            ports.append(v)
+    return ports
+
+
+def _try_readopt(registry, pm, iid: str, rec: dict, lg: logging.Logger) -> str | None:
+    """面板重启 / launcher reparent 后，本面板句柄已失效，但实例可能仍在跑
+    （典型 llbot：worker 仍监听 3001/3080）。先按端口找回真实 pid 接管，而不是
+    盲目再拉一个重复实例。返回 "adopted" 表示已接管并接管成功，否则 None。"""
+    for port in _instance_ports(rec):
+        pid = find_pid_on_port(port)
+        if pid and pid_alive(pid):
+            try:
+                with instance_lock(iid):
+                    if pm.get(iid).re_adopt(pid):
+                        lg.info("[resume] 实例 %s 进程仍在运行（端口 %s 由 pid %s 占用），"
+                                "已接管而非重复拉起", iid, port, pid)
+                        return "adopted"
+            except Exception as e:              # 接管失败：回退到正常拉起流程
+                lg.warning("[resume] 实例 %s 端口 %s 找到 pid %s 但接管失败：%s",
+                           iid, port, pid, e)
+                return None
+    return None

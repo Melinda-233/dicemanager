@@ -112,3 +112,69 @@ def test_disabled_by_env(monkeypatch):
                             stagger=0)
     assert out == {}
     assert calls == []
+
+
+# ---------- 端口→pid 接管（re-adopt）回归 ----------
+
+class _FakeProcAdopt:
+    def __init__(self, adopt_result: bool = True):
+        self.adopted = None
+        self.notes: list[str] = []
+        self._adopt_result = adopt_result
+        self._alive = False
+
+    def re_adopt(self, pid: int) -> bool:
+        self.adopted = pid
+        self._alive = self._adopt_result
+        return self._adopt_result
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def note(self, msg: str) -> None:
+        self.notes.append(msg)
+
+
+class _FakePMAdopt:
+    def __init__(self, adopt_result: bool = True):
+        self._procs: dict[str, _FakeProcAdopt] = {}
+        self._adopt_result = adopt_result
+
+    def get(self, iid: str) -> _FakeProcAdopt:
+        return self._procs.setdefault(iid, _FakeProcAdopt(self._adopt_result))
+
+
+def test_readopts_running_instance_instead_of_relaunch(monkeypatch):
+    """RUNNING 且句柄失效、但端口仍被真实进程占用 → 接管（"adopted"），不再重复拉起。"""
+    monkeypatch.setattr("services.resume.find_pid_on_port", lambda port: 4242)
+    monkeypatch.setattr("services.resume.pid_alive", lambda pid: True)
+    pm = _FakePMAdopt()
+    rows = [{"id": "llbot-aaa", "state": "RUNNING",
+             "allocated_ports": {"ob11": 3001, "webui": 3080}}]
+    out, calls, _ = _resume(rows, pm, delay=0, stagger=0)
+    assert out == {"llbot-aaa": "adopted"}
+    assert calls == []                                  # 关键：没有再拉起第二个实例
+    assert pm.get("llbot-aaa").adopted == 4242
+
+
+def test_readopt_fail_falls_through_to_start(monkeypatch):
+    """端口找到 pid 但接管失败（re_adopt 返回 False）→ 回退到正常拉起。"""
+    monkeypatch.setattr("services.resume.find_pid_on_port", lambda port: 4242)
+    monkeypatch.setattr("services.resume.pid_alive", lambda pid: True)
+    pm = _FakePMAdopt(adopt_result=False)
+    rows = [{"id": "llbot-aaa", "state": "RUNNING",
+             "allocated_ports": {"ob11": 3001}}]
+    out, calls, _ = _resume(rows, pm, delay=0, stagger=0)
+    assert out == {"llbot-aaa": "started"}
+    assert calls == ["llbot-aaa"]
+
+
+def test_readopt_skips_when_no_port_listed(monkeypatch):
+    """实例无端口记录（allocated_ports 缺失）→ 不尝试接管，按原有逻辑拉起。"""
+    monkeypatch.setattr("services.resume.find_pid_on_port", lambda port: 4242)
+    pm = _FakePMAdopt()
+    rows = [{"id": "llbot-aaa", "state": "RUNNING"}]    # 无端口 → _instance_ports 空
+    out, calls, _ = _resume(rows, pm, delay=0, stagger=0)
+    assert out == {"llbot-aaa": "started"}
+    assert calls == ["llbot-aaa"]
+    assert pm.get("llbot-aaa").adopted is None

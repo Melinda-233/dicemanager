@@ -35,12 +35,33 @@ class AppContext:
             self._adapter_cache[name] = cls(manifest)
         return self._adapter_cache[name]
 
+def _instance_listening_ports(inst) -> set[int]:
+    """从实例记录抽取其全部监听端口（port / actual_port / allocated_ports 取值），
+    供 ManagedProcess 在句柄失效时按端口→pid 找回真实进程（re-adopt 自愈）。"""
+    ports: set[int] = set()
+    for v in (getattr(inst, "port", None), getattr(inst, "actual_port", None)):
+        if isinstance(v, int) and v > 0:
+            ports.add(v)
+    for v in (getattr(inst, "allocated_ports", None) or {}).values():
+        if isinstance(v, int) and v > 0:
+            ports.add(v)
+    return ports
+
+
 def build_context() -> AppContext:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     registry = Registry(STATE_DIR / "instances.json")
     ports = PortAllocator(STATE_DIR / "ports.json")
-    pm = ProcessManager(LOG_DIR)
+
+    # 端口→pid 自愈的端口来源：由注册表实例记录动态解析（实例端口分配后落盘，重启不丢）。
+    def port_resolver(iid: str) -> set[int]:
+        try:
+            return _instance_listening_ports(registry.get(iid))
+        except Exception:
+            return set()
+
+    pm = ProcessManager(LOG_DIR, port_resolver=port_resolver)
     adapters = load_registry(Path(__file__).parent.parent / "manifests")
     # 启动时回收孤儿日志：历史上实例删除不同步删日志，反复增删会累积一批无归属文件。
     # 只看注册表存活 id，面板自身日志由 PANEL_LOG_STEM 排除。清理失败不影响启动。
