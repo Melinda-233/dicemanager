@@ -44,13 +44,17 @@ def _consume_new_lines(proc) -> list[tuple[int, str]]:
     return []
 
 
-def _backfill_from_logs(rec: dict, lines: list[str]) -> dict:
+def _backfill_from_logs(rec: dict, lines: list[tuple[int, str]]) -> dict:
     """进程存活时从日志回读实际端口 / WebUI token / QQ 号，变化才写盘。
 
     NapCat 的真实 WebUI 端口（占用时自动 +1）与登录令牌只在启动日志里出现一次，
     这里_periodic 回读是它们的唯一落盘入口；写盘前比对旧值，避免 2s 周期的写放大。
     lines 为自上次消费以来的新增日志行（增量扫描，见 _scan_cursor）——端口/token
     是行级锚点，命中过的结果已持久化到实例记录，无需重复全量扫。
+
+    lines 恒为 (seq, line) 二元组序列：适配器 get_actual_port / get_webui_token 按
+    二元组解包，此处签名必须与 _consume_new_lines 保持一致，否则 mypy arg-type 报错
+    （CI 门禁），且历史上正是剥成纯字符串导致解包抛 ValueError、节点整条消失。
     """
     adapter = ctx.get_adapter(rec["dice"])
     upd: dict = {}
