@@ -153,6 +153,49 @@ def test_ws_overview_rejects_bad_token(client):
             pass
 
 
+def test_ws_overview_node_not_dropped_on_2tuple_backfill(client):
+    """回归（2026-09-28）：busy 机器人每轮都产出新日志行，_backfill_from_logs 会把
+    (seq,line) 二元组传给 get_actual_port。若 _consume_new_lines 错配成纯字符串，
+    适配器里 `for _, line in lines` 解包抛 ValueError，整轮 except 跳过→节点从总览消失
+    （llbot 等繁忙机器人几乎每轮都触发）。修复后 _consume_new_lines 必须返回二元组，
+    节点照常出现、且 actual_port 能从日志回读。"""
+    class BusyAdapter:
+        """模拟 llbot 适配器：get_actual_port 按 (seq,line) 二元组契约解包。"""
+        def __init__(self, manifest): self.m = manifest
+        def build_start_cmd(self, instance): return ["echo", "fake"]
+        def prepare_start(self, instance, runner=None): return False
+        def expose_webui(self, instance): return None
+        def health_check(self, instance, is_alive=False): return {"alive": is_alive, "conn": "none"}
+        def extract_qrcode(self, line, instance): return None
+        def extract_verify(self, line, instance): return None
+        def extract_login_failed(self, line, instance): return None
+        def get_actual_port(self, lines):
+            import re as _re
+            for _, line in reversed(list(lines)[-200:]):
+                m = _re.search(r"ob11.*?端口[:：]?\s*(\d{4,5})", line)
+                if m: return int(m.group(1))
+            return None
+        def get_webui_token(self, lines): return None
+        def detect_account(self, instance): return None
+        def is_up(self, instance): return False
+
+    proc = _mk("llbot-busy", "llbot", state=State.RUNNING.value,
+               allocated_ports={"webui": 3080, "ob11": 3001})
+    ctx._adapter_cache["llbot"] = BusyAdapter({"name": "llbot", "exe": "fake"})
+    proc.is_alive = lambda: True            # 句柄存活 → 触发 backfill（本应有新日志）
+    proc.ring.append((next(proc._seq), "ob11 监听端口 3999"))   # 模拟每轮新行
+    try:
+        with client.websocket_connect("/ws/overview", headers=HEADERS) as ws:
+            payload = ws.receive_json()["payload"]
+        nodes = {n["id"]: n for n in payload["nodes"]}
+        assert "llbot-busy" in nodes, "节点被异常丢弃（契约错配导致整轮跳过）"
+        assert nodes["llbot-busy"]["process_alive"] is True
+        # actual_port 应从日志回读为 3999（证明 backfill 真的跑了且没崩）
+        assert ctx.registry.get("llbot-busy").actual_port == 3999
+    finally:
+        delattr(proc, "is_alive")           # 还原类方法，避免影响其他用例
+
+
 def test_ws_logs_replays_history_once_with_increasing_seq(client):
     """历史回放：ring 里的行不多不少推一遍，seq 严格递增（去重窗口的基线）。"""
     proc = _mk("napcat-w2", "napcat")

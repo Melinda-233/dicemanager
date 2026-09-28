@@ -27,13 +27,20 @@ EDGE_STATES = {"ok": "solid-green",        # 实线绿：已连接
 _scan_cursor: dict[str, tuple] = {}
 
 
-def _consume_new_lines(proc) -> list[str]:
+def _consume_new_lines(proc) -> list[tuple[int, str]]:
+    """返回自上次消费以来的新增日志行，保持 (seq, line) 二元组格式。
+
+    关键契约：get_actual_port / get_webui_token 的 lines 参数按 (seq, line) 二元组解包
+    （见 adapters/*.py 与 tests/test_patch_regress.py 的 ring() 约定），绝不能剥成纯字符串——
+    此前曾 return [ln for _, ln in out]，导致对字符串做 `for _, line in` 解包抛
+    ValueError，整轮 overview 被 except 跳过，节点从总览payload消失（llbot 等繁忙机器人
+    几乎每轮都触发）。"""
     prev = _scan_cursor.get(proc.id)
     last = prev[1] if prev and prev[0] is proc else -1
     out = [(s, ln) for s, ln in proc.ring if s > last]
     if out:
         _scan_cursor[proc.id] = (proc, out[-1][0])
-        return [ln for _, ln in out]
+        return out
     return []
 
 
@@ -97,8 +104,13 @@ async def overview_loop(ws: WebSocket):
                 handle_alive = proc.is_alive()
                 # 句柄失效但端口仍通（launcher 重启 / 面板重启后 worker reparent）→ 视为存活
                 alive = handle_alive or _service_reachable(rec)
+                # 日志回读（端口/token/qq）只是增强信息：失败绝不能让节点从总览消失，
+                # 独立兜底，异常时保留原 rec（节点照常渲染，仅少回读几项字段）。
                 if handle_alive:
-                    rec = _backfill_from_logs(rec, _consume_new_lines(proc))
+                    try:
+                        rec = _backfill_from_logs(rec, _consume_new_lines(proc))
+                    except Exception as e:
+                        logger.warning("backfill %s skipped: %r", rec.get("id"), e)
                 nodes.append({"id": rec["id"], "dice": rec["dice"],
                               "arch": rec["arch"],              # allinone → 单节点渲染
                               "state": rec["state"],
