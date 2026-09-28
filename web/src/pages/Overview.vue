@@ -211,7 +211,17 @@
         <span v-else class="hint">该程序没有可关联的登录端（未声明兼容矩阵或暂无候选实例）。</span>
       </div>
       <p v-if="connMsg" class="hint">{{ connMsg }}</p>
+      <div class="panel-ops">
+        <button class="danger" :disabled="panelRestarting" @click="restartPanelNow">重启面板</button>
+        <span class="hint">整体重启管理面板，运行中的实例会自动拉回</span>
+      </div>
       </aside>
+    </div>
+    <div v-if="panelRestarting" class="restart-overlay">
+      <div class="restart-card">
+        <b>面板正在重启…</b>
+        <p class="hint" style="margin:6px 0 0">等待服务恢复后自动刷新（最长等 60 秒）</p>
+      </div>
     </div>
   </div>
 </template>
@@ -226,7 +236,7 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
-         listExports, deleteExport, pruneExports } from '../api'
+         listExports, deleteExport, pruneExports, restartPanel } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -344,6 +354,31 @@ const del = () => {
 
 const guard = async fn => {              // 面板操作统一报错出口，失败不静默
   try { await fn() } catch (e) { connMsg.value = e.message || String(e) }
+}
+
+// ---------- 面板自管理：整体重启 ----------
+const panelRestarting = ref(false)
+const restartPanelNow = async () => {
+  if (!confirm('整体重启管理面板？\n\n所有骰子实例将随面板退出，重启完成后处于运行状态的实例自动拉回（约 5-10 秒）。')) return
+  panelRestarting.value = true
+  try {
+    await restartPanel()
+  } catch (e) {
+    panelRestarting.value = false
+    connMsg.value = e.message || String(e)
+    return
+  }
+  // 轮询等面板换新完成：恢复应答后整页刷新拿新前端与全新 WS
+  const deadline = Date.now() + 60000
+  const poll = () => listManifests()
+    .then(() => location.reload())
+    .catch(() => {
+      if (Date.now() >= deadline) {
+        panelRestarting.value = false
+        connMsg.value = '等待超时：面板未能自行恢复，请到服务器检查 dicemanager 服务状态。'
+      } else setTimeout(poll, 2000)
+    })
+  setTimeout(poll, 3000)                 // 先给重启留 3 秒，再开始轮询
 }
 
 // ---------- 缓存 / 备份回收操作（与 Wizard 原实现同口径） ----------
@@ -639,6 +674,16 @@ button.danger { color: #e5484d; }
 .sched-add { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .sched-add select, .sched-add input { width: auto; margin: 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+.panel-ops { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.restart-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0, 0, 0, .35);
+  display: flex; align-items: center; justify-content: center;
+}
+.restart-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 20px 28px; text-align: center; font-size: 14px;
+}
 /* 缓存/备份管理（自 Wizard 移入） */
 .cache-box { margin-top: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .cache-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 6px; }

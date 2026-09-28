@@ -165,3 +165,7 @@ export const searchLogs = (q, instId) =>
 // ---------- 升级通道（拓展11） ----------
 export const upgradeCheck = id => api(`/instances/${id}/upgrade-check`)
 export const upgradeInstance = id => api(`/instances/${id}/upgrade`, { method: 'POST' })
+
+// ---------- 面板自管理：整体重启 ----------
+// 面板进程自杀换新（systemd 自动拉起 / 裸跑由接班进程接管）；运行中的实例由 resume 线程拉回
+export const restartPanel = () => api('/panel/restart', { method: 'POST' })

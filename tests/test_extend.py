@@ -253,3 +253,62 @@ def test_upgrade_check_unsupported_for_manual():
         assert r["supported"] is False and "离线" in r["message"]
     finally:
         ctx.registry.remove("shiki-u1")
+
+
+# ---------- 面板自管理：整体重启 ----------
+
+def test_panel_restart_modes(monkeypatch):
+    """_do_restart 三种环境三种走法：自定义命令 / systemd 自杀 / 裸跑派接班进程。"""
+    import signal as _signal
+    from api import rest
+    opened, killed = [], []
+    monkeypatch.setattr(rest.os, "getpid", lambda: 4321)
+    monkeypatch.setattr(rest.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    def fake_popen(*args, **kwargs):
+        opened.append((args, kwargs))
+        return None
+    monkeypatch.setattr(rest.subprocess, "Popen", fake_popen)
+
+    # 1) 自定义命令优先：执行命令后仍自杀（命令方负责拉起）
+    monkeypatch.setenv("DM_PANEL_RESTART_CMD", "systemctl restart dicemanager")
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    rest._do_restart()
+    assert opened and opened[0][0][0] == "systemctl restart dicemanager"
+    assert killed == [(4321, _signal.SIGTERM)]
+
+    # 2) systemd 服务内：不派进程，直接 SIGTERM 自杀等 Restart=always
+    opened.clear(); killed.clear()
+    monkeypatch.delenv("DM_PANEL_RESTART_CMD", raising=False)
+    monkeypatch.setenv("INVOCATION_ID", "run-x1")
+    rest._do_restart()
+    assert not opened
+    assert killed == [(4321, _signal.SIGTERM)]
+
+    # 3) 裸跑：派生脱管接班进程（-c helper）再自杀
+    opened.clear(); killed.clear()
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    rest._do_restart()
+    assert opened and list(opened[0][0][0][1:]) == ["-c", rest._RESTART_HELPER]
+    assert killed == [(4321, _signal.SIGTERM)]
+
+
+def test_panel_restart_endpoint(monkeypatch):
+    """POST /api/panel/restart：带 token 200 且触发重启调度；无 token 401（不触发）。"""
+    from api import rest
+    from api.app import app
+    from fastapi.testclient import TestClient
+
+    fired = []
+    monkeypatch.setattr(rest, "_schedule_restart", lambda: fired.append(1))
+    c = TestClient(app)
+    # 注意：不能 `from api.auth import auth`——test_auth_password 会重载该模块产生第二个
+    # 单例；require_auth 校验的是它定义时所在模块里的那个单例，token 必须从同一处取
+    tok = rest.require_auth.__globals__["auth"]._cred["token"]
+    r = c.post("/api/panel/restart", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert "重启" in r.json()["msg"]
+    assert fired == [1]
+    r2 = c.post("/api/panel/restart")
+    assert r2.status_code == 401
+    assert fired == [1]                                    # 未鉴权不得触发自杀

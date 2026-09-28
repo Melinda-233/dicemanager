@@ -1,7 +1,12 @@
 """REST 端点：向导 / 实例操作 / 快照查询 / 程序包管理 / 备份导入 / 扫描"""
 import asyncio
+import logging
 import os
 import shutil
+import signal
+import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -768,3 +773,63 @@ def logs_search(q: str, inst_id: str | None = None, limit: int = 100):
             break
     return {"q": q, "total": len(results),
             "results": results[:limit]}
+
+
+# ---------- 面板自管理：整体重启 ----------
+
+log = logging.getLogger("dicemanager.rest")
+
+# 裸跑（非 systemd）时的接班进程：等旧进程退出释放端口后，原地 exec 成新面板进程
+_RESTART_HELPER = (
+    "import os, sys, time\n"
+    "time.sleep(1.5)\n"
+    "os.execv(sys.executable, [sys.executable, '-m', 'api.app'])\n"
+)
+
+_RESTART_DELAY = 0.8                                    # 先让响应送达浏览器，再执行自杀
+
+
+def _do_restart() -> None:
+    """真正的重启动作，按运行环境三选一：
+    - DM_PANEL_RESTART_CMD：自定义命令（外置守护/特殊托管场景自管拉起）；
+    - systemd 服务内（INVOCATION_ID 存在）：SIGTERM 自杀，Restart=always 5s 后拉起；
+    - 裸跑（本地调试/手动启动）：派生脱管接班进程，再自杀退出释放端口。
+    骰子实例是面板子进程，会随面板退出；新进程起来后 lifespan 的 resume 线程
+    自动拉回 RUNNING 实例（services/resume.py）。
+    """
+    try:
+        cmd = os.environ.get("DM_PANEL_RESTART_CMD")
+        if cmd:
+            log.warning("[panel] 面板重启：执行自定义命令 %r", cmd)
+            subprocess.Popen(cmd, shell=True)
+        elif "INVOCATION_ID" in os.environ:
+            log.warning("[panel] 面板重启：进程退出，等待 systemd Restart=always 拉起")
+        else:
+            log.warning("[panel] 面板重启：非托管环境，派生接班进程后退出")
+            kw: dict = {"cwd": str(Path(__file__).resolve().parent.parent)}
+            if os.name == "nt":
+                kw["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+            else:
+                kw["start_new_session"] = True
+            subprocess.Popen([sys.executable, "-c", _RESTART_HELPER], **kw)
+        os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        log.exception("[panel] 面板重启动作执行失败（面板继续运行）")
+
+
+def _schedule_restart() -> None:
+    t = threading.Timer(_RESTART_DELAY, _do_restart)
+    t.daemon = True
+    t.start()
+
+
+@router.post("/panel/restart")
+def restart_panel():
+    """整体重启管理面板：先应答前端，延迟 <1s 后进程自杀换新。
+
+    运行中的骰子实例随面板进程一起退出，新进程起来后由 resume 线程自动拉回
+    （只认 RUNNING 实例，DM_AUTO_RESUME=0 可关）。
+    """
+    _schedule_restart()
+    log.warning("[panel] 收到面板重启请求，%.1fs 后重启", _RESTART_DELAY)
+    return {"ok": True, "msg": "面板正在重启，约 5-10 秒后恢复；运行中的实例将自动拉回"}
