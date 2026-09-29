@@ -10,21 +10,21 @@
 
 | 程序 | 架构 | 登录方式 | 互联说明 |
 |---|---|---|---|
-| [海豹 SealDice](https://sealdice.com/download) | 独立程序 | 外置登录端 | WS 正向/反向均可，配置自动写入 serve.yaml |
-| 溯洄 Dice! | 独立程序 | 外置登录端（离线上传） | AutoLogin.yml / config.txt 双版本识别 |
-| 青果 OlivaDice | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
-| Dice!Next | 独立程序 | 外置登录端 | OneBot v11 适配器写入 config/adapters.json |
+| [海豹 SealDice](https://sealdice.com/download) | 独立程序 | 外置登录端 / QQ 官方机器人 | OneBot WS 正向/反向均可，配置自动写入 serve.yaml；也支持 **QQ 官方机器人通道**（v1.4.2+，免登录端） |
+| 溯洄 [Dice!](https://github.com/Dice-Developer-Team/Dice) | 独立程序 | 外置登录端（离线上传） | AutoLogin.yml / config.txt 双版本识别 |
+| 青果 [OlivaDice](https://github.com/OlivOS-Team/OlivaDiceCore) | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
+| [Dice!Next](https://github.com/DiceZone/Dice-Next) | 独立程序 | 外置登录端 | OneBot v11 适配器写入 config/adapters.json |
 
 ### 登录端（6）
 
 | 程序 | 架构 | 登录方式 | 说明 |
 |---|---|---|---|
-| NapCatQQ | 独立程序 | 二维码（WebUI） | WebUI API 写互联配置，不可达时给出手动兜底指引 |
-| Lagrange.OneBot | 独立程序 | 二维码（stdout 字符画 + 落盘 qr-*.png） | 无头部署需预置配置，否则等按键 |
-| Lagrange.Milky | 独立程序 | 二维码 | Milky 协议端口，与 OneBot 分开分配 |
-| LLBot | 独立程序 | 二维码（v8.0.9+ 需申请 AUTH TOKEN） | ob11/milky/satori 多端口，JSON5 配置热更新 |
-| SnowLuma | 独立程序 | WebUI | launcher.sh 启动，WebUI 内完成登录 |
-| Yogurt | 独立程序 | 二维码 | 可作为海豹的登录端 |
+| [NapCatQQ](https://github.com/NapNeko/NapCatQQ) | 独立程序 | 二维码（WebUI） | WebUI API 写互联配置，不可达时给出手动兜底指引 |
+| [Lagrange.OneBot](https://github.com/LagrangeDev/Lagrange.Core) | 独立程序 | 二维码（stdout 字符画 + 落盘 qr-*.png） | 无头部署需预置配置，否则等按键 |
+| [Lagrange.Milky](https://github.com/LagrangeDev/Lagrange.Core) | 独立程序 | 二维码 | Milky 协议端口，与 OneBot 分开分配 |
+| [LLBot](https://github.com/LLOneBot/LuckyLilliaBot) | 独立程序 | 二维码（v8.0.9+ 需申请 AUTH TOKEN） | ob11/milky/satori 多端口，JSON5 配置热更新 |
+| [SnowLuma](https://github.com/SnowLuma/SnowLuma) | 独立程序 | WebUI | launcher.sh 启动，WebUI 内完成登录 |
+| [Yogurt](https://github.com/LLOneBot/yogurt-pmhq) | 独立程序 | 二维码 | 可作为海豹的登录端 |
 
 > 骰子端 / 登录端的划分由清单驱动：登录端 = 在任意骰子端 manifest 的
 > `compatible_login` 里出现过的程序，代码里没有程序名分支。新增程序只需
@@ -33,10 +33,14 @@
 ## 功能特性
 
 - **五步向导**：建档分配端口 → 部署（同名冲突弹窗二选一）→ 登录（二维码实时推送 / 滑块验证链接转发）→ 互联配置写入 → 启动。支持断点续跑，进程崩溃后向导自动恢复中间态。
+- **接入通道（bot_mode）**：SealDice 可选「QQ 官方机器人」通道（`official`）——免登录端、免互联，向导简化为「选程序 → 部署 → 启动」三步，连接在海豹自身 WebUI 用 AppID/AppSecret 或扫码完成，规避协议端封号风控（代价是官方接口主动消息/群管能力受限）。默认仍为 OneBot 协议通道。
 - **拓扑总览**：独立程序型骰子与其登录端渲染为双节点连线——实线绿已连接、虚线灰已配置未连接、红连接失败；整合包渲染为单节点。2 秒刷新，含全局内存水位告警条。
 - **日志中心**：实时 tail + 历史回放（进程重启不丢日志）、关键字过滤、错误行高亮、暂停跟随、复制与下载。
 - **端口管理**：按角色批量分配（webui/ob11/milky/satori），默认端口占用自动 +1 重试，实例删除时整体释放；文件锁 + 原子写保证多进程安全。
-- **进程守护**：自动重启（5 次 / 5 分钟退避），双限日志滚动（50MB 或 7 天）。
+- **进程守护**：自动重启（5 次 / 5 分钟退避），双限日志滚动（50MB 或 7 天）；面板重启后自动拉回 RUNNING 实例（用户主动停下的不拉）。
+- **一键升级**：检查上游新版本，升级前自动整目录快照，升级后自动恢复运行状态。
+- **定时任务**：按「每 X 天 X 小时」间隔定时重启 / 定时备份（full 整目录 / data 应用数据两种口径，按 keep 份数滚动保留）。
+- **资源曲线**：后台每 60s 采样内存与 CPU（含子进程），总览可看 24h 双折线与峰值/均值；落盘持久化，面板重启不丢历史。
 - **磁盘回收**：程序包缓存标注是否有实例在用并支持一键清理死缓存；备份产物（升级前快照 / 定时备份）集中展示，可按天批量清理。
 - **安全**：随机管理密码（PBKDF2 哈希存储，登录失败限速）+ Bearer token（恒定时间比较），WS 经查询参数鉴权；启动命令一律后端构建，杜绝任意命令执行；首次启动密码打印在控制台，凭据持久化到本地；manifest 可选 `sha256` 字段校验安装包完整性。
 

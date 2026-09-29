@@ -4,8 +4,9 @@
 在 Windows 10/11 上统一管理本机 QQ 骰子程序的 Web 管理器，支持 **4 个骰子端 + 6 个登录端**
 （共 10 份程序清单）的一键部署、登录承载、互联配置与进程守护。
 
-> 本目录为**规划阶段产物**：包含目录骨架、平台差异对照、改造路线图、Windows 版 manifest
-> 与配置示例。具体 Python 文件实施见 [ROADMAP.md](ROADMAP.md)。
+> Windows 版已实施完成：Python 后端与前端均已按路线图落地，开发模式用
+> `deploy\start_dev.bat` 运行，也可用 `deploy\build_exe.bat` 打包为单文件 exe
+> 双击即用。改造过程与阶段划分见 [ROADMAP.md](ROADMAP.md)。
 
 ## 与 Linux 版的关系
 
@@ -23,24 +24,36 @@
 
 ## 支持的程序
 
-同 Linux 版：4 骰子端（海豹 SealDice / 溯洄 Dice! / 青果 OlivaDice / Dice!Next）+
-6 登录端（NapCatQQ / Lagrange.OneBot / Lagrange.Milky / LLBot / SnowLuma / Yogurt）。
+同 Linux 版：4 骰子端（海豹 [SealDice](https://sealdice.com/download) /
+溯洄 [Dice!](https://github.com/Dice-Developer-Team/Dice) /
+青果 [OlivaDice](https://github.com/OlivOS-Team/OlivaDiceCore) /
+[Dice!Next](https://github.com/DiceZone/Dice-Next)）+
+6 登录端（[NapCatQQ](https://github.com/NapNeko/NapCatQQ) /
+[Lagrange.OneBot](https://github.com/LagrangeDev/Lagrange.Core) /
+[Lagrange.Milky](https://github.com/LagrangeDev/Lagrange.Core) /
+[LLBot](https://github.com/LLOneBot/LuckyLilliaBot) /
+[SnowLuma](https://github.com/SnowLuma/SnowLuma) /
+[Yogurt](https://github.com/LLOneBot/yogurt-pmhq)）。
 Windows 版 manifest 见 `manifests/*_win.json`，exe 字段改为 Windows 形态（`.exe` / `.bat`）。
 
-## 快速开始（规划态，实施后可用）
+接入通道与 Linux 版一致：新建向导第 1 步可为 SealDice 选择「QQ 官方机器人」通道
+（`bot_mode=official`，海豹 v1.4.2+）——免登录端、免互联，向导简化为三步，连接在海豹
+自身 WebUI 用 AppID/AppSecret 或扫码完成，规避协议端封号风控；默认仍为 OneBot 协议通道。
+
+## 快速开始
 
 ```bat
-:: 1. 安装 Python 3.10+ 与依赖
+:: 方式一：开发模式
 pip install -r requirements.txt
-
-:: 2. 构建前端
 cd web && npm install && npm run build && cd ..
-
-:: 3. 双击启动（首次启动密码打印在控制台）
 deploy\start_dev.bat
 ::    监听 127.0.0.1:8765
 
-:: 4. 浏览器访问 → 输入密码登录
+:: 方式二：打包为单文件 exe 后双击使用
+deploy\build_exe.bat
+::    产物 dist\dicemanager.exe，双击即用（data 目录自动生成在 exe 同级）
+
+:: 浏览器访问 → 首次启动在网页里设置管理密码 → 登录
 ```
 
 > 单机本地用户：直接双击 `deploy\start_dev.bat`，或将其快捷方式放入
@@ -111,10 +124,10 @@ LOG_DIR = Path(os.environ.get("DM_LOG_DIR", str(default_log_dir())))
 `<项目根>/package`），`adapters/__init__.py` 的 `load_registry()` 加载时
 统一覆盖 manifest 的 `install_root` 字段。
 
-## 常见问题（规划态预判）
+## 常见问题
 
-- **首次启动找不到密码**：开发模式下，密码打印在启动 .bat 弹出的控制台窗口，关闭即丢失明文，
-  只剩 PBKDF2 哈希。忘记密码请删除 `<项目根>/data/auth.json` 后重启。
+- **首次启动设置密码**：浏览器打开面板后进入「设置管理密码」界面（`auth.json` 不存在时自动出现）。
+  忘记密码请删除 `<项目根>/data/auth.json` 后重启面板，重新设置即可。
 - **程序启动后立即退出**：可能是 prerequisite 未安装（如 NapCat 需要 Windows QQ 客户端）。
   向导 Step1 会检查 prerequisite，缺失则给出下载链接。
 - **端口被占用**：分配表按 owner 释放；端口冲突自动 +1 重试。
