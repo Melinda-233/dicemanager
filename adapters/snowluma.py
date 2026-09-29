@@ -39,7 +39,8 @@ class SnowLumaAdapter(BaseAdapter):
         self._open_bind_host(cfg, host_key="webuiHost", port=int(allocated),
                              port_key="webuiPort")
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         # SnowLuma 是 OneBot v11 服务端：它不连出，故无需写自身配置；
         # 真正要写的是骰子端（见 dicenext.py）。这里只给操作提示。
         return WriteResult(
@@ -91,3 +92,30 @@ class SnowLumaAdapter(BaseAdapter):
                 if srv.get("accessToken"):
                     return str(srv["accessToken"])
         return None
+
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 SnowLuma 已登录账号（onebot.json 的 accounts[]，每个账号一条）。
+
+        账号的端口/token 取匹配的 wsServer（按 account 关联）。"""
+        d = Path(getattr(instance, "dir", ""))
+        for cand in (d / "config" / "onebot.json", d / "onebot.json",
+                     d / ".snowluma" / "config" / "onebot.json"):
+            data = self.read_json(cand)                   # 缺失/损坏 → {} → 继续下一个候选
+            accounts = data.get("accounts") or []
+            servers = {srv.get("account"): srv
+                       for srv in ((data.get("networks") or {}).get("wsServers") or [])
+                       if isinstance(srv, dict) and srv.get("account")}
+            out = []
+            for acc in accounts:
+                uin = str(acc.get("uin") or acc.get("qq") or "")
+                if not uin:
+                    continue
+                srv = servers.get(uin) or {}
+                port = srv.get("port")
+                if not port and ":" in (srv.get("path") or ""):
+                    port = srv["path"].rpartition(":")[2]
+                out.append({"qq": uin, "port": port,
+                            "token": srv.get("accessToken"), "status": "unknown"})
+            if out:
+                return out
+        return []

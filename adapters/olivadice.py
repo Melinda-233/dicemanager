@@ -31,5 +31,6 @@ class OlivaDiceAdapter(BaseAdapter):
     def configure_login(self, instance, credentials) -> dict:
         return {"needs_login": False}                          # 整合包内置登录
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         return WriteResult(ok=True)                            # 内置客户端无外部 WS

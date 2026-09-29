@@ -45,9 +45,13 @@ export const delInstance = (id, confirm, removeDir, keepSave) =>
       { method: 'DELETE' })
 
 // ---------- 总览页连接管理 ----------
-// login_ref 传 null 即解除关联；兼容性校验由后端按 manifest 的 compatible_login 做
-export const linkInstance = (id, loginRef) =>
-  api(`/instances/${id}/link`, { method: 'POST', body: { login_ref: loginRef } })
+// 多连一 / 一连多：传 links 数组（每项 {login_ref, account_qq?}）即完整替换关联列表；
+// 兼容旧调用：传字符串 = 单关联（解除传 null）。兼容性校验由后端按 manifest 做。
+export const linkInstance = (id, payload) =>
+  api(`/instances/${id}/link`, {
+    method: 'POST',
+    body: Array.isArray(payload) ? { links: payload } : { login_ref: payload },
+  })
 // WebUI 直连信息：port 可能与分配端口不同（占用时程序自动 +1），token 来自启动日志回读
 export const instanceWebui = id => api(`/instances/${id}/webui`)
 // 资源曲线：[时间戳, 内存MB, CPU%] 采样点，默认 24h

@@ -115,8 +115,21 @@ class YogurtAdapter(BaseAdapter):
         data = self.read_json(self._config(instance))          # 缺失/损坏 → {} → None
         return (data.get("httpConfig") or {}).get("accessToken") or None
 
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 Yogurt 已登录账号（quickLoginUin，单条；Milky 单账号模型）。"""
+        data = self.read_json(self._config(instance))
+        if not data:
+            return []
+        uin = data.get("quickLoginUin") or 0
+        if not uin:
+            return []
+        http = data.get("httpConfig") or {}
+        return [{"qq": str(uin), "port": http.get("port"),
+                 "token": http.get("accessToken"), "status": "unknown"}]
+
     # ---------- 互联配置（写 Milky 服务端）----------
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         port = int(addr.split(":")[-1]) if ":" in addr else int(addr)
 
         def _m(cfg: dict) -> dict:

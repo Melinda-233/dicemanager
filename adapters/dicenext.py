@@ -44,11 +44,14 @@ class DiceNextAdapter(BaseAdapter):
     def configure_login(self, instance, credentials) -> dict:
         return {"needs_login": False}              # QQ 登录走 OneBot 适配器
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         forward = direction != "reverse"
         port = addr.split(":")[-1].rstrip("/")
+        # 一连多：每条关联用各自 link_id 作为适配器名，互不覆盖；旧单关联兜底名 dicemanager
+        name = link_id or "dicemanager"
         entry = {
-            "name": "dicemanager",
+            "name": name,
             "type": "onebot_v11",
             "connection_mode": "forward_ws" if forward else "reverse_ws",
             "endpoint": (f"ws://{addr}/" if forward else port),
@@ -59,9 +62,9 @@ class DiceNextAdapter(BaseAdapter):
 
         def _m(cfg: dict) -> dict:
             cfg.setdefault("adapters", [])
-            # 按 name 查重：命中即改，避免重复添加
-            cfg["adapters"] = [e for e in cfg["adapters"]
-                               if e.get("name") != "dicemanager"]
+            # 按 name 查重：命中即改（一连多时各 link 用各自 link_id 互不覆盖），
+            # 用户自建的其它适配器条目保留
+            cfg["adapters"] = [e for e in cfg["adapters"] if e.get("name") != name]
             cfg["adapters"].append(entry)
             return cfg
 
@@ -74,7 +77,7 @@ class DiceNextAdapter(BaseAdapter):
         return WriteResult(
             ok=True, path=str(path),
             manual=f"已写入 config/adapters.json（{kind} WS）。\n"
-                   f"Dice!Next 面板「适配器管理」里 dicemanager 连接启用即生效：\n"
+                   f"Dice!Next 面板「适配器管理」里 {name} 连接启用即生效：\n"
                    f"  {detail}")
 
     def get_actual_port(self, lines) -> int | None:

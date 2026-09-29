@@ -69,6 +69,20 @@ def _backfill_from_logs(rec: dict, lines: list[tuple[int, str]]) -> dict:
             qq = adapter.account_from_logs(lines) if hasattr(adapter, "account_from_logs") else None
             if qq:
                 upd["qq"] = qq
+    # 登录端：周期回读已登录的全部 QQ 账号（list_accounts 钩子），供多账号/按账号分发展示
+    if hasattr(adapter, "list_accounts"):
+        try:
+            accs = adapter.list_accounts(SimpleNamespace(**rec)) or []
+            sig = repr([(a.get("qq"), a.get("port"), a.get("token")) for a in accs])
+            old = repr([(a.get("qq"), a.get("port"), a.get("token"))
+                        for a in (rec.get("accounts") or [])])
+            if sig != old:
+                upd["accounts"] = accs
+                # 首个账号作为展示用 qq（若尚未设置）
+                if accs and not rec.get("qq"):
+                    upd["qq"] = accs[0].get("qq")
+        except Exception:
+            pass
     # SnowLuma 等登录端的 OneBot accessToken 由它自己生成并落在 onebot.json，
     # 回读后写入 conn_token，骰子端经 login_ref 继承，保证两端 token 一致
     # （文件读取开销小，不走增量；QQ 号文件侧检测同理——文件可能在任意时刻出现）
@@ -127,18 +141,26 @@ async def overview_loop(ws: WebSocket):
                                       or rec.get("allocated_ports", {}).get("webui"),
                               # 连接管理面板需要：关联目标与登录账号（旧 payload 缺这两项）
                               "login_ref": rec.get("login_ref"),
+                              "accounts": rec.get("accounts") or [],
+                              "links": rec.get("links") or (
+                                  [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else []),
                               "qq": rec.get("qq"),
                               "warnings": rec.get("warnings", [])})
-                if rec.get("login_ref"):                       # 独立程序型才有连线
-                    # health_check 期望属性访问（allocated_ports/actual_port/dir），
-                    # 记录 dict 用 SimpleNamespace 适配，避免回表 get()
+                links = rec.get("links") or (
+                    [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else [])
+                for lk in links:                               # 每条关联一条连线（多连一/一连多）
+                    dst = lk.get("login_ref")
+                    if not dst:
+                        continue
                     inst = SimpleNamespace(**rec)
                     try:
                         hc = ctx.get_adapter(rec["dice"]).health_check(inst, is_alive=alive)
-                        edges.append({"src": rec["id"], "dst": rec["login_ref"],
-                                      "state": EDGE_STATES.get(hc["conn"], "dashed-gray")})
+                        edges.append({"src": rec["id"], "dst": dst,
+                                      "state": EDGE_STATES.get(hc["conn"], "dashed-gray"),
+                                      # 按账号分发：连线标注绑定的 QQ，便于一眼看出一连多/多连一
+                                      "account_qq": lk.get("account_qq")})
                     except Exception:
-                        edges.append({"src": rec["id"], "dst": rec["login_ref"],
+                        edges.append({"src": rec["id"], "dst": dst,
                                       "state": "solid-red"})
             except Exception as e:                             # 单实例异常不拖垮整条推送，但留痕
                 logger.warning("overview skip %s: %r", rec.get("id"), e)

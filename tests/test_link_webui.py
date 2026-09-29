@@ -37,7 +37,8 @@ def test_link_ok_and_persisted():
     _mk("sealdice-l1", "sealdice")
     _mk("napcat-l1", "napcat")
     r = link_login("sealdice-l1", LinkReq(login_ref="napcat-l1"))
-    assert r == {"ok": True}
+    assert r["ok"] is True
+    assert r["links"] == [{"login_ref": "napcat-l1", "account_qq": None}]
     assert ctx.registry.get("sealdice-l1").login_ref == "napcat-l1"
 
 

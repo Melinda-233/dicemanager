@@ -25,7 +25,8 @@ class ShikiAdapter(BaseAdapter):
         # QQ 登录由独立登录端完成（OneBot），Dice! 自身不登录
         return {"needs_login": False}
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         forward = direction != "reverse"
         port = addr.split(":")[-1].rstrip("/")
         if forward:

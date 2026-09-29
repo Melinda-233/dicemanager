@@ -344,7 +344,15 @@ class BaseAdapter(ABC):
     def configure_login(self, instance, credentials: dict) -> dict: ...
     @abstractmethod
     def write_conn_config(self, instance, mode: str, direction: str,
-                          addr: str, token: str) -> WriteResult: ...
+                          addr: str, token: str,
+                          link_id: str | None = None) -> WriteResult: ...
+
+    def list_accounts(self, instance) -> list[dict]:
+        """登录端：回读已登录的全部 QQ 账号 [{qq, token, port, status}]。
+
+        默认空列表（应用端 / 无多账号能力的登录端）；各登录端适配器按需覆写。
+        这是「登录端可登多个 QQ」与「多连一按账号分发」的数据来源。"""
+        return []
 
     @staticmethod
     def tcp_probe(host: str, port, timeout: float = 2.0) -> bool:
@@ -456,3 +464,10 @@ class BaseAdapter(ABC):
         """登录失败锚点（密码错误/账号冻结等）。默认无——各适配器按上游实际文案
         覆写后，登录页才会收到 login_failed 事件（避免猜测文案造成误报）。"""
         return None
+
+
+def link_id(login_ref: str, account_qq: str | None) -> str:
+    """每条 骰子端↔登录端 关联的全局唯一键（用于配置里的端点/连接去重与认领）。
+
+    向导、各适配器共用同一格式，保证 sealdice 端点 id 与 wizard 解析口径一致。"""
+    return f"{login_ref}|{account_qq or ''}"

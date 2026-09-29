@@ -83,8 +83,23 @@ class LagrangeMilkyAdapter(LagrangeBase):
         data = self.read_json(self._config(instance))     # 缺失/损坏 → {} → None
         return (data.get("Milky") or {}).get("AccessToken")
 
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 Lagrange.Milky 已登录账号（一个实例一个 Uin，单条）。"""
+        data = self.read_json(self._config(instance))
+        if not data:
+            return []
+        uin = ((data.get("Lagrange") or {}).get("Login") or {}).get("Uin") or 0
+        if not uin:
+            return []
+        milky = data.get("Milky") or {}
+        return [{"qq": str(uin),
+                 "port": (milky.get("HttpServer") or {}).get("Port"),
+                 "token": milky.get("AccessToken"),
+                 "status": "unknown"}]
+
     # ---------- 互联配置（写 Milky 服务端）----------
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         port = int(addr.split(":")[-1]) if ":" in addr else int(addr)
 
         def _m(cfg: dict) -> dict:

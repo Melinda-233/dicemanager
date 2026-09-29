@@ -14,7 +14,10 @@
   ],
   "data_paths": ["data"],
   "release_page": "https://github.com/sealdice/sealdice-build/releases",
-  "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",
+  "download_strategy": "resolve_latest_via_api",
+  // 注意：release 里同时有 windows_amd64.zip 等多平台资产，仅按 .zip 后缀匹配会
+  // 选中 Windows 包（部署后缺 sealdice-core 必然失败），必须用正则锁定 linux_amd64
+  "asset_name_pattern": "sealdice-core_.*_linux_amd64\\.tar\\.gz",
   "error_keywords": ["ERROR", "panic"],
   "approx_memory_mb": 120, "required_files": ["sealdice-core"]
 }

@@ -140,6 +140,27 @@
     <div v-else-if="step === 2" class="wz-body">
       <p v-if="busy">{{ deployMsg || (pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
                           : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…') }}</p>
+      <!-- 部署失败（下载超时/断网等）：就地给出「重试下载」与「上传压缩包」两条出路，
+           不必退回第一步重新创建实例 -->
+      <div v-if="deployFail" class="dialog deploy-fail">
+        <p class="fail-msg">部署失败：{{ deployFail }}</p>
+        <p class="hint">在线下载失败多为网络问题（国内直连 GitHub 常超时）。你可以：</p>
+        <div class="ops">
+          <button class="primary" :disabled="busy" @click="retryDeploy">重试下载</button>
+          <label class="upload-btn" :class="{ disabled: pkgBusy || busy }">
+            上传压缩包并部署
+            <input type="file" accept=".zip,.gz,.tgz,.xz,.bz2,.tar"
+                   :disabled="pkgBusy || busy" @change="uploadThenDeploy"/>
+          </label>
+        </div>
+        <div v-if="pkgUp" class="pkgup">
+          <div class="pkgup-bar" :class="{ 'is-indet': !pkgUp.total && !pkgUp.sent, 'is-sent': pkgUp.sent }">
+            <i :style="{ width: pkgPercent + '%' }"></i>
+          </div>
+          <p class="hint">{{ pkgText }}</p>
+        </div>
+        <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
+      </div>
       <div v-if="conflict" class="dialog">
         <p>同名文件夹已存在：<code>{{ conflictDir }}</code></p>
         <div class="ops">
@@ -190,39 +211,44 @@
       <p class="hint" v-if="needAuthToken && tokenSaved">TOKEN 已保存，二维码生成中；扫码后点击「我已完成扫码」继续。</p>
     </div>
 
-    <!-- Step4：互联配置。
-         正向/反向在两端是镜像语义：登录端 forward=开 WS 服务端口，骰子端 forward=主动连入
-         ——两端同选「正向」即可连通。旧文案把 forward 一刀切成「本程序监听」，对骰子端
-         恰好说反，按文案选会配出「两端都拨号/都监听」的死局。 -->
+    <!-- Step4：互联配置（多连一 / 一连多，按账号分发）。
+         每个「骰子端 ↔ 登录端」关联都生成一条连接：可绑定登录端的某个 QQ，或选默认账号。 -->
     <div v-else-if="step === 4" class="wz-body">
-      <div v-if="loginTarget" class="conn-peer">
-        对端：{{ loginTarget.dice }} · {{ loginTarget.id }}{{ loginTarget.qq
-          ? '（QQ ' + loginTarget.qq + '）' : '' }}
-        <span v-if="peerOb11Port"> · ob11 ws {{ peerOb11Port }}</span>
-      </div>
-      <p v-else-if="needsLoginEnd" class="warn">
-        尚未关联登录端：写入的地址 {{ defaultAddr }} 当前没有程序监听，启动后会持续连接失败。
+      <p v-if="needsLoginEnd" class="warn">
+        尚未关联任何登录端：本骰子端还没有关联协议登录端，写入互联配置后会因无人监听而持续连接失败。
         可先继续（稍后在总览关联登录端并「重写互联配置」），但建议现在就回去关联。
       </p>
-      <div class="field">
-        <label>WS 模式</label>
-        <select v-model="conn.direction">
-          <option value="forward">正向 WS — {{ isLoginEnd
-            ? '本程序监听端口，等待骰子端连入' : '本程序主动连接登录端' }}（推荐）</option>
-          <option value="reverse">反向 WS — {{ isLoginEnd
-            ? '本程序主动连接骰子端' : '本程序监听端口，等待登录端连入' }}</option>
-        </select>
-        <p class="hint">两端选同一模式即可连通（一端监听、另一端连接）；保持默认「正向」适配
-          绝大多数部署，登录端与骰子端都这么选即互通。</p>
-      </div>
-      <details class="adv-box">
-        <summary>高级：地址 / Token（默认自动推导，一般无需修改）</summary>
-        <div class="field">
-          <label>地址 host:port</label>
-          <input v-model="conn.addr" :placeholder="'留空 = ' + defaultAddr"/>
+      <template v-else>
+        <p class="hint">以下每个关联都会生成一条连接。按账号分发：让一个骰子端绑定登录端的某个
+          QQ，或选「默认账号」由其自动分配（支持一个骰子端连多个登录端）。</p>
+        <div v-for="l in wizLinks" :key="l.login_ref + '|' + (l.account_qq || '')" class="conn-peer">
+          <div class="peer-head">
+            <b>{{ loginInstOf(l.login_ref)?.dice || l.login_ref }}</b> · {{ l.login_ref }}
+            <span v-if="l.account_qq">（账号 {{ l.account_qq }}）</span>
+          </div>
+          <div class="field" style="margin:8px 0 0">
+            <label>绑定账号</label>
+            <select :value="linkAcct[l.login_ref] !== undefined ? linkAcct[l.login_ref] : (l.account_qq || '')"
+                    @change="e => linkAcct[l.login_ref] = e.target.value">
+              <option value="">默认账号（自动分配）</option>
+              <option v-for="a in accountsOf(l.login_ref)" :key="a.qq" :value="String(a.qq)">
+                QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+            </select>
+          </div>
+          <div class="field" style="margin:8px 0 0">
+            <label>WS 模式</label>
+            <select :value="linkDir[l.login_ref] !== undefined ? linkDir[l.login_ref] : (l.conn_direction || 'forward')"
+                    @change="e => linkDir[l.login_ref] = e.target.value">
+              <option value="forward">正向 WS（推荐：两端都选正向即可互通）</option>
+              <option value="reverse">反向 WS</option>
+            </select>
+          </div>
         </div>
+      </template>
+      <details class="adv-box">
+        <summary>高级：互联 Token（默认自动生成，一般无需修改）</summary>
         <div class="field">
-          <label>互联 Token（两端必须一致）</label>
+          <label>互联 Token（两端必须一致，留空自动生成/沿用）</label>
           <input v-model="conn.token" placeholder="留空自动生成 / 沿用登录端的"/>
         </div>
       </details>
@@ -278,7 +304,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, reactive, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
          deletePackage,
@@ -327,8 +353,6 @@ const loginCandidates = computed(() =>
 const needAuthToken = computed(() => !!manifest.value.auth_token_conditional)
 
 // ---------- 向导步进（面向有基础用户）----------
-// 本程序是否 WS 服务端角色：持有 ob11 端口（登录端）→ 正向=监听；骰子端 → 正向=主动连入
-const isLoginEnd = computed(() => !!manifest.value.ob11_default_port)
 // none/external 没有独立登录环节：Step3 自动跳过，步骤条同步少一步
 const skipLoginStep = computed(() =>
   loginType.value === 'none' || loginType.value === 'external' || officialMode.value)
@@ -340,22 +364,16 @@ const curStepIdx = computed(() => {
 // 当前实例在列表中的记录（进入 Step4 时 refreshLists 已带回）
 const curInst = computed(() =>
   instanceId ? instances.value.find(i => i.id === instanceId) || null : null)
-// 互联对端：实例记录里的 login_ref 优先，配对模式/表单选择兜底
-const loginTarget = computed(() => {
-  const ref = curInst.value?.login_ref || loginRef.value ||
-    (pair.value?.phase === 'dice' ? pair.value.loginId : '')
-  return ref ? instances.value.find(i => i.id === ref) || null : null
-})
-const peerOb11Port = computed(() =>
-  (loginTarget.value?.allocated_ports || {}).ob11)
-// 骰子端（兼容矩阵非空）却没关联登录端 → Step4 明确警告，别让用户造出连不通的实例
+// 本实例的关联列表（多连一 / 一连多）：每项 {login_ref, account_qq}，逐项生成连接
+const wizLinks = computed(() => (curInst.value?.links || []).filter(l => l.login_ref))
+const loginInstOf = lr => instances.value.find(i => i.id === lr) || null
+const accountsOf = lr => loginInstOf(lr)?.accounts || []   // 该登录端已登录的 QQ 账号清单
+// 向导 Step4：逐条关联的用户选择（账号绑定 + 方向），按 login_ref 索引
+const linkAcct = reactive({})
+const linkDir = reactive({})
+// 骰子端（兼容矩阵非空）却没关联任何登录端 → Step4 明确警告，别让用户造出连不通的实例
 const needsLoginEnd = computed(() =>
-  loginOptions.value.length > 0 && !loginTarget.value)
-// 与后端 wizard.step4 同口径的默认地址预览：自己有 ob11 用自己的，否则对端的
-const defaultAddr = computed(() => {
-  const own = (curInst.value?.allocated_ports || {}).ob11 || manifest.value.ob11_default_port
-  return `127.0.0.1:${own || peerOb11Port.value || 3001}`
-})
+  loginOptions.value.length > 0 && !wizLinks.value.length)
 // Step5 启动完成后的 WebUI 直达信息
 const webuiInfo = ref(null)
 const webuiUrl = computed(() => webuiInfo.value?.port
@@ -493,7 +511,7 @@ const reset = () => {
   loginRef.value = ''; instanceId = null
   pair.value = null; loginChoice.value = ''; loginHandled = false
   botMode.value = 'onebot'
-  stopDeployPoll(); deployMsg.value = ''
+  stopDeployPoll(); deployMsg.value = ''; deployFail.value = ''
   refreshLists()
 }
 
@@ -505,7 +523,7 @@ const resume = async p => {
   err.value = ''; conflict.value = false; preview.value = ''; manual.value = ''
   started.value = false; tokenSaved.value = false   // 续跑实例的 token 落盘状态未知，重新判定
   pair.value = null; mode.value = 'dice'; loginHandled = false
-  stopDeployPoll(); deployMsg.value = ''
+  stopDeployPoll(); deployMsg.value = ''; deployFail.value = ''
   await refreshLists()                              // 确保后续 Step4 读到的实例列表是最新的
   instanceId = p.id
   dice.value = p.dice
@@ -579,7 +597,7 @@ const enterPhaseStepOne = () => {
 }
 
 const doStep = async (n, payload) => {
-  if (n === 2) { deployMsg.value = ''; startDeployPoll() }   // 部署期间轮询进度
+  if (n === 2) { deployMsg.value = ''; deployFail.value = ''; startDeployPoll() }
   try {
     const r = await wizardStep(instanceId, n, payload)
     if (r.result === 'error') throw new Error(r.message || '操作失败')   // 如双击启动的竞态提示
@@ -594,9 +612,43 @@ const doStep = async (n, payload) => {
       preview.value = r.preview || ''
       refreshLists()          // Step4 要展示对端（login_ref）与它的 ob11 端口，先刷新实例列表
     }
+  } catch (e) {
+    // 部署失败就地展示（重试/上传压缩包），不再抛给 guard 重复报错
+    if (n === 2) { deployFail.value = e.message || String(e); return }
+    throw e
   } finally {
     if (n === 2) stopDeployPoll()
   }
+}
+
+// ---------- 部署失败出路：重试 / 上传压缩包后自动重试 ----------
+const deployFail = ref('')
+// 实例部署失败后仍处于 DEPLOYING 中间态，重发 step2 即可（本地包就位后同样走这条路径）
+const retryDeploy = () => guard(async () => {
+  err.value = ''
+  await doStep(2, {})
+})
+// 失败面板里的上传：包落盘校验通过后立即重试部署，免去退回第一步重新创建
+const uploadThenDeploy = e => {
+  const file = e.target.files[0]
+  e.target.value = ''                          // 允许重选同一文件再次触发 change
+  if (!file) return
+  pkgBusy.value = true; pkgMsg.value = ''
+  pkgUp.value = { loaded: 0, total: file.size, sent: false, startAt: Date.now() }
+  uploadPackage(dice.value, file, ({ loaded, total, sent }) => {
+    const cur = pkgUp.value
+    pkgUp.value = { loaded: Math.max(loaded, cur?.loaded || 0),
+                    total: total || cur?.total || file.size,
+                    sent: !!(sent || cur?.sent),
+                    startAt: cur?.startAt || Date.now() }
+  })
+    .then(info => {
+      pkgs.value = { ...pkgs.value, [dice.value]: info }
+      pkgMsg.value = `已上传 ${info.size_mb} MB，正在用本地包重新部署…`
+      retryDeploy()
+    })
+    .catch(ex => { pkgUp.value = null; deployFail.value = `上传失败：${ex.message || ex}` })
+    .finally(() => { pkgBusy.value = false })
 }
 
 // 进入第 3 步（登录）的统一入口：
@@ -654,10 +706,16 @@ const afterLoginDone = () => {
   })
 }
 
-// Step4：留空的字段交给后端用默认值/自动生成的 token（两端一致性由后端保证）
+// Step4：逐条关联提交（账号绑定 + 方向）；token 全局兜底（留空则后端自动推导）
 const doConn = () => guard(async () => {
-  const payload = { direction: conn.value.direction }
-  if (conn.value.addr) payload.addr = conn.value.addr.trim()
+  const links = wizLinks.value.map(l => ({
+    login_ref: l.login_ref,
+    account_qq: (linkAcct[l.login_ref] !== undefined ? linkAcct[l.login_ref]
+                : (l.account_qq || '')) || null,
+    direction: (linkDir[l.login_ref] !== undefined ? linkDir[l.login_ref]
+                : (l.conn_direction || 'forward')),
+  }))
+  const payload = { links }
   if (conn.value.token) payload.token = conn.value.token.trim()
   await doStep(4, payload)
 })
@@ -742,6 +800,14 @@ onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
 .warn { color: var(--warn); }
 .qr img { max-width: 260px; display: block; margin-bottom: 10px; background: var(--panel); }
 .dialog { padding: 14px; margin-bottom: 14px; border: 1px solid var(--danger); border-radius: 8px; }
+.deploy-fail { border-color: var(--warn); }
+.fail-msg { color: var(--danger); font-weight: 600; margin-top: 0; }
+.upload-btn {
+  display: inline-flex; align-items: center; padding: 6px 14px; cursor: pointer;
+  border: 1px solid var(--brand); border-radius: 8px; color: var(--brand); font-size: 14px;
+}
+.upload-btn input { display: none; }
+.upload-btn.disabled { opacity: .5; pointer-events: none; }
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }

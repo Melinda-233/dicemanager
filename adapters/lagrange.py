@@ -54,6 +54,24 @@ class LagrangeAdapter(LagrangeBase):
         # 二维码经 /ws/login 推送（来自磁盘 qr-*.png）；qq 登录后由 keystore 回读
         return {"ok": True}
 
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 Lagrange 已登录账号（一个实例通常一个 Account.Uin）。
+
+        Lagrange.OneBot 多账号需多实例，故这里通常返回单条；返回结构保持一致即可。"""
+        data = self.read_json(self._config(instance))
+        if not data:
+            return []
+        uin = (data.get("Account") or {}).get("Uin") or 0
+        if not uin:
+            return []
+        port = token = None
+        for impl in (data.get("Implementations") or []):
+            if isinstance(impl, dict):
+                token = impl.get("AccessToken") or token
+                if impl.get("Type") == "ForwardWebSocket":
+                    port = impl.get("Port") or port
+        return [{"qq": str(uin), "port": port, "token": token, "status": "unknown"}]
+
     # ---------- 互联配置 ----------
     def get_conn_token(self, instance) -> str | None:
         """回读 AccessToken，供骰子端经 login_ref 继承，保证两端 token 一致。"""
@@ -73,7 +91,8 @@ class LagrangeAdapter(LagrangeBase):
         host, _, port = a.rpartition(":") if ":" in a else (a, "", "")
         return host, int(port) if port.isdigit() else 0
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
         if direction == "reverse":                 # 本端主动连骰子端
             host, port = self._host_port(addr)
             if not port:

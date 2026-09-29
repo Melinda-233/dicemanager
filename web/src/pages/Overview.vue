@@ -42,11 +42,11 @@
             :x1="pos(e.src).x" :y1="pos(e.src).y"
             :x2="pos(e.dst).x" :y2="pos(e.dst).y" :class="e.state"/>
       <!-- 连线中点标注状态，颜色随线；白描边保证压在线上也可读 -->
-      <text v-for="e in edges" :key="'t'+e.src+e.dst"
+      <text v-for="e in edges" :key="'t'+e.src+e.dst+(e.account_qq||'')"
             :x="(pos(e.src).x + pos(e.dst).x) / 2"
             :y="(pos(e.src).y + pos(e.dst).y) / 2 - 7"
             :class="['edge-label', e.state]" text-anchor="middle">{{
-        stateText(e.state) }}</text>
+        stateText(e.state) }}<tspan v-if="e.account_qq"> · QQ {{ e.account_qq }}</tspan></text>
       <g v-for="n in nodes" :key="n.id"
          :transform="`translate(${pos(n.id).x},${pos(n.id).y})`" @click="sel = n">
         <rect x="-70" y="-26" width="140" height="52" rx="8"
@@ -113,7 +113,8 @@
         <span v-if="live.qq"> · QQ {{ live.qq }}</span>
         <span v-if="live.mem_mb"> · 内存 {{ live.mem_mb }} MB</span>
         <span v-if="live.bot_mode === 'official'" class="hint"> · 官方机器人通道</span>
-        <span v-if="linkTarget"> · 已连 {{ linkTarget.dice }}（{{ edgeState }}）</span>
+        <span v-if="!isLoginSel && linkRows.length"> · 已关联 {{ linkRows.length }} 个登录端</span>
+        <span v-else-if="isLoginSel && (selLive.accounts || []).length"> · 已登录 {{ (selLive.accounts || []).length }} 个账号</span>
         <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
         <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
       </div>
@@ -195,20 +196,83 @@
       <p v-if="webuiInfo" class="hint">
         WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
           webuiInfo.token || '日志中未发现令牌，请进 WebUI 查看' }}</code>（点击复制）</p>
-      <div class="ops">
-        <template v-if="linkTarget">
+      <!-- ===== 连接管理：支持多连一 / 一连多，按账号分发 ===== -->
+      <div class="conn-mgmt">
+        <p class="hint" v-if="!isLoginSel">
+          关联登录端：每个关联生成一条「骰子端 ↔ 登录端」连接；可绑定登录端的某个 QQ 账号，
+          或选「默认账号」由其自动分配（支持一个骰子端连多个登录端）。
+        </p>
+        <!-- 骰子端：当前关联列表 -->
+        <div v-if="!isLoginSel">
+          <div v-for="row in linkRows" :key="row.key" class="link-row">
+            <div class="link-main">
+              <b>{{ row.loginDice }}</b> · {{ row.loginRef }}
+              <span v-if="row.accountQq">（QQ {{ row.accountQq }}）</span>
+              <span :class="['link-state', row.state]">{{ stateText(row.state) }}</span>
+            </div>
+            <div class="field" v-if="row.accounts.length">
+              <label>绑定账号</label>
+              <select :value="row.accountQq || ''"
+                      @change="e => updateLinkAccount(row.loginRef, row.accountQq, e.target.value || null)">
+                <option value="">默认账号（自动分配）</option>
+                <option v-for="a in row.accounts" :key="a.qq" :value="String(a.qq)">
+                  QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+              </select>
+            </div>
+            <div class="ops">
+              <button class="danger" @click="removeLink(row.loginRef, row.accountQq)">解除此关联</button>
+            </div>
+          </div>
+          <p v-if="!linkRows.length" class="hint">尚未关联任何登录端。</p>
+          <!-- 新增关联 -->
+          <div class="add-link" v-if="linkCandidates.length">
+            <div class="field">
+              <label>新增关联登录端</label>
+              <select v-model="newLoginRef">
+                <option value="">选择登录端…</option>
+                <option v-for="c in linkCandidates" :key="c.id" :value="c.id">
+                  {{ c.dice }} · {{ c.id }}{{ c.qq ? ' (QQ ' + c.qq + ')' : '' }}</option>
+              </select>
+            </div>
+            <div class="field" v-if="newLoginRef && newLoginAccounts.length">
+              <label>绑定账号（可选）</label>
+              <select v-model="newAccountQq">
+                <option value="">默认账号（自动分配）</option>
+                <option v-for="a in newLoginAccounts" :key="a.qq" :value="String(a.qq)">
+                  QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+              </select>
+            </div>
+            <div class="ops">
+              <button :disabled="!newLoginRef" @click="addLink">关联</button>
+            </div>
+          </div>
+          <p v-else class="hint">暂无可关联的登录端实例。</p>
+        </div>
+        <!-- 登录端：展示已登录账号 + 被哪些骰子端关联 -->
+        <div v-else>
+          <p class="hint">已登录账号：</p>
+          <div v-for="a in (selLive.accounts || [])" :key="a.qq" class="link-row">
+            <div class="link-main"><b>QQ {{ a.qq }}</b>
+              <span :class="['link-state', a.status === 'running' ? 'solid-green' : 'dashed-gray']">
+                {{ a.status || 'unknown' }}</span>
+              <span v-if="a.port" class="hint"> · 端口 {{ a.port }}</span>
+            </div>
+          </div>
+          <p v-if="!(selLive.accounts || []).length" class="hint">暂无已登录账号（可能尚未登录）。</p>
+          <p class="hint" style="margin-top:8px">被以下骰子端关联：</p>
+          <div v-for="d in linkedBy" :key="d.id" class="link-row">
+            <div class="link-main">{{ d.dice }} · {{ d.id }}
+              <span v-for="l in (d.links || []).filter(x => x.login_ref === sel.id)"
+                    :key="l.account_qq || ''" class="hint">
+                · 账号 {{ l.account_qq || '默认' }}</span>
+            </div>
+          </div>
+          <p v-if="!linkedBy.length" class="hint">暂无骰子端关联此登录端。</p>
+        </div>
+        <div class="ops" v-if="!isLoginSel && linkRows.length">
           <button @click="reconn">重写互联配置</button>
-          <button class="danger" @click="unlink">解除连接</button>
-        </template>
-        <template v-else-if="linkCandidates.length">
-          <select v-model="linkChoice">
-            <option value="" disabled>选择登录端并关联…</option>
-            <option v-for="c in linkCandidates" :key="c.id" :value="c.id">
-              {{ c.dice }} · {{ c.id }}{{ c.qq ? ' (QQ ' + c.qq + ')' : '' }}</option>
-          </select>
-          <button :disabled="!linkChoice" @click="link">关联登录端</button>
-        </template>
-        <span v-else class="hint">该程序没有可关联的登录端（未声明兼容矩阵或暂无候选实例）。</span>
+          <button class="danger" @click="unlinkAll">解除全部关联</button>
+        </div>
       </div>
       <p v-if="connMsg" class="hint">{{ connMsg }}</p>
       <div class="panel-ops">
@@ -241,7 +305,7 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
 const connected = ref(false)             // WS 是否已连上：用于区分「连接中」与「真的没有实例」
-const webuiInfo = ref(null), connMsg = ref(''), linkChoice = ref('')
+const webuiInfo = ref(null), connMsg = ref('')
 let sock
 listManifests().then(m => (manifests.value = m)).catch(() => {})   // 拉不到不阻塞总览
 
@@ -309,10 +373,6 @@ const selLive = computed(() => nodes.value.find(n => n.id === sel.value?.id) || 
 const live = computed(() => selLive.value || {})
 const linkTarget = computed(() =>
   live.value.login_ref ? nodes.value.find(n => n.id === live.value.login_ref) : null)
-const edgeState = computed(() => {
-  const e = edges.value.find(e => e.src === sel.value?.id || e.dst === sel.value?.id)
-  return e ? stateText(e.state) : '—'
-})
 // 连线状态 → 中文文案（edge.state 的取值即样式类名，与 ws_overview 保持一致）
 const stateText = s => ({ 'solid-green': '已连接', 'dashed-gray': '已配置未连接',
                           'solid-red': '连接失败' })[s] || s
@@ -323,7 +383,7 @@ const linkCandidates = computed(() => {
     .filter(o => o !== 'builtin')
   return nodes.value.filter(n => opts.includes(n.dice) && n.id !== sel.value.id)
 })
-watch(sel, () => { webuiInfo.value = null; connMsg.value = ''; linkChoice.value = '' })
+watch(sel, () => { webuiInfo.value = null; connMsg.value = ''; newLoginRef.value = ''; newAccountQq.value = '' })
 
 // 启停操作：后端在启动/重启时会顺带开放 WebUI 端口（绑定修正 + ufw），有提示就展示
 const op = o => guard(async () => {
@@ -473,16 +533,66 @@ const copyToken = () => {
       .catch(() => {})
   connMsg.value = webuiInfo.value?.token ? '令牌已复制到剪贴板' : ''
 }
-// 连接管理：关联/解除只改 login_ref（拓扑连线随之变化）；重写互联配置复用向导第 4 步，
-// 地址与令牌留空 → 后端自动继承登录端的 ob11 端口与 token，保证两端一致
-const link = () => guard(async () => {
-  await linkInstance(sel.value.id, linkChoice.value)
-  connMsg.value = '已关联。建议点「重写互联配置」自动对齐两端的地址与令牌。'
+// 连接管理（多连一 / 一连多）：以完整 links 数组替换关联；重写互联配置复用向导第 4 步。
+// 地址与令牌留空 → 后端自动继承登录端各账号的端口与 token，保证两端一致。
+const newLoginRef = ref(''), newAccountQq = ref('')
+// 当前选中实例：是否登录端（展示账号视角而非关联管理视角）
+const isLoginSel = computed(() => !!selLive.value && loginSet.value.has(selLive.value.dice))
+// 骰子端：当前关联列表（解析出对端节点、账号清单与连线状态），供面板逐条管理
+const linkRows = computed(() => {
+  if (!selLive.value || isLoginSel.value) return []
+  const sid = sel.value?.id
+  return (selLive.value.links || []).map(l => {
+    const li = nodes.value.find(n => n.id === l.login_ref) || {}
+    const st = edges.value.find(e => e.src === sid && e.dst === l.login_ref
+                                  && (e.account_qq || '') === (l.account_qq || ''))
+    return { key: `${l.login_ref}|${l.account_qq || ''}`, loginRef: l.login_ref,
+             loginDice: li.dice || l.login_ref, accountQq: l.account_qq || '',
+             accounts: li.accounts || [],
+             state: st ? st.state : 'dashed-gray' }
+  })
 })
-const unlink = () => guard(async () => {
-  if (!confirm('解除与登录端的连接？（不删除任何实例）')) return
+// 新增关联时，所选登录端的可绑定账号
+const newLoginAccounts = computed(() => {
+  const li = nodes.value.find(n => n.id === newLoginRef.value)
+  return li?.accounts || []
+})
+// 登录端：被哪些骰子端关联（用于展示「谁在用我」）
+const linkedBy = computed(() => {
+  if (!isLoginSel.value) return []
+  return nodes.value.filter(n => (n.links || []).some(l => l.login_ref === sel.value.id))
+})
+const addLink = () => guard(async () => {
+  if (!newLoginRef.value) return
+  const links = (selLive.value.links || []).map(l => ({ ...l }))
+  const nk = `${newLoginRef.value}|${newAccountQq.value || ''}`
+  if (links.some(l => `${l.login_ref}|${l.account_qq || ''}` === nk)) {
+    connMsg.value = '该关联已存在。'; return
+  }
+  links.push({ login_ref: newLoginRef.value, account_qq: newAccountQq.value || null })
+  await linkInstance(sel.value.id, links)
+  connMsg.value = '已关联' + (newAccountQq.value ? `（账号 ${newAccountQq.value}）` : '')
+    + '。建议点「重写互联配置」自动对齐两端的地址与令牌。'
+  newLoginRef.value = ''; newAccountQq.value = ''
+})
+const removeLink = (lr, qq) => guard(async () => {
+  if (!confirm('解除该关联？（不删除任何实例，骰子端对应连接将失效）')) return
+  const links = (selLive.value.links || []).filter(
+    l => !(l.login_ref === lr && (l.account_qq || '') === (qq || '')))
+  await linkInstance(sel.value.id, links)
+  connMsg.value = '已解除该关联。'
+})
+const updateLinkAccount = (lr, oldQq, newQq) => guard(async () => {
+  const links = (selLive.value.links || []).map(l =>
+    (l.login_ref === lr && (l.account_qq || '') === (oldQq || ''))
+      ? { ...l, account_qq: newQq || null } : l)
+  await linkInstance(sel.value.id, links)
+  connMsg.value = '已更新绑定账号，建议点「重写互联配置」对齐连接。'
+})
+const unlinkAll = () => guard(async () => {
+  if (!confirm('解除与全部登录端的关联？（不删除任何实例）')) return
   await linkInstance(sel.value.id, null)
-  connMsg.value = '已解除关联。'
+  connMsg.value = '已解除全部关联。'
 })
 const reconn = () => guard(async () => {
   const r = await wizardStep(sel.value.id, 4, {})
@@ -674,6 +784,16 @@ button.danger { color: #e5484d; }
 .sched-add { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
 .sched-add select, .sched-add input { width: auto; margin: 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+/* 连接管理：多连一 / 一连多 逐条关联卡片 */
+.conn-mgmt { margin: 6px 0; border-top: 1px dashed var(--border); padding-top: 8px; }
+.link-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  margin-bottom: 8px; background: var(--code-bg); }
+.link-main { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.add-link { border: 1px dashed var(--border); border-radius: 8px; padding: 8px 10px; margin-top: 6px; }
+.link-state { font-size: 11px; padding: 1px 7px; border-radius: 999px; margin-left: 4px; }
+.link-state.solid-green { color: #2f9d6f; background: #e7f6ee; }
+.link-state.dashed-gray { color: #999; background: #f0f0f0; }
+.link-state.solid-red { color: #e5484d; background: #fdeaea; }
 .panel-ops { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 .restart-overlay {
   position: fixed; inset: 0; z-index: 60;

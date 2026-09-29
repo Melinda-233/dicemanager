@@ -73,6 +73,31 @@ class NapCatAdapter(BaseAdapter):
                 if m: return m.group(1)
         return None
 
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 NapCat 已登录的全部 QQ 账号（每个 onebot11_<qq>.json 一个账号）。
+
+        返回 [{qq, token, port, status}]：这是「登录端可登多个 QQ」的数据来源，
+        多连一按账号分发时每个骰子端挑其中一个账号的端口/token。"""
+        cd = self._config_dir(instance)
+        out = []
+        if not cd.is_dir():
+            return out
+        for f in sorted(cd.glob("onebot11_*.json")):
+            m = re.match(r"onebot11_(\d{5,12})\.json$", f.name)
+            if not m:
+                continue
+            qq = m.group(1)
+            d = self.read_json(f)
+            net = d.get("network") or {}
+            port = token = None
+            for k in ("websocketServers", "websocketClients"):
+                for e in (net.get(k) or []):
+                    if isinstance(e, dict):
+                        port = e.get("port") or port
+                        token = e.get("token") or token
+            out.append({"qq": qq, "port": port, "token": token, "status": "unknown"})
+        return out
+
     @staticmethod
     def account_from_logs(lines) -> str | None:
         for _, line in reversed(list(lines)[-300:]):
@@ -104,16 +129,19 @@ class NapCatAdapter(BaseAdapter):
                              port_key="port", extra_defaults={"loginRate": 3})
 
     # ---------- 互联配置 ----------
-    def _entry(self, direction, addr, token):
-        """按 NapCat 文档构造 network 下的条目（name 唯一，用于重复写入去重）。"""
+    def _entry(self, direction, addr, token, name: str) -> dict:
+        """按 NapCat 文档构造 network 下的条目（name 唯一，用于重复写入去重）。
+
+        name 取 link_id（每条 骰子↔登录端 关联唯一），多连一/一连多时不同关联各占
+        一条、互不覆盖；旧单关联兜底名 dicemanager。"""
         if direction == "reverse":                     # NapCat 主动连骰子端
             url = addr if addr.startswith("ws") else f"ws://{addr}/ws"
-            return {"name": "dicemanager", "enable": True, "url": url,
+            return {"name": name, "enable": True, "url": url,
                     "messagePostFormat": "array", "reportSelfMessage": False,
                     "reconnectInterval": 5000, "token": token,
                     "debug": False, "heartInterval": 30000}
         port = int(addr.split(":")[-1]) if ":" in addr else int(addr)
-        return {"name": "dicemanager", "enable": True, "host": "0.0.0.0",
+        return {"name": name, "enable": True, "host": "0.0.0.0",
                 "port": port, "messagePostFormat": "array",
                 "reportSelfMessage": False, "token": token,
                 "enableForcePushEvent": True, "debug": False,
@@ -127,16 +155,18 @@ class NapCatAdapter(BaseAdapter):
             return [cd / f"onebot11_{qq}.json"], qq
         return [cd / "onebot11.json"], None
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
-        entry = self._entry(direction, addr, token)
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
+        name = link_id or "dicemanager"
+        entry = self._entry(direction, addr, token, name)
         key = "websocketServers" if direction != "reverse" else "websocketClients"
 
         def _m(cfg: dict) -> dict:
             net = cfg.setdefault("network", {})
             for k in ("httpServers", "httpClients", "websocketServers", "websocketClients"):
                 net.setdefault(k, [])
-            # 同名条目替换，用户自建的其它条目保留
-            net[key] = [e for e in net[key] if e.get("name") != "dicemanager"] + [entry]
+            # 按 link_id 去重（多连一/一连多互不覆盖），用户自建的其它条目保留
+            net[key] = [e for e in net[key] if e.get("name") != name] + [entry]
             cfg.setdefault("musicSignUrl", "")
             cfg.setdefault("enableLocalFile2Url", False)
             cfg.setdefault("parseMultMsg", False)

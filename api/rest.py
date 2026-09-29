@@ -90,33 +90,49 @@ def list_instances():
     return out
 
 class LinkReq(BaseModel):
-    login_ref: str | None = None         # None = 解除关联
+    login_ref: str | None = None         # 兼容旧调用：单关联（解除传 null）
+    account_qq: str | None = None        # 单关联时绑定的登录端账号（多连一按账号分发）
+    links: list | None = None            # 新：完整关联列表，每项 {login_ref, account_qq?}
 
 @router.post("/instances/{inst_id}/link")
 def link_login(inst_id: str, req: LinkReq):
-    """总览页连接管理：建立/解除 骰子端 → 登录端 的关联（login_ref 即拓扑连线数据源）。
+    """总览页连接管理：建立/解除 骰子端 → 登录端 的关联（links 即拓扑连线数据源）。
 
-    兼容性由 manifest 的 compatible_login 声明驱动，后端不写程序名分支。
+    支持多连一（多个骰子端各持有指向同一登录端的 links）与一连多（单个骰子端
+    links 含多个登录端）。兼容性由 manifest 的 compatible_login 声明驱动，后端不写程序名分支。
     """
     try:
         inst = ctx.registry.get(inst_id)
     except KeyError:
         raise HTTPException(404, f"实例不存在: {inst_id}") from None
-    if req.login_ref:
-        if req.login_ref == inst_id:
+    # 归一化为 links 列表：优先 req.links；其次单关联（login_ref/account_qq）；否则解除全部
+    if req.links is not None:
+        raw = req.links or []
+    elif req.login_ref is not None:
+        raw = [{"login_ref": req.login_ref, "account_qq": req.account_qq}]
+    else:
+        raw = []
+    cleaned = []
+    for l in raw:
+        lr = l.get("login_ref") if isinstance(l, dict) else l
+        if not lr:
+            continue
+        if lr == inst_id:
             raise HTTPException(400, "不能关联自己")
         try:
-            target = ctx.registry.get(req.login_ref)
+            target = ctx.registry.get(lr)
         except KeyError:
-            raise HTTPException(404, f"登录端实例不存在: {req.login_ref}") from None
+            raise HTTPException(404, f"登录端实例不存在: {lr}") from None
         ok_set = [d for d in (ctx.adapters[inst.dice][0].get("compatible_login") or [])
                   if d != "builtin"]
         if target.dice not in ok_set:
             raise HTTPException(400, f"{inst.dice} 不兼容登录端 {target.dice}"
                                      f"（兼容：{' / '.join(ok_set) or '无'}）")
+        cleaned.append({"login_ref": lr,
+                        "account_qq": (l.get("account_qq") if isinstance(l, dict) else None)})
     with instance_lock(inst_id):
-        ctx.registry.update(inst_id, login_ref=req.login_ref)
-    return {"ok": True}
+        ctx.registry.set_links(inst_id, cleaned)
+    return {"ok": True, "links": cleaned}
 
 @router.get("/instances/{inst_id}/webui")
 def instance_webui(inst_id: str):
@@ -230,40 +246,55 @@ def diagnose_instance(inst_id: str):
     alive = ctx.pm.is_alive(inst_id)
     add(alive, "process",
         "本端进程运行中" if alive else "本端进程未运行（先启动实例）")
-    if not rec.login_ref:
-        add(False, "ref", "未关联登录端（总览侧栏「关联登录端」）")
-    else:
-        add(True, "ref", f"已关联登录端 {rec.login_ref}")
+    links = rec.links or ([{"login_ref": rec.login_ref}] if rec.login_ref else [])
+    if not links:
+        add(False, "ref", "未关联任何登录端（总览侧栏「关联登录端」）")
+    for link in links:
+        lr = link.get("login_ref"); account_qq = link.get("account_qq")
+        tag = f"（账号 {account_qq}）" if account_qq else ""
         try:
-            login = ctx.registry.get(rec.login_ref)
-            lalive = ctx.pm.is_alive(rec.login_ref)
+            login = ctx.registry.get(lr)
+            add(True, "ref", f"已关联登录端 {lr}{tag}")
+            lalive = ctx.pm.is_alive(lr)
             add(lalive, "login_process",
-                "登录端进程运行中" if lalive else "登录端进程未运行（登录端连不上任何人）")
+                f"登录端 {lr} 进程{'运行中' if lalive else '未运行（连不上任何人）'}")
             lproto = ctx.get_adapter(login.dice).m.get("protocol", "ob11")
-            port = (login.allocated_ports or {}).get(lproto) or \
+            # 优先该账号专属端口，否则登录端默认分配端口
+            port = None
+            if account_qq:
+                acc = next((a for a in (login.accounts or [])
+                            if str(a.get("qq")) == str(account_qq)), None)
+                port = acc.get("port") if acc else None
+            port = port or (login.allocated_ports or {}).get(lproto) or \
                    (login.allocated_ports or {}).get("ob11")
             if port:
                 reachable = ctx.get_adapter(rec.dice).tcp_probe("127.0.0.1", port)
                 pname = "milky" if lproto == "milky" else "ob11"
                 add(reachable, "port",
-                    f"登录端 {pname} 端口 {port} {'可连通' if reachable else '未监听（登录端未启动/端口没开）'}")
+                    f"登录端 {pname} 端口 {port}{tag} {'可连通' if reachable else '未监听（登录端未启动/端口没开）'}")
             else:
-                add(False, "port", "登录端未分配互联端口，无法建立连接")
-            if rec.conn_token and login.conn_token:
-                same = rec.conn_token == login.conn_token
+                add(False, "port", f"登录端 {lr} 未分配互联端口，无法建立连接")
+            ltoken = None
+            if account_qq:
+                acc = next((a for a in (login.accounts or [])
+                            if str(a.get("qq")) == str(account_qq)), None)
+                ltoken = acc.get("token") if acc else None
+            ltoken = ltoken or login.conn_token
+            rtoken = link.get("conn_token") or rec.conn_token
+            if rtoken and ltoken:
+                same = rtoken == ltoken
                 add(same, "token",
-                    "两端互联 token 一致" if same
-                    else "两端互联 token 不一致（历史遗留），请「重写互联配置」对齐")
+                    f"两端 token{tag} {'一致' if same else '不一致（历史遗留），请「重写互联配置」对齐'}")
             else:
                 add(False, "token",
-                    "互联 token 缺失（本端或登录端尚未写互联配置），请「重写互联配置」")
+                    f"互联 token{tag} 缺失（本端或登录端尚未写互联配置），请「重写互联配置」")
         except KeyError:
-            add(False, "ref", f"关联的登录端 {rec.login_ref} 已不存在，请重新关联")
+            add(False, "ref", f"关联的登录端 {lr} 已不存在，请重新关联")
     # 本端配置层（适配器专属，如海豹 serve.yaml 端点 state）
     try:
         ns = SimpleNamespace(**{k: rec.__dict__.get(k) for k in
                                 ("id", "dice", "dir", "allocated_ports", "actual_port",
-                                 "conn_token", "conn_addr", "conn_direction")})
+                                 "conn_token", "conn_addr", "conn_direction", "links")})
         items.extend(ctx.get_adapter(rec.dice).diagnose_conn(ns))
     except Exception as e:                              # 诊断自身出错要可见，不能静默
         add(False, "adapter", f"适配器诊断异常: {e}")
@@ -459,11 +490,15 @@ def delete_instance(inst_id: str, confirm: bool = False,
                 raise HTTPException(
                     500, "目录删除失败（实例未移除，可重试）："
                          + "; ".join(dir_errors[:3]))
-        # 级联解除引用：否则骰子端 login_ref 悬空——总览连线消失、向导 step4 重写时会
+        # 级联解除引用：否则骰子端 links 悬空——总览连线消失、向导 step4 重写时会
         # 静默生成新 token 与登录端残留配置不一致（两端连不上且难排查）
-        unlinked = [r["id"] for r in ctx.registry.all() if r.get("login_ref") == inst_id]
-        for other in unlinked:
-            ctx.registry.update(other, login_ref=None)
+        unlinked = []
+        for r in ctx.registry.all():
+            links = r.get("links") or []
+            if any(l.get("login_ref") == inst_id for l in links):
+                new_links = [l for l in links if l.get("login_ref") != inst_id]
+                ctx.registry.set_links(r["id"], new_links)
+                unlinked.append(r["id"])
         ctx.registry.remove(inst_id)                        # 全部成功后才墓碑
     # 日志文件随实例一起走 + 释放空壳 ManagedProcess：旧实现只除名不删日志，
     # 反复增删会累积一批查不到归属的孤儿日志

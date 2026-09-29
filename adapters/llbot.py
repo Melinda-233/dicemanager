@@ -131,9 +131,13 @@ class LLBotAdapter(BaseAdapter):
             restart = True
         return {"ok": True, "qq": qq, "restart": restart}
 
-    def write_conn_config(self, instance, mode, direction, addr, token) -> WriteResult:
+    def write_conn_config(self, instance, mode, direction, addr, token,
+                          link_id: str | None = None) -> WriteResult:
+        # 多连一/一连多：每条关联用各自 link_id 作为连接名，互不覆盖；旧单关联兜底名 dicemanager
+        name = link_id or "dicemanager"
         entry = {"type": "ws" if direction != "reverse" else "ws-reverse",
                  "enable": True,
+                 "name": name,
                  "host": "0.0.0.0" if direction != "reverse" else "127.0.0.1",
                  "port": int(addr.split(":")[-1]),
                  "token": token, "heartInterval": 30000,
@@ -146,9 +150,9 @@ class LLBotAdapter(BaseAdapter):
             ob = cfg.setdefault("ob11", {})
             ob["enable"] = True                                 # 互联写入即启用协议
             conn = ob.setdefault("connect", [])
+            # 按 link_id 去重（多连一/一连多互不覆盖），同类型其它条目保留
             conn = [e for e in conn
-                    if not (e.get("type") == entry["type"] and e.get("name") == "dicemanager")]
-            entry["name"] = "dicemanager"
+                    if not (e.get("type") == entry["type"] and e.get("name") == name)]
             # 端口冲突时让位：同端口的旧条目改到下一个端口，避免 LLBot 启动报占用
             used = {e.get("port") for e in conn}
             if entry["port"] in used:
@@ -163,6 +167,30 @@ class LLBotAdapter(BaseAdapter):
             atomic_write_json(path, _m, source_json5=True)
         return WriteResult(ok=True, manual="LLBot 配置热更新，约 1 秒后自动生效，无需重启。",
                            path=str(paths[-1]))
+
+    def list_accounts(self, instance) -> list[dict]:
+        """回读 LLBot 已登录的全部 QQ 账号（bin/llbot/data/config_{qq}.json 各一个）。
+
+        这是「登录端可登多个 QQ」的数据来源；每个账号的 ob11 connect 条目携带其
+        互联端口与 token（即该账号连接的骰子端地址），多连一按账号分发时取用。"""
+        d = Path(instance.dir) / "bin/llbot/data"
+        out = []
+        if not d.is_dir():
+            return out
+        for f in sorted(d.glob("config_*.json")):
+            m = re.match(r"config_(\d{5,12})\.json$", f.name)
+            if not m:
+                continue
+            qq = m.group(1)
+            cfg = self.read_json(f)
+            ob = cfg.get("ob11") or {}
+            port = token = None
+            for e in (ob.get("connect") or []):
+                if isinstance(e, dict):
+                    port = e.get("port") or port
+                    token = e.get("token") or token
+            out.append({"qq": qq, "port": port, "token": token, "status": "unknown"})
+        return out
 
     def get_actual_port(self, lines) -> int | None:
         for _, line in reversed(list(lines)[-200:]):
