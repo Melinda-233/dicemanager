@@ -1,0 +1,272 @@
+"""五步向导状态机（断点续跑 + 同名冲突弹窗 + 后端统一构建启动命令）"""
+import uuid
+from pathlib import Path
+
+from core.locks import instance_lock
+from core.registry import State
+
+
+class Wizard:
+    def __init__(self, registry, adapter_registry, ports, processes, log_dir):
+        self.reg = registry; self.adapters = adapter_registry
+        self.ports = ports; self.pm = processes; self.log_dir = Path(log_dir)
+        self._adapter_cache: dict = {}     # 与 ctx.get_adapter 同语义：实例复用、勿存请求态
+
+    def get_adapter(self, name: str):
+        if name not in self._adapter_cache:
+            manifest, cls = self.adapters[name]
+            self._adapter_cache[name] = cls(manifest)
+        return self._adapter_cache[name]
+
+    def create_instance(self, dice, arch, login_ref=None, links=None, confirm_dir=False,
+                        bot_mode="onebot") -> str:
+        if dice not in self.adapters:
+            raise ValueError(f"未知程序: {dice}")
+        manifest, _ = self.adapters[dice]
+        # 官方通道由程序自身对接官方服务，不需要协议登录端：强行保留关联会让
+        # 向导去走互联步骤并写入一份用不上的 onebot 配置
+        if bot_mode == "official":
+            login_ref = None; links = None
+        iid = f"{dice}-{uuid.uuid4().hex[:8]}"
+        roles = {r: manifest.get(f"{r}_default_port")
+                 for r in ("webui", "ob11", "milky", "satori")}
+        ports = self.ports.allocate_many(dice, {k: v for k, v in roles.items() if v}, owner=iid)
+        root = Path(manifest["install_root"])
+        d = root / dice
+        if d.exists() and not confirm_dir:                     # 同名 → 序号文件夹
+            n = 2
+            while (root / f"{dice}-{n}").exists(): n += 1
+            d = root / f"{dice}-{n}"
+        self.reg.create(iid, dice=dice, arch=arch, dir_=str(d),
+                        port=ports.get("webui", 0), allocated_ports=ports,
+                        login_ref=login_ref, links=links, bot_mode=bot_mode)
+        return iid
+
+    def next_step(self, instance_id: str) -> int:
+        """断点续跑：按状态机给出该实例下一步该执行哪一步（供前端「继续」使用）。"""
+        inst = self.reg.get(instance_id)
+        st = inst.state
+        if st in (State.UNDEPLOYED.value, State.DEPLOYING.value): return 2
+        # 官方通道：没有登录端可配、也没有互联可写 → 部署完直接进启动步
+        if st == State.AWAIT_LOGIN.value:
+            return 5 if getattr(inst, "bot_mode", "onebot") == "official" else 3
+        return 5                                  # CONFIGURED / RUNNING → 直接启动
+
+    @staticmethod
+    def link_id(login_ref: str, account_qq: str | None) -> str:
+        """每条 骰子端↔登录端 关联的全局唯一键（用于配置里的端点/连接去重与认领）。"""
+        from adapters.base import link_id as _lid
+        return _lid(login_ref, account_qq)
+
+    def _login_account_info(self, login_ref, account_qq):
+        """解析某条关联指向的登录端的（端口, token, 协议）。
+
+        登录端被删 → ("dangling", None, None)，调用方须明确报错而非静默换 token。
+        指定了 account_qq 且登录端 accounts 里有该账号，则取该账号专属的端口/token；
+        否则回退到登录端的默认分配端口与 conn_token（兼容单账号 / 未发现的场景）。"""
+        try:
+            li = self.reg.get(login_ref)
+        except KeyError:
+            return "dangling", None, None
+        proto = self.adapters[li.dice][0].get("protocol", "ob11")
+        ports = li.allocated_ports or {}
+        base_port = ports.get(proto) or ports.get("ob11")
+        base_token = li.conn_token
+        if account_qq:
+            acc = next((a for a in (li.accounts or [])
+                        if str(a.get("qq")) == str(account_qq)), None)
+            if acc:
+                return (acc.get("port") or base_port, acc.get("token") or base_token, proto)
+        return base_port, base_token, proto
+
+    def _refresh_account(self, instance_id: str, inst, adapter) -> None:
+        """扫码/账号登录后才拿得到 QQ 号：配置文件优先，其次日志锚点。"""
+        if inst.qq: return
+        qq = adapter.detect_account(inst)
+        if not qq and hasattr(adapter, "account_from_logs"):
+            qq = adapter.account_from_logs(self.pm.get(instance_id).ring)
+        if qq: self.reg.update(instance_id, qq=qq)
+
+    def _refresh_accounts(self, instance_id: str, inst, adapter) -> None:
+        """登录端：回读已登录的全部 QQ 账号（list_accounts 钩子），落盘 accounts
+        并以首个账号作为展示用 qq。多账号场景下这是「登录端可登多个 QQ」的数据来源。"""
+        if not hasattr(adapter, "list_accounts"):
+            self._refresh_account(instance_id, inst, adapter)
+            return
+        try:
+            accs = adapter.list_accounts(inst) or []
+        except Exception:
+            accs = []
+        if accs:
+            self.reg.update(instance_id, accounts=accs)
+            inst.accounts = accs
+            primary = accs[0].get("qq")
+            if primary and not inst.qq:
+                self.reg.update(instance_id, qq=primary)
+                inst.qq = primary
+        else:
+            self._refresh_account(instance_id, inst, adapter)
+
+    def _to_running(self, instance_id: str) -> None:
+        """进入 RUNNING；断点续跑时可能已是 RUNNING（进程被外部杀掉后重启），
+        状态机不允许 RUNNING→RUNNING，这里幂等处理而不是让 step5 500。"""
+        try:
+            self.reg.transition(instance_id, State.RUNNING)
+        except ValueError:
+            pass
+
+    def start_instance(self, instance_id: str) -> tuple[str | None, bool]:
+        """启动公共路径：REST start/restart、备份恢复、向导 step5 三入口共用。
+
+        首启一次性动作（LLBot --update 等）→ WebUI 开放（绑定修正 + ufw，尽力而为）
+        → 拉起进程。返回 (webui_note, already_running)；进程已在运行时不重复拉起。
+        prepare/expose 失败不阻断启动，但必须落实例日志（此前静默吞掉，排障无据）。
+        """
+        inst = self.reg.get(instance_id)
+        adapter = self.get_adapter(inst.dice)
+        proc = self.pm.get(instance_id)
+        if proc.is_alive():
+            self._to_running(instance_id)
+            return None, True
+
+        def runner(cmd, cwd, label):                # 输出汇入实例日志流
+            self.pm.run_once(instance_id, cmd, cwd, label=label)
+
+        try:
+            if adapter.prepare_start(inst, runner):
+                self.reg.update(instance_id, first_run_done=True)
+                inst.first_run_done = True
+        except Exception as e:
+            proc.note(f"prepare_start 失败（不阻断启动）: {e}")
+        try:
+            note = adapter.expose_webui(inst)
+        except Exception as e:
+            proc.note(f"WebUI 开放失败（不阻断启动）: {e}")
+            note = None
+        # actual_port 不在此回读：启动瞬间进程还没打印端口（恒为 None）。
+        # 由 ws_overview 周期从 ring 提取并回填（actual_port 变化才写盘）。
+        proc.start(adapter.build_start_cmd(inst), inst.dir)
+        self._to_running(instance_id)
+        return note, False
+
+    def run_step(self, instance_id: str, step: int, payload: dict) -> dict:
+        with instance_lock(instance_id):
+            inst = self.reg.get(instance_id)
+            adapter = self.get_adapter(inst.dice)
+
+            if step == 1:
+                return {"result": "ok", "ports": inst.allocated_ports}
+
+            if step == 2:                                      # 部署（冲突 → 弹窗二选一）
+                if inst.state not in (State.UNDEPLOYED.value, State.DEPLOYING.value):
+                    return {"result": "ok"}                    # 断点续跑：已部署过
+                if inst.state == State.UNDEPLOYED.value:
+                    self.reg.transition(instance_id, State.DEPLOYING)
+                if payload.get("use_existing") is False:       # 弹窗选「新建序号文件夹」
+                    manifest, _ = self.adapters[inst.dice]
+                    root = Path(manifest["install_root"])
+                    n = 2
+                    while (root / f"{inst.dice}-{n}").exists(): n += 1
+                    self.reg.update(instance_id, dir=str(root / f"{inst.dice}-{n}"))
+                    inst = self.reg.get(instance_id)
+                result = adapter.deploy(inst)
+                if result == "conflict":
+                    return {"result": "conflict", "dir": inst.dir}
+                # 升级通道基线：部署时解析到的 release tag 落盘（base 不持有 registry）
+                from adapters.base import deploy_version_of
+                if ver := deploy_version_of(instance_id):
+                    self.reg.update(instance_id, version=ver)
+                if inst.warnings:          # 适配器只改副本，必须显式落盘（OlivaDice 缺件告警）
+                    self.reg.update(instance_id, warnings=list(inst.warnings))
+                self.reg.transition(instance_id, State.AWAIT_LOGIN)
+                return {"result": "ok"}
+
+            if step == 3:                                      # 登录（needs_login 以适配器为准）
+                if getattr(inst, "bot_mode", "onebot") == "official":
+                    # 官方通道无需协议登录：直接推进到可启动态（幂等，断点续跑可重入）
+                    try:
+                        self.reg.transition(instance_id, State.CONFIGURED)
+                    except ValueError:
+                        pass
+                    return {"result": "ok", "needs_login": False, "skipped": True}
+                r = adapter.configure_login(inst, payload.get("credentials", {}))
+                if r.get("conflict"):
+                    return {"result": "conflict", "message": r["conflict"]}
+                if payload.get("qq"):
+                    self.reg.update(instance_id, qq=payload["qq"]); inst.qq = payload["qq"]
+                self._refresh_accounts(instance_id, inst, adapter)   # 回读全部已登录账号
+                login_type = self.adapters[inst.dice][0].get("login_type", "none")
+                needs_login = bool(r.get("needs_login",
+                                         login_type in ("qrcode", "account")))
+                if not needs_login:
+                    try:
+                        self.reg.transition(instance_id, State.CONFIGURED)
+                    except ValueError:
+                        pass
+                return {"result": "ok", "needs_login": needs_login,
+                        "accounts": inst.accounts, **r}
+
+            if step == 4:                                      # 互联配置写入 + 预览
+                if getattr(inst, "bot_mode", "onebot") == "official":
+                    # 官方通道的连接在程序自身 WebUI 里完成，面板写互联配置反而会留下
+                    # 一条连不上的 onebot 端点（海豹还会因此报连接错误）
+                    return {"result": "ok", "skipped": True,
+                            "preview": "官方机器人通道：无需面板侧互联配置"}
+                self._refresh_account(instance_id, inst, adapter)  # 可能刚扫码成功
+                # 向导/总览若传入完整 links 数组 = 新的关联全集（含账号绑定/方向变更，
+                # 支持一连多：同登录端不同账号各一条）；否则沿用现有 inst.links 重写配置。
+                base_links = payload.get("links") or inst.links
+                if not base_links:
+                    # 未关联任何登录端（例如先部署骰子端，稍后再在总览关联）
+                    return {"result": "ok", "skipped": True,
+                            "preview": "尚未关联任何登录端，跳过互联配置（可在总览页关联后重写）"}
+                g_token = payload.get("token")               # 顶层 token 全局兜底覆盖
+                lines = []                                      # 每条关联的写入预览
+                new_links = []
+                for src in base_links:
+                    login_ref = src["login_ref"]
+                    account_qq = src.get("account_qq") or None
+                    port, token, proto = self._login_account_info(login_ref, account_qq)
+                    if port == "dangling":
+                        # 关联的登录端已删：静默继续会自动生成新 token，与登录端残留
+                        # 配置不一致 → 两端连不上且难排查。明确报错让用户先重新关联。
+                        return {"result": "error",
+                                "message": f"关联的登录端 {login_ref} 已不存在"
+                                           f"（可能已删除），请先在总览重新关联登录端"}
+                    # 方向：传入项优先（向导用户选择），其次已存值，最后默认正向；
+                    # 地址/token：传入项（重写时保留）→ 全局 token → 已存值 → 账号专属 → 生成
+                    direction = src.get("direction") or src.get("conn_direction") or "forward"
+                    mode = proto
+                    default_port = port or (3000 if mode == "milky" else 3001)
+                    addr = src.get("conn_addr") or f"127.0.0.1:{default_port}"
+                    tok = src.get("token") or g_token or src.get("conn_token") \
+                        or token or adapter.gen_token()
+                    lid = self.link_id(login_ref, account_qq)
+                    wr = adapter.write_conn_config(inst, mode, direction, addr, tok,
+                                                  link_id=lid)
+                    link = {"login_ref": login_ref, "account_qq": account_qq,
+                            "conn_token": tok, "conn_addr": addr,
+                            "conn_direction": direction}
+                    if not wr.ok:
+                        return {"result": "error", "message": wr.manual or "互联配置写入失败"}
+                    kind = "正向" if direction != "reverse" else "反向"
+                    proto_label = "Milky" if mode == "milky" else "OneBot"
+                    who = f"账号 {account_qq}" if account_qq else "默认账号"
+                    lines.append(f"{kind} {proto_label} → {addr}（{who}）")
+                    new_links.append(link)
+                self.reg.set_links(instance_id, new_links)       # 持久化解析后的互联三要素
+                return {"result": "ok",
+                        "preview": "\n".join(lines),
+                        "token": new_links[0].get("conn_token"),
+                        "path": None,
+                        "manual": "已按各关联分别写入互联配置。"}
+
+            if step == 5:                                      # 启动（与 REST start 同一公共路径）
+                try:
+                    note, already = self.start_instance(instance_id)
+                except RuntimeError as e:                      # 竞态下刚好被启动：友好返回而非 500
+                    return {"result": "error", "message": str(e)}
+                if already:
+                    return {"result": "ok", "already_running": True}
+                return {"result": "ok", "webui_note": note}
+        return {"result": "unknown_step"}

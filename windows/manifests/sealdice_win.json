@@ -1,0 +1,28 @@
+// manifests/sealdice_win.json
+// Windows 版海豹清单。与 Linux 版 sealdice.json 对照：
+//   install_root: /opt                       -> %LOCALAPPDATA%\dicemanager\programs
+//   exe: sealdice-core                       -> sealdice-core.exe
+//   其余字段（webui_default_port / compatible_login / bot_modes / release_page /
+//   download_strategy / asset_suffix / required_files）保留不变
+// 路径占位符 %LOCALAPPDATA% 由 core/pathutil.py 在加载时展开为真实路径。
+{
+  "name": "sealdice", "arch": "standalone", "multi_account": true,
+  "exe": "sealdice-core.exe",
+  "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "webui_default_port": 3211,
+  "login_type": "external",
+  "compatible_login": ["napcat", "llbot", "lagrange", "lagrange_milky", "yogurt"],
+  // 接入通道：official = QQ 官方机器人（海豹 v1.4.2+ 支持），不需要协议登录端；
+  // 连接在海豹 WebUI「添加账号 -> 平台 QQ -> QQ 官方机器人」用 AppID/AppSecret 或扫码完成
+  "bot_modes": [
+    { "id": "onebot", "label": "OneBot 协议（需登录端）", "needs_login": true },
+    { "id": "official", "label": "QQ 官方机器人（无需登录端，规避风控）", "needs_login": false,
+      "guide_url": "https://docs.sealdice.com/deploy/platform-qq-official.html" }
+  ],
+  "data_paths": ["data"],
+  "release_page": "https://github.com/sealdice/sealdice-build/releases",
+  "download_strategy": "resolve_latest_via_api", "asset_suffix": ".zip",
+  "error_keywords": ["ERROR", "panic"],
+  "approx_memory_mb": 120, "required_files": ["sealdice-core.exe"]
+}

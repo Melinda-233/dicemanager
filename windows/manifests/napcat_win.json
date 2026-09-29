@@ -1,0 +1,15 @@
+// manifests/napcat_win.json — Windows 版
+// 与 Linux 版对照：exe NapCat.sh→NapCat.bat；prerequisite linuxqq-deb→windowsqq
+{
+  "name": "napcat", "arch": "standalone", "multi_account": false,
+  "exe": "NapCat.bat", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "webui_default_port": 6099,
+  "ob11_default_port": 3001,
+  "data_paths": ["config"],
+  "prerequisite": "windowsqq",
+  "release_page": "https://github.com/NapNeko/NapCatQQ/releases",
+  "download": "https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.zip",
+  "download_strategy": "direct", "required_files": ["NapCat.bat"]
+}

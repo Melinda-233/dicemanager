@@ -1,0 +1,17 @@
+// manifests/lagrange_milky_win.json — Windows 版 Lagrange.Milky
+// exe Lagrange.Milky→Lagrange.Milky.exe；manual 策略，需自行获取二进制
+{
+  "name": "lagrange_milky", "arch": "standalone", "multi_account": false,
+  "exe": "Lagrange.Milky.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "protocol": "milky",
+  "milky_default_port": 3000,
+  "config_path": "appsettings.json",
+  "data_paths": ["appsettings.json", "keystore.json"],
+  "release_page": "https://github.com/LagrangeDev/Lagrange.Core/releases",
+  "download_strategy": "manual",
+  "prerequisite": "需自行获取 Lagrange.Milky 二进制（上游 nightly 仅发 OneBot），并申请 Lagrange V2 Sign Token 写入 Signer.Token 才能启动",
+  "required_files": ["Lagrange.Milky.exe"],
+  "approx_memory_mb": 60
+}

@@ -1,0 +1,34 @@
+# DiceManager Windows 版 .gitignore
+
+# PyInstaller 打包产物与生成的 spec
+build/
+dist/
+build_pkg/
+dist_pkg/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# 前端依赖与构建产物（npm run build 生成）
+web/node_modules/
+web/dist/
+
+# 运行期数据：含 auth.json / instances.json 等凭据与状态，绝不入库
+data/
+
+# 本地工具与缓存
+.workbuddy/
+.build_backup/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.DS_Store
+*.log
+*.log.1

@@ -1,0 +1,16 @@
+// manifests/shiki_win.json — Windows 版
+// exe Dice→Dice.exe；prerequisite 是文字说明（manual 策略），保留
+{
+  "name": "shiki", "arch": "standalone", "multi_account": false,
+  "exe": "Dice.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "external",
+  "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
+  "save_keep_dir": true,
+  "delete_keeps_save": true,
+  "data_paths": ["config", "data"],
+  "release_page": "https://github.com/Dice-Developer-Team/Dice/releases",
+  "prerequisite": "Dice! 主程序不在 GitHub 发行（release 里只有平台 dll 模块），请先在本页「离线程序包」上传含 Dice 可执行文件的官方程序包",
+  "download_strategy": "manual",
+  "required_files": ["Dice.exe"]
+}

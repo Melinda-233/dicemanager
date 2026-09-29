@@ -1,7 +1,9 @@
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-extend-exclude = ["web", "tests", ".workbuddy"]
+# windows：仓库内并存的 Windows 移植版（独立副本，自带 pyproject/pytest 配置与
+# 平台差异），不纳入本 Linux 项目的 lint 口径，否则 root `ruff check .` 会误扫它
+extend-exclude = ["web", "tests", ".workbuddy", "windows"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "SIM"]

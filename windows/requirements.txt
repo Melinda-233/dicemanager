@@ -1,0 +1,12 @@
+# Windows 版依赖：与 Linux 版同 + 可选 pywin32（用于更稳的跨进程锁，单机本地工具非必需）
+# 上限锁定：fastapi 0.141 / starlette 1.6 起 WebSocket 路由在
+# 「静态文件挂载于 /」场景下会被吞掉（实测 /ws/* 返回 404），故限制在已验证组合内。
+fastapi>=0.110,<0.116
+starlette>=0.40,<0.42
+uvicorn>=0.29,<0.33
+psutil>=5.9
+PyYAML>=6.0
+json5>=0.9
+# 可选：升级 msvcrt 锁为更贴近 flock 语义的实现。单机本地工具默认不装，
+# 若阶段 1 验证 msvcrt 锁多实例不可靠，再 pip install pywin32 启用。
+# pywin32>=306 ; sys_platform == "win32"

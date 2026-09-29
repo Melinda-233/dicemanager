@@ -1,0 +1,19 @@
+// manifests/lagrange_win.json — Windows 版 Lagrange.OneBot
+// exe Lagrange.OneBot→Lagrange.OneBot.exe；asset_name_pattern linux-x64 tar.gz→win-x64 zip
+// 协议自建（纯 C#），不依赖 Windows QQ，故无 prerequisite。
+// 上游 release 只有 nightly，SelfContained 包含运行时，无需预装 dotnet。
+{
+  "name": "lagrange", "arch": "standalone", "multi_account": false,
+  "exe": "Lagrange.OneBot.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "ob11_default_port": 3001,
+  "config_path": "appsettings.json",
+  "data_paths": ["appsettings.json", "keystore.json"],
+  "release_page": "https://github.com/LagrangeDev/Lagrange.Core/releases",
+  "download_strategy": "resolve_latest_via_api",
+  "release_tag": "nightly",
+  "asset_name_pattern": "Lagrange\\.OneBot_win-x64.*\\.zip",
+  "required_files": ["Lagrange.OneBot.exe"],
+  "approx_memory_mb": 250
+}

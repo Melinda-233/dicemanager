@@ -1,0 +1,16 @@
+// manifests/snowluma_win.json — Windows 版
+// exe launcher.sh→launcher.bat；prerequisite linuxqq-deb→windowsqq；asset linux→win
+{
+  "name": "snowluma", "arch": "standalone", "multi_account": true,
+  "exe": "launcher.bat", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "webui_default_port": 5099, "ob11_default_port": 3001,
+  "data_paths": ["config"],
+  "login_type": "webui",
+  "prerequisite": "windowsqq",
+  "release_page": "https://github.com/SnowLuma/SnowLuma/releases",
+  "download_strategy": "resolve_latest_via_api",
+  "asset_name_pattern": "SnowLuma-.*-win-x64\\.zip",
+  "required_files": ["launcher.bat"],
+  "approx_memory_mb": 200
+}

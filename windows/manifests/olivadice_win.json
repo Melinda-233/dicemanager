@@ -1,0 +1,15 @@
+// manifests/olivadice_win.json — Windows 版
+// exe 已是 OlivOS.exe（OlivOS 本身是 Windows 程序），无需改 exe；仅改 install_root
+{
+  "name": "olivadice", "arch": "allinone", "multi_account": false,
+  "exe": "OlivOS.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "none", "compatible_login": ["builtin"],
+  "opk_dir": "plugin/app",
+  "opk_modules": ["OlivaDiceCore", "OlivaDiceJoy", "OlivaDiceLogger",
+                   "OlivaDiceMaster", "OlivaDiceOdyssey", "ChanceCustom"],
+  "download_opk_pattern": "https://github.com/OlivOS-Team/{mod}/releases/latest/download/{mod}.opk",
+  "release_page": "https://github.com/OlivOS-Team/OlivaDiceCore/releases",
+  "download_strategy": "olivos_bundle_or_opk",
+  "required_files": ["OlivaDiceCore.opk"]
+}

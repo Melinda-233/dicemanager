@@ -1,0 +1,17 @@
+// manifests/llbot_win.json — Windows 版
+// exe llbot→llbot.exe；download linux-x64→win-x64
+{
+  "name": "llbot", "arch": "standalone", "multi_account": false,
+  "exe": "llbot.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "qrcode", "auth_token_conditional": true,
+  "compatible_login": ["builtin"],
+  "webui_default_port": 3080, "ob11_default_port": 3001,
+  "milky_default_port": 3010, "satori_default_port": 5600,
+  "config_path": "bin/llbot/default_config.json",
+  "data_paths": ["bin/llbot/data"],
+  "release_page": "https://github.com/LLOneBot/LuckyLilliaBot/releases",
+  "download": "https://github.com/LLOneBot/LuckyLilliaBot/releases/latest/download/LLBot-CLI-win-x64.zip",
+  "download_strategy": "direct",
+  "post_start_action": "--update", "required_files": ["llbot.exe", "bin/llbot/default_config.json"]
+}

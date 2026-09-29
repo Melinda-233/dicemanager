@@ -1,0 +1,17 @@
+// manifests/yogurt_win.json — Windows 版
+// exe yogurt→yogurt.exe；manual 策略
+{
+  "name": "yogurt", "arch": "standalone", "multi_account": false,
+  "exe": "yogurt.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "platform": ["win32"],
+  "login_type": "qrcode", "compatible_login": ["builtin"],
+  "protocol": "milky",
+  "milky_default_port": 3000,
+  "config_path": "config.json",
+  "data_paths": ["config.json"],
+  "release_page": "https://github.com/LLOneBot/yogurt-pmhq/releases",
+  "download_strategy": "manual",
+  "prerequisite": "必须先在本地/同机运行 PMHQ（默认 ws://127.0.0.1:13000/ws）。Yogurt 原生为 Docker 镜像，原生包需自行构建后上传",
+  "required_files": ["yogurt.exe"],
+  "approx_memory_mb": 80
+}

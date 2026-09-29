@@ -1,0 +1,117 @@
+"""Windows 版端到端冒烟：DM_STATE_DIR 覆盖、auth 迁移、清单加载（_win.json）、
+registry/ports/wizard 全链路、路由顺序。
+
+由 CI 或本地手跑（python tests/smoke_local_win.py），独立进程执行。
+不要改名为 test_ 前缀并入 pytest 会话：api.context.ctx 是 import 即初始化的模块级
+单例，本脚本靠先设 DM_STATE_DIR 再 import 来接管路径。
+"""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+tmp = tempfile.mkdtemp(prefix="dm_win_smoke_")
+os.environ["DM_STATE_DIR"] = tmp
+os.environ["DM_LOG_DIR"] = os.path.join(tmp, "logs")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# 1) 旧版明文 auth.json 自动迁移
+legacy = {"password": "test-pwd-123", "token": "tok-abc"}
+Path(tmp, "auth.json").write_text(json.dumps(legacy), encoding="utf-8")
+
+from api.auth import Auth
+a = Auth(Path(tmp, "auth.json"))
+d = json.loads(Path(tmp, "auth.json").read_text())
+assert "password" not in d and "password_hash" in d and d["salt"], "明文未迁移为哈希"
+assert a.login("test-pwd-123") == "tok-abc", "迁移后原密码应可登录"
+try:
+    a.login("wrong")
+    raise SystemExit("错误密码竟然通过")
+except Exception as e:
+    assert getattr(e, "status_code", None) == 401
+for _ in range(4):                       # 已 1 次失败，再 4 次触发限速
+    try:
+        a.login("wrong")
+    except Exception:
+        pass
+try:
+    a.login("test-pwd-123")
+    raise SystemExit("限速未生效")
+except Exception as e:
+    assert getattr(e, "status_code", None) == 429, f"期望 429，得到 {e}"
+print("[1] auth 迁移 + 登录 + 限速 OK")
+
+# 2) context：环境变量路径生效 + 清单加载（_win.json）
+from api.context import ctx
+assert ctx.log_dir == Path(tmp, "logs"), ctx.log_dir
+REQUIRED_ADAPTERS = {"napcat", "sealdice", "llbot", "shiki", "olivadice"}
+assert REQUIRED_ADAPTERS <= ctx.adapters.keys(), ctx.adapters.keys()
+print(f"[2] context 环境变量路径 + 清单加载 OK（{len(ctx.adapters)} 个适配器）")
+
+# 3) registry：create/transition/update/remove/purge 全链路
+from core.registry import State
+iid = "sealdice-test01"
+# Windows 用 tempfile 目录替代写死的 /tmp
+work = Path(tmp, "work")
+work.mkdir(exist_ok=True)
+ctx.registry.create(iid, dice="sealdice", arch="standalone",
+                    dir_=str(work / "x"), port=3000)
+ctx.registry.transition(iid, State.DEPLOYING)
+ctx.registry.transition(iid, State.AWAIT_LOGIN)
+ctx.registry.update(iid, warnings=["缺件告警应落盘"], actual_port=3001)
+assert ctx.registry.get(iid).warnings == ["缺件告警应落盘"]
+assert ctx.registry.get(iid).actual_port == 3001
+ctx.registry.remove(iid)
+try:
+    ctx.registry.get(iid)
+    raise SystemExit("删除后 get 应抛 KeyError")
+except KeyError:
+    pass
+assert not [r for r in ctx.registry.all() if r["id"] == iid]
+ctx.registry.purge_tombstones(days=0)    # 立即清空墓碑
+raw = json.loads(Path(tmp, "instances.json").read_text())
+assert not [k for k in raw if k.startswith("__tombstone__")], "墓碑未清理"
+print("[3] registry 状态机 + 墓碑清理 OK")
+
+# 4) ports：分配/释放/owner 批量释放
+p = ctx.ports.allocate_many("sealdice", {"webui": 3080, "ob11": 3001}, owner=iid)
+assert set(p) == {"webui", "ob11"}
+ctx.ports.release_owner(iid)
+tbl = json.loads(Path(tmp, "ports.json").read_text())
+assert not [k for k, v in tbl.items() if str(v).startswith(iid)]
+print("[4] ports 分配与 owner 释放 OK")
+
+# 5) wizard step5：已运行进程 → error 结果而非 500
+ctx.registry.create("sealdice-test02", dice="sealdice", arch="standalone",
+                    dir_=str(work / "y"), port=3000)
+
+class FakeProc:
+    def is_alive(self):
+        return False
+
+    def start(self, *a, **k):
+        raise RuntimeError("进程已在运行")
+
+orig = ctx.pm.get
+ctx.pm.get = lambda _: FakeProc()
+r = ctx.wizard.run_step("sealdice-test02", 5, {})
+ctx.pm.get = orig
+assert r == {"result": "error", "message": "进程已在运行"}, r
+print("[5] wizard step5 RuntimeError 兜底 OK")
+
+# 6) 路由注册顺序：/backup 必须先于 /{op} 通配
+from api.app import app                                   # noqa: E402
+paths = [getattr(r, "path", "") for r in app.routes]
+assert "/api/instances/{inst_id}/backup" in paths, paths
+assert paths.index("/api/instances/{inst_id}/backup") \
+    < paths.index("/api/instances/{inst_id}/{op}"), "backup 路由被 {op} 通配抢先"
+print("[6] 路由顺序（backup 先于 {op}）OK")
+
+# 7) Windows 化验证：ctx 的状态目录确实在 tmp 下（不被 Linux 默认值覆盖）
+assert str(ctx.log_dir) == os.path.join(tmp, "logs")
+assert str(ctx.registry._path).startswith(tmp), \
+    f"registry 路径未走 DM_STATE_DIR：{ctx.registry._path}"
+print("[7] Windows 路径接管 OK（DM_STATE_DIR 生效，未 fallback 到 /var/lib）")
+
+print("SMOKE_LOCAL_WIN_ALL_OK")

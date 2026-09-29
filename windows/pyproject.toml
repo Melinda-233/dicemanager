@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["web", "tests", ".workbuddy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "SIM"]
+# 与 Linux 版同口径：紧凑单行风格豁免
+ignore = ["E501", "E402", "E701", "E702", "SIM105"]
+
+[tool.ruff.lint.per-file-ignores]
+"B008" = ["api/rest.py", "api/auth.py"]
+"SIM115" = ["core/process.py", "core/locks.py"]
+
+[tool.mypy]
+python_version = "3.12"
+# 关键差异：Linux 版 platform=linux（fcntl/killpg/SIGKILL 为真实 API）
+# Windows 版 platform=win32（msvcrt/taskkill/CREATE_NEW_PROCESS_GROUP 为真实 API）
+platform = "win32"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unreachable = true
+files = ["core", "services", "api", "adapters"]
