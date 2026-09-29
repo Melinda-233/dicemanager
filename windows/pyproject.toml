@@ -9,8 +9,12 @@ select = ["E", "F", "W", "I", "B", "SIM"]
 ignore = ["E501", "E402", "E701", "E702", "SIM105"]
 
 [tool.ruff.lint.per-file-ignores]
-"B008" = ["api/rest.py", "api/auth.py"]
-"SIM115" = ["core/process.py", "core/locks.py"]
+# B008：Depends()/HTTPBearer() 作为参数默认值是 FastAPI 惯用法
+"api/rest.py" = ["B008"]
+"api/auth.py" = ["B008"]
+# SIM115：持久日志句柄 / 常驻 fd 是刻意设计，非泄漏
+"core/process.py" = ["SIM115"]
+"core/locks.py" = ["SIM115"]
 
 [tool.mypy]
 python_version = "3.12"

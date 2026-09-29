@@ -216,10 +216,35 @@ class Wizard:
                 # 向导/总览若传入完整 links 数组 = 新的关联全集（含账号绑定/方向变更，
                 # 支持一连多：同登录端不同账号各一条）；否则沿用现有 inst.links 重写配置。
                 base_links = payload.get("links") or inst.links
+                _cl = self.adapters[inst.dice][0].get("compatible_login") or []
                 if not base_links:
-                    # 未关联任何登录端（例如先部署骰子端，稍后再在总览关联）
-                    return {"result": "ok", "skipped": True,
-                            "preview": "尚未关联任何登录端，跳过互联配置（可在总览页关联后重写）"}
+                    # 依赖外部登录端的骰子端（compatible_login 含非 builtin 项）却还没关联：
+                    # 写入只会得到一条无人监听的地址（两端持续连接失败），跳过并提示稍后
+                    # 在总览关联后重写。登录端自身不适用——它要写的正是自己的监听端点。
+                    if any(d != "builtin" for d in _cl):
+                        return {"result": "ok", "skipped": True,
+                                "preview": "尚未关联任何登录端，跳过互联配置（可在总览页关联后重写）"}
+                    # 本实例自身即端点（登录端 / 自带登录的骰子端）：生成或沿用 token 并写
+                    # 本端配置。登录端的 ob11 token 由此产生，骰子端随后经 login_ref 继承
+                    # 同一个（两端必须一致，否则连不上且极难排查）。
+                    mode = payload.get("mode") or self.adapters[inst.dice][0].get(
+                        "protocol", "ob11")
+                    direction = payload.get("direction") or inst.conn_direction or "forward"
+                    own_ports = inst.allocated_ports or {}
+                    default_port = (own_ports.get("milky") or own_ports.get("ob11")
+                                    or (3000 if mode == "milky" else 3001))
+                    addr = payload.get("addr") or inst.conn_addr or f"127.0.0.1:{default_port}"
+                    token = payload.get("token") or inst.conn_token or adapter.gen_token()
+                    wr = adapter.write_conn_config(inst, mode, direction, addr, token)
+                    self.reg.update(instance_id, conn_token=token, conn_addr=addr,
+                                    conn_direction=direction)
+                    if not wr.ok:
+                        return {"result": "error", "message": wr.manual or "互联配置写入失败"}
+                    kind = "正向" if direction != "reverse" else "反向"
+                    proto_label = "Milky" if mode == "milky" else "OneBot"
+                    return {"result": "ok",
+                            "preview": f"{kind} {proto_label} → {addr}\nToken: {token}",
+                            "token": token, "path": wr.path, "manual": wr.manual}
                 g_token = payload.get("token")               # 顶层 token 全局兜底覆盖
                 lines = []                                      # 每条关联的写入预览
                 new_links = []

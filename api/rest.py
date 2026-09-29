@@ -113,8 +113,8 @@ def link_login(inst_id: str, req: LinkReq):
     else:
         raw = []
     cleaned = []
-    for l in raw:
-        lr = l.get("login_ref") if isinstance(l, dict) else l
+    for lk in raw:
+        lr = lk.get("login_ref") if isinstance(lk, dict) else lk
         if not lr:
             continue
         if lr == inst_id:
@@ -129,7 +129,7 @@ def link_login(inst_id: str, req: LinkReq):
             raise HTTPException(400, f"{inst.dice} 不兼容登录端 {target.dice}"
                                      f"（兼容：{' / '.join(ok_set) or '无'}）")
         cleaned.append({"login_ref": lr,
-                        "account_qq": (l.get("account_qq") if isinstance(l, dict) else None)})
+                        "account_qq": (lk.get("account_qq") if isinstance(lk, dict) else None)})
     with instance_lock(inst_id):
         ctx.registry.set_links(inst_id, cleaned)
     return {"ok": True, "links": cleaned}
@@ -495,8 +495,8 @@ def delete_instance(inst_id: str, confirm: bool = False,
         unlinked = []
         for r in ctx.registry.all():
             links = r.get("links") or []
-            if any(l.get("login_ref") == inst_id for l in links):
-                new_links = [l for l in links if l.get("login_ref") != inst_id]
+            if any(lk.get("login_ref") == inst_id for lk in links):
+                new_links = [lk for lk in links if lk.get("login_ref") != inst_id]
                 ctx.registry.set_links(r["id"], new_links)
                 unlinked.append(r["id"])
         ctx.registry.remove(inst_id)                        # 全部成功后才墓碑

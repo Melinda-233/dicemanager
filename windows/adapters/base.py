@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 from core import packages as pkgstore
 from core.atomicio import atomic_write_json
+
+
 # Windows 版：firewall 弃用（监听 127.0.0.1 无需开端口），open_port 退化为 no-op。
 # 原行 `from core.firewall import open_port` 已删除——expose_webui 调用 open_port(port)
 # 仍可用，只是恒返回 None（单机本地工具无需放行防火墙端口）。

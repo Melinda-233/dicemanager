@@ -154,7 +154,7 @@ class Registry:
                login_ref=None, links=None, bot_mode="onebot") -> Instance:
         if links is None and login_ref:
             links = [{"login_ref": login_ref}]
-        links = [l for l in (links or []) if l.get("login_ref")]
+        links = [lk for lk in (links or []) if lk.get("login_ref")]
         inst = Instance(id=iid, dice=dice, arch=arch, dir=dir_, port=port,
                         allocated_ports=allocated_ports or {}, links=links,
                         login_ref=links[0].get("login_ref") if links else None,
@@ -168,7 +168,7 @@ class Registry:
         links 每项 {login_ref, account_qq?, conn_token?, conn_addr?, conn_direction?}。
         同步 legacy 单关联字段（login_ref / conn_*）为 links[0]，供未改造读取方兜底。
         """
-        cleaned = [l for l in (links or []) if l.get("login_ref")]
+        cleaned = [lk for lk in (links or []) if lk.get("login_ref")]
         first = cleaned[0] if cleaned else {}
         def _m(t: dict) -> dict:
             rec = t.get(inst_id, {})

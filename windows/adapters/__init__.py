@@ -3,7 +3,6 @@ import json
 import re
 from pathlib import Path
 
-from core.pathutil import default_install_root
 from adapters import (
     dicenext,
     lagrange,
@@ -16,6 +15,7 @@ from adapters import (
     snowluma,
     yogurt,
 )
+from core.pathutil import default_install_root
 
 # 必填字段。注意 multi_account 是「前端提示性」字段（仅 Step1 文案用），后端无任何分支；
 # recommended_protocols / webui_port_bump_limit 等是纯文档字段，既不在此处要求、也不进

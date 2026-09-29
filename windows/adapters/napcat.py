@@ -79,7 +79,7 @@ class NapCatAdapter(BaseAdapter):
         返回 [{qq, token, port, status}]：这是「登录端可登多个 QQ」的数据来源，
         多连一按账号分发时每个骰子端挑其中一个账号的端口/token。"""
         cd = self._config_dir(instance)
-        out = []
+        out: list[dict] = []
         if not cd.is_dir():
             return out
         for f in sorted(cd.glob("onebot11_*.json")):

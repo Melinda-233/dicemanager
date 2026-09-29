@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import threading
 import webbrowser
 from typing import Callable
 
@@ -60,7 +59,8 @@ def _on_restart(icon: Icon, item: MenuItem) -> None:
     except Exception as e:
         # 兜底：spawn 失败也允许用户从托盘退出（消息框提示）
         try:
-            import win32gui, win32con
+            import win32con
+            import win32gui
             win32gui.MessageBox(0, f"重启失败：{e}", "DiceManager",
                                 win32con.MB_ICONERROR)
         except Exception:

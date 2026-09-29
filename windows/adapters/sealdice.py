@@ -4,7 +4,8 @@ from pathlib import Path
 
 import yaml
 
-from adapters.base import BaseAdapter, WriteResult, link_id as base_link_id
+from adapters.base import BaseAdapter, WriteResult
+from adapters.base import link_id as base_link_id
 from core.atomicio import write_atomic
 
 
@@ -92,7 +93,7 @@ class SealDiceAdapter(BaseAdapter):
         #  reconcile：只保留本实例 links 声明的端点，其余同协议端点停用（清理旧机备份带回 /
         #  已解除关联的残留端点）。一连多时保留全部声明的端点，不互相覆盖。
         links = getattr(instance, "links", None) or []
-        valid_ids = {base_link_id(l.get("login_ref"), l.get("account_qq")) for l in links} \
+        valid_ids = {base_link_id(lk.get("login_ref"), lk.get("account_qq")) for lk in links} \
             if links else {ep_id}
         for ep in eps:
             bi = ep.get("baseInfo", {})
@@ -113,8 +114,8 @@ class SealDiceAdapter(BaseAdapter):
         多关联（多连一/一连多）后端点 id 取 link_id（login_ref|account_qq）；
         兼容改造前/无 links 的实例：并上实例 id（旧版写入的端点以实例 id 命名）。"""
         links = getattr(instance, "links", None) or []
-        ids = {base_link_id(l.get("login_ref"), l.get("account_qq"))
-               for l in links if l.get("login_ref")}
+        ids = {base_link_id(lk.get("login_ref"), lk.get("account_qq"))
+               for lk in links if lk.get("login_ref")}
         iid = getattr(instance, "id", None)
         if iid:
             ids.add(iid)

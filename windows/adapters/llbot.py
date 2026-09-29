@@ -174,7 +174,7 @@ class LLBotAdapter(BaseAdapter):
         这是「登录端可登多个 QQ」的数据来源；每个账号的 ob11 connect 条目携带其
         互联端口与 token（即该账号连接的骰子端地址），多连一按账号分发时取用。"""
         d = Path(instance.dir) / "bin/llbot/data"
-        out = []
+        out: list[dict] = []
         if not d.is_dir():
             return out
         for f in sorted(d.glob("config_*.json")):

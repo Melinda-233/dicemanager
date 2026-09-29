@@ -6,8 +6,8 @@ from pathlib import Path
 from adapters import load_registry
 from core.exports import exports_dir
 from core.metrics import MetricsStore
+from core.pathutil import default_log_dir, default_state_dir
 from core.ports import PortAllocator
-from core.pathutil import default_state_dir, default_log_dir
 from core.process import ProcessManager
 from core.registry import Registry
 from core.scheduler import Scheduler
