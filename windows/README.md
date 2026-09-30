@@ -7,6 +7,10 @@
 > Windows 版已实施完成：Python 后端与前端均已按路线图落地，开发模式用
 > `deploy\start_dev.bat` 运行，也可用 `deploy\build_exe.bat` 打包为单文件 exe
 > 双击即用。改造过程与阶段划分见 [ROADMAP.md](ROADMAP.md)。
+>
+> 📖 操作步骤请看 **[两版通用使用手册](../docs/使用手册.md)**——涵盖安装启动、
+> 首次设置密码、五步向导、实例日常操作、日志中心、备份升级、定时任务与常见问题排查，
+> 凡 Windows 版与 Linux 版行为不同之处均用 🪟 / 🐧 标注。
 
 ## 与 Linux 版的关系
 

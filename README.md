@@ -4,6 +4,10 @@
 （共 10 份程序清单）的一键部署、登录承载、互联配置与进程守护，通过拓扑总览实时掌握
 每个骰子的运行与连接状态。
 
+> 📖 **[使用手册](docs/使用手册.md)** —— 面向使用者的完整操作手册（Linux / Windows 两版通用，
+> 涵盖安装启动、登录面板、五步向导、日常操作、日志、备份升级、定时任务、常见问题排查）。
+> 本 README 只讲项目概览；开发与内部设计见 [DiceManager-Manual.md](DiceManager-Manual.md)。
+
 ## 支持的程序
 
 ### 骰子端（4）
@@ -158,6 +162,14 @@ python tests/smoke_local.py           # Windows 可跑的本地冒烟（fcntl �
 - **NapCat 提示手动配置**：WebUI API 不可达（token 失效/端口未回读成功）时的兜底，按提示在 NapCat WebUI 手动创建后回填。
 - **删除实例端口被占用**：分配表按 owner 释放；若 30 天内有墓碑记录，同名目录/端口受保护。
 - **忘记管理密码**：删除 `/var/lib/dicemanager/auth.json` 后重启，生成新密码。
+
+## 文档
+
+| 文档 | 面向 | 内容 |
+|---|---|---|
+| [使用手册](docs/使用手册.md) | 使用者 | 安装启动、登录、向导五步、日常操作、备份升级、排障（两版通用） |
+| [DiceManager-Manual.md](DiceManager-Manual.md) | 贡献者 | 架构分层、数据模型、接口契约、适配器编写、新增程序流程 |
+| [windows/README.md](windows/README.md) | Windows 版用户 | 平台差异、快速开始、路径布局 |
 
 ## License
 
