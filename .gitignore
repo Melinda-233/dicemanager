@@ -9,6 +9,18 @@ venv/
 web/node_modules/
 web/dist/
 
+# PyInstaller 打包产物与生成的 spec（Windows exe 与临时打包目录）
+build/
+dist/
+build_pkg/
+dist_pkg/
+.build_backup/
+*.spec
+
+# Python 工具缓存
+.ruff_cache/
+.mypy_cache/
+
 # 运行时与本地环境（不应入库）
 .workbuddy/
 *.log
@@ -17,10 +29,14 @@ web/dist/
 # 按前缀整体忽略——basetemp 名字不固定（换名时曾漏进版本库，一次带进 70 个垃圾文件）
 .pytest_*/
 
+# 无头浏览器调试截图：验证 UI 改动时临时落盘，用完即弃
+.dm*_shots/
+
 # 编辑器
 .vscode/
 .idea/
 .DS_Store
 
 # 运行时数据目录（auth.json / instances.json / 日志 / 锁）：本机产物，绝不入库
+# 历史教训：data/ 曾被误提交（含密码哈希），移出需用 `git rm -r --cached data/`
 data/
