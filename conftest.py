@@ -9,12 +9,33 @@
 加入 sys.path），因此无论怎么调用都成立。这里再显式插一次，避免依赖导入模式的
 实现细节。
 """
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# ---------------------------------------------------------------------------
+# 测试一律不碰生产路径（本机记录里的第二个坑）：
+#
+# api/auth.py 有模块级单例 `auth = Auth()`，其 __init__ 会立刻 write_atomic 写
+# auth.json。在 server（Linux）语义下目标是 /var/lib/dicemanager，而 CI runner
+# 非 root —— 于是**收集阶段**就 PermissionError，整个测试进程起不来。
+#
+# 本地之所以长期复现不出来：开发时为了绕本机沙箱的批量删除守卫，总是先 export
+# DM_STATE_DIR 到临时目录，恰好把这条路径也一起盖住了。
+#
+# 必须在任何 core / api 模块被导入之前设置（环境变量 + setdefault 保留外部覆盖），
+# 放在本文件顶部正为此——conftest 由 pytest 在收集前最先加载。
+_TEST_ROOT = Path(tempfile.gettempdir()) / "dicemanager-test"
+for _var, _sub in (("DM_STATE_DIR", "state"),
+                   ("DM_LOG_DIR", "log"),
+                   ("DM_LOCK_DIR", "lock")):
+    os.environ.setdefault(_var, str(_TEST_ROOT / _sub))
+# ---------------------------------------------------------------------------
 
 
 def exe_name(base: str) -> str:
