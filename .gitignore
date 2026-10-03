@@ -21,3 +21,6 @@ web/dist/
 .vscode/
 .idea/
 .DS_Store
+
+# 运行时数据目录（auth.json / instances.json / 日志 / 锁）：本机产物，绝不入库
+data/

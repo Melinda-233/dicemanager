@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from conftest import exe_name                      # noqa: E402
 from adapters.llbot import LLBotAdapter           # noqa: E402
 from adapters import load_registry                # noqa: E402
 
@@ -18,8 +19,8 @@ def test_manifest_contract():
     manifests = load_registry(ROOT / "manifests")
     m, cls = manifests["llbot"]
     assert cls is LLBotAdapter
-    assert m["exe"] == "llbot", f"exe 必须与官方 zip 根二进制同名: {m['exe']}"
-    assert "llbot" in m["required_files"], "缺必备文件校验会把源码错包放行成部署成功"
+    assert m["exe"] == exe_name("llbot"), f"exe 必须与官方 zip 根二进制同名: {m['exe']}"
+    assert exe_name("llbot") in m["required_files"], "缺必备文件校验会把源码错包放行成部署成功"
     json.loads(json.dumps(m))                     # 可 JSON 化（无注释残留等）
 
 

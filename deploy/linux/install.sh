@@ -102,7 +102,7 @@ chmod 750 /var/lib/dicemanager
 # ---------- 7. systemd ----------
 log "安装 systemd 服务"
 sed -e "s#^ExecStart=.*#ExecStart=$VENV/bin/python -m api.app#" \
-    "$APP_DIR/deploy/dicemanager.service" > /etc/systemd/system/dicemanager.service
+    "$APP_DIR/deploy/linux/dicemanager.service" > /etc/systemd/system/dicemanager.service
 if [ -n "$MIRROR" ]; then
   # 取消注释并写入镜像地址
   sed -i "s|^# Environment=\"DM_GITHUB_MIRROR=.*|Environment=\"DM_GITHUB_MIRROR=$MIRROR\"|" \
@@ -115,10 +115,10 @@ systemctl enable --now dicemanager
 # 面板对外端口一律以 nginx 配置为准（该机 80 被既有站点 default_server 占用 → 实际 8888）。
 # 硬编码 80 会让「放行端口」与「访问地址」两处提示同时指错，换机部署必然踩坑。
 PANEL_PORT=$(sed -n 's/^[[:space:]]*listen[[:space:]]*\([0-9]\{1,5\}\).*/\1/p' \
-    "$APP_DIR/deploy/nginx-dicemanager.conf" | head -1)
+    "$APP_DIR/deploy/linux/nginx-dicemanager.conf" | head -1)
 PANEL_PORT=${PANEL_PORT:-8888}
 log "配置 Nginx 反向代理（对外端口 $PANEL_PORT）"
-cp "$APP_DIR/deploy/nginx-dicemanager.conf" /etc/nginx/conf.d/dicemanager.conf
+cp "$APP_DIR/deploy/linux/nginx-dicemanager.conf" /etc/nginx/conf.d/dicemanager.conf
 if command -v nginx >/dev/null 2>&1; then
   nginx -t && systemctl enable --now nginx && systemctl reload nginx
 fi

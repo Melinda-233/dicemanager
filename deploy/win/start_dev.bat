@@ -1,9 +1,10 @@
 @echo off
 REM DiceManager Windows 版开发启动脚本
 REM 双击即用：启动 FastAPI 面板，监听 127.0.0.1:8765
-REM 首次启动管理密码打印在本控制台窗口（关闭即丢失明文，只剩 PBKDF2 哈希）
+REM 首次启动在 WebUI 设置管理密码（明文从不落盘、从不进控制台）
 
 setlocal
+REM 内核已共享到仓库根：core/、api/、manifests/、web/ 都在上一级
 cd /d "%~dp0.."
 
 REM 优先用项目内 Python（若有），否则用 PATH 中的 python

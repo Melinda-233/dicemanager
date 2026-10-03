@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import json5
 
 from adapters.lagrange_milky import LagrangeMilkyAdapter
-from conftest import put_package
+from conftest import exe_name, put_package
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = json5.loads((ROOT / "manifests" / "lagrange_milky.json").read_text(encoding="utf-8"))
@@ -55,7 +55,7 @@ def test_registry_loads_lagrange_milky():
     reg = load_registry(ROOT / "manifests")
     manifest, cls = reg["lagrange_milky"]
     assert cls is LagrangeMilkyAdapter
-    assert manifest["exe"] == "Lagrange.Milky"
+    assert manifest["exe"] == exe_name("Lagrange.Milky")
 
 
 def test_dice_ends_accept_lagrange_milky_as_login():

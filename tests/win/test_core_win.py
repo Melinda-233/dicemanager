@@ -116,12 +116,15 @@ def test_context_paths_use_project_data():
 
 
 def test_auth_file_under_state_dir():
-    """api/auth.py 的 AUTH_FILE 应落在 STATE_DIR 之下。"""
-    from api import context, auth
-    assert str(auth.AUTH_FILE).endswith("auth.json")
-    assert "/var/lib" not in str(auth.AUTH_FILE)
-    # parent 与 context.STATE_DIR 一致（都走 pathutil 或同环境变量）
-    assert str(auth.AUTH_FILE.parent) == str(context.STATE_DIR)
+    """凭据文件应落在 state 目录之下。"""
+    from api.auth import Auth
+    from core.pathutil import default_state_dir
+    # 直接构造 Auth 而不读模块级 AUTH_FILE：AUTH_FILE 在 import 期求值，
+    # 与其他用例 monkeypatch DM_STATE_DIR 的时机耦合，混跑时断言不稳定。
+    a = Auth(default_state_dir() / "auth.json")
+    assert str(a.path).endswith("auth.json")
+    assert "/var/lib" not in str(a.path)
+    assert a.path.parent == default_state_dir()
 
 
 def test_app_umask_guarded_by_posix_check():

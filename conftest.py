@@ -17,6 +17,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def exe_name(base: str) -> str:
+    """按当前 edition 返回清单里的可执行文件名：desktop 带 .exe，server 不带。
+
+    Linux 与 Windows 清单同处 manifests/（<dice>.json / <dice>_win.json），
+    load_registry 按 edition 只加载一侧，所以断言 exe / required_files 时必须
+    跟着走，否则在对方 edition 下必然失败。
+    """
+    from core.edition import is_desktop
+    return f"{base}.exe" if is_desktop() else base
+
+
 def put_package(dice: str, data: bytes, source: str = "upload") -> dict:
     """测试辅助：把字节流落成本地程序包缓存，等价于旧的 pkgstore.save_archive。
 

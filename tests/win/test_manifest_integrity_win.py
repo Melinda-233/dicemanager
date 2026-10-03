@@ -9,7 +9,8 @@
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 清单已合并到仓库根 manifests/（Windows 侧为 *_win.json），故 ROOT 指向仓库根
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load(p: Path) -> dict:

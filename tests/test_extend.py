@@ -21,6 +21,8 @@ from fastapi import HTTPException                   # noqa: E402
 from api.context import ctx                         # noqa: E402
 from core.backup import export_dir, restore_into    # noqa: E402
 
+from core.edition import is_server
+
 
 # ---------- 拓展1：备份导出（整目录 / 应用数据两种口径） ----------
 
@@ -293,6 +295,7 @@ def test_panel_restart_modes(monkeypatch):
     assert killed == [(4321, _signal.SIGTERM)]
 
 
+@pytest.mark.skipif(not is_server(), reason="面板重启为 server 版特性（分化 C3）")
 def test_panel_restart_endpoint(monkeypatch):
     """POST /api/panel/restart：带 token 200 且触发重启调度；无 token 401（不触发）。"""
     from api import rest

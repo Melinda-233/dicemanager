@@ -11,6 +11,14 @@ import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
+from core.edition import is_server
+
+# 分化 C1/C2：server 首启自动生成随机密码并打印（安装脚本依赖 [auth] 行）；
+# desktop 首启是「未初始化」态，由用户在 WebUI 设置，明文从不出现。
+# 本文件断言的是前一条契约，故只在 server 下跑；desktop 侧由
+# tests/win/test_auth_setup_win.py 覆盖。
+pytestmark = pytest.mark.skipif(not is_server(), reason="首启随机密码为 server 版契约")
+
 
 @pytest.fixture
 def auth_module(tmp_path, monkeypatch):

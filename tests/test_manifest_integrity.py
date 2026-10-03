@@ -10,6 +10,9 @@
 import json
 from pathlib import Path
 
+from conftest import exe_name
+from core.edition import is_desktop
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -20,7 +23,13 @@ def _load(p: Path) -> dict:
     return json.loads(raw)
 
 
-ALL = {p.stem: _load(p) for p in sorted((ROOT / "manifests").glob("*.json"))}
+# 分化：manifests/ 同时放 <dice>.json（server）与 <dice>_win.json（desktop），
+# 按当前 edition 只取一侧——口径与 adapters.load_registry 的过滤保持一致。
+# key 去掉 _win 后缀：清单的 name 字段不含后缀（两份都叫 sealdice）。
+_WANT_WIN = is_desktop()
+ALL = {p.stem.removesuffix("_win"): _load(p)
+       for p in sorted((ROOT / "manifests").glob("*.json"))
+       if p.name.endswith("_win.json") == _WANT_WIN}
 
 
 def test_manifests_load_with_core_fields():
@@ -98,5 +107,7 @@ def test_napcat_and_dicenext_guard_their_executable():
     NapCat.sh 只存在于 CI 构建产物里（仓库源码没有），DiceNext 是发行包里的二进制，
     都能把误传的源码包挡在 deploy 阶段。
     """
-    assert "NapCat.sh" in ALL["napcat"]["required_files"]
-    assert "DiceNext" in ALL["dicenext"]["required_files"]
+    # 必备文件名同样分平台：Linux 是 NapCat.sh，Windows 是 NapCat.bat
+    napcat_req = "NapCat.bat" if is_desktop() else "NapCat.sh"
+    assert napcat_req in ALL["napcat"]["required_files"]
+    assert exe_name("DiceNext") in ALL["dicenext"]["required_files"]

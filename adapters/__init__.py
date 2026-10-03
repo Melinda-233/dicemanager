@@ -15,6 +15,7 @@ from adapters import (
     snowluma,
     yogurt,
 )
+from core.edition import is_desktop, is_server
 from core.pathutil import default_install_root
 
 # 必填字段。注意 multi_account 是「前端提示性」字段（仅 Step1 文案用），后端无任何分支；
@@ -47,6 +48,13 @@ def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     install_root = default_install_root()
     install_root = None if install_root is None else str(install_root)
     for f in sorted(Path(manifest_dir).glob("*.json")):
+        # 分化：Linux 与 Windows 清单同处一个目录（<dice>.json / <dice>_win.json），
+        # 两侧 name 相同（都叫 sealdice 等），不按 edition 过滤就会互相覆盖——
+        # 结果是 Windows 版拿到 Linux 的 exe 名与下载地址，部署必失败。
+        if is_desktop() and not f.name.endswith("_win.json"):
+            continue
+        if is_server() and f.name.endswith("_win.json"):
+            continue
         # 清单允许行首 // 注释（JSONC），逐行剥离后再解析
         text = re.sub(r"^\s*//.*$", "", f.read_text("utf-8"), flags=re.M)
         m = json.loads(text)

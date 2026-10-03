@@ -20,6 +20,14 @@ import ast
 from pathlib import Path
 
 import pytest
+
+from core.edition import is_server
+
+# 分化 C1：多用户角色、归属隔离与配额都是 server 版特性；desktop 是单用户单机工具，
+# 这些端点语义本就不同（/panel/restart 等直接 404），故只在 server 下跑。
+pytestmark = pytest.mark.skipif(not is_server(), reason="多用户/配额为 server 版特性")
+
+import pytest
 from starlette.testclient import TestClient
 
 from api import rest

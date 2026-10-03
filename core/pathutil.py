@@ -15,9 +15,13 @@ import re
 import sys
 from pathlib import Path
 
+from core.edition import is_desktop
+
 _VAR_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%")
 
-_WIN = os.name == "nt"
+# 统一以 edition 判定（而非 os.name）：DM_EDITION 显式指定时，路径策略必须跟着一起变，
+# 否则在 Windows 上模拟 server 会出现「按 server 鉴权、按 desktop 存盘」的串味结果。
+_DESKTOP = is_desktop()
 
 
 def expand_windows_vars(path: str) -> str:
@@ -51,21 +55,21 @@ def project_root() -> Path:
 def default_state_dir() -> Path:
     """数据目录。POSIX 保持 /var/lib/dicemanager（不可改，服务器部署位）；
     Windows 为项目根/data。"""
-    if _WIN:
+    if _DESKTOP:
         return project_root() / "data"
     return Path("/var/lib/dicemanager")
 
 
 def default_log_dir() -> Path:
     """日志目录。POSIX 保持 /var/log/dicemanager；Windows 为 data/logs。"""
-    if _WIN:
+    if _DESKTOP:
         return default_state_dir() / "logs"
     return Path("/var/log/dicemanager")
 
 
 def default_lock_dir() -> Path:
     """锁目录。POSIX 保持 /tmp/dicemanager；Windows 为 data/locks。"""
-    if _WIN:
+    if _DESKTOP:
         return default_state_dir() / "locks"
     return Path("/tmp/dicemanager")
 
@@ -79,6 +83,6 @@ def default_install_root() -> Path | None:
     POSIX（server）：返回 None 表示**不覆盖** manifest 自带 install_root
     （Linux 部署位由清单给出，无占位符问题）。
     """
-    if _WIN:
+    if _DESKTOP:
         return project_root() / "package"
     return None

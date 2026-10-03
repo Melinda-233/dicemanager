@@ -45,10 +45,16 @@ def test_all_manifests_pass_load_registry():
     单测直接实例化适配器绕过了这道校验，故补这条端到端加载用例。
     """
     from adapters import load_registry
-    reg = load_registry(Path(__file__).resolve().parent.parent / "manifests")
+    from core.edition import is_desktop
+    mdir = Path(__file__).resolve().parent.parent / "manifests"
+    reg = load_registry(mdir)
     assert "shiki" in reg
-    assert len(reg) == len(list((Path(__file__).resolve().parent.parent
-                                 / "manifests").glob("*.json")))
+    # 分化：manifests/ 里同时有 <dice>.json 与 <dice>_win.json，
+    # load_registry 按 edition 只取一侧，故期望数量也是「一侧的清单数」。
+    want_win = is_desktop()
+    expected = len([p for p in mdir.glob("*.json")
+                    if p.name.endswith("_win.json") == want_win])
+    assert len(reg) == expected
 
 
 def test_manifest_declares_manual_and_requires_dice():

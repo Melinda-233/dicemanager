@@ -1,9 +1,12 @@
 @echo off
 REM DiceManager Windows 版 PyInstaller 打包脚本
 REM 产出：dist\dicemanager.exe（单 exe，约 25MB，用户无需预装 Python）
-REM 用法：双击本 .bat 或在命令行 deploy\build_exe.bat
+REM 用法：双击本 .bat 或在命令行 deploy\win\build_exe.bat
 REM 模式：--windowed（无 CMD 窗口，托盘后台运行 + 首次自设密码）
 setlocal
+REM 内核已共享：manifests/、web/dist、core/、api/ 等都在**仓库根**，
+REM desktop 独有的入口（launcher.py / tray_icon.py）在 windows/ 下，
+REM 故工作目录切到仓库根，入口按 windows\launcher.py 指定。
 cd /d "%~dp0.."
 
 REM 优先用项目内 Python（若有 venv），否则用 PATH 中的 python
@@ -51,6 +54,7 @@ if exist dicemanager.spec del /q dicemanager.spec
 
 "%PY%" -m PyInstaller --noconfirm --onefile --windowed ^
     --name dicemanager ^
+    --paths windows ^
     --add-data "manifests;manifests" ^
     --add-data "web/dist;web/dist" ^
     --hidden-import uvicorn.logging ^
@@ -71,7 +75,7 @@ if exist dicemanager.spec del /q dicemanager.spec
     --collect-submodules adapters ^
     --collect-submodules services ^
     --collect-submodules PIL ^
-    launcher.py
+    windows\launcher.py
 
 if errorlevel 1 (
     echo.
