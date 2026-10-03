@@ -15,6 +15,7 @@ from adapters import (
     snowluma,
     yogurt,
 )
+from core.pathutil import default_install_root
 
 # 必填字段。注意 multi_account 是「前端提示性」字段（仅 Step1 文案用），后端无任何分支；
 # recommended_protocols / webui_port_bump_limit 等是纯文档字段，既不在此处要求、也不进
@@ -37,6 +38,14 @@ classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out: dict[str, tuple[dict, type]] = {}
+    # 骰子程序安装根（desktop / server 分化 C5）：
+    #   desktop → 项目根 package/（登录端与应用端均装在 package/<dice>/）。
+    #     历史问题：manifest 里的 %LOCALAPPDATA% 占位符此前从未被展开（latent bug），
+    #     字面路径会变成 cwd 下带 % 的怪目录。该占位符是 Windows 版的历史数据位置，
+    #     Linux 版清单无此问题，故覆盖只在 desktop 生效。
+    #   server → None 表示不覆盖，沿用 manifest 自带的部署位。
+    install_root = default_install_root()
+    install_root = None if install_root is None else str(install_root)
     for f in sorted(Path(manifest_dir).glob("*.json")):
         # 清单允许行首 // 注释（JSONC），逐行剥离后再解析
         text = re.sub(r"^\s*//.*$", "", f.read_text("utf-8"), flags=re.M)
@@ -47,5 +56,7 @@ def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
             raise ValueError(f"manifest {f.name}: arch 非法")
         if m["download_strategy"] not in ALLOWED_STRATEGY:
             raise ValueError(f"manifest {f.name}: download_strategy 非法")
+        if install_root is not None:
+            m["install_root"] = install_root
         out[m["name"]] = (m, classes[m["name"]])
     return out

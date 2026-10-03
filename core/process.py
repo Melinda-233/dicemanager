@@ -1,5 +1,12 @@
 """进程管理：Popen 管道 + 环形缓冲(seq,line) + 日志双限滚动 + 崩溃自动重启（滑动窗口）
-ring 存 (seq, line) 对：WS 历史回放与实时 hook 用 seq 去重，消除「快照后 hook 前」丢行窗口。"""
+ring 存 (seq, line) 对：WS 历史回放与实时 hook 用 seq 去重，消除「快照后 hook 前」丢行窗口。
+
+平台适配：
+  POSIX: start_new_session=True 创建新进程组，stop() 用 killpg 杀整组
+  Windows: CREATE_NEW_PROCESS_GROUP 创建新进程组，stop() 用 taskkill /T /PID 杀整树
+  二者语义等价（杀整个进程组/树），保证子进程（launcher 拉起的 worker）一并退出。
+  接管的外部进程（re_adopt）统一用 kill_process_tree（psutil 跨平台，无平台分支）。
+"""
 import itertools
 import os
 import signal
@@ -14,6 +21,7 @@ from typing import TextIO
 from core.adopt import find_pid_on_port, kill_process_tree, pid_alive
 
 _POSIX = os.name == "posix"
+_WIN = os.name == "nt"
 
 LOG_RETENTION_DAYS = 7
 LOG_MAX_BYTES = 50 * 1024 * 1024
@@ -25,6 +33,38 @@ ROTATE_CHECK_INTERVAL = 5.0    # 滚动检查节流（秒），避免每行日�
 
 # 面板自身日志文件（<log_dir>/dicemanager.log）不属于任何实例，日志回收时必须跳过
 PANEL_LOG_STEM = "dicemanager"
+
+
+def _terminate_tree(pid: int, force: bool = False) -> None:
+    """跨平台终止进程树（杀 pid 及其全部子进程）。
+
+    POSIX: killpg(pid, SIGTERM/SIGKILL) — 杀整个进程组（start_new_session 建立）
+    Windows: taskkill /T /PID pid [/F] — 杀整个进程树（CREATE_NEW_PROCESS_GROUP 建立）
+    force=True 对应 SIGKILL / /F 强制；默认对应 SIGTERM 优雅退出。
+    异常安全：进程已退出 / 权限不足 / 命令缺失均静默，由调用方后续 wait() 兜底。
+    """
+    if _POSIX:
+        sig = signal.SIGKILL if force else signal.SIGTERM
+        try:
+            os.killpg(os.getpgid(pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+    else:
+        # taskkill /T 杀进程树（按父子关系，不依赖进程组）；/F 强制对应 SIGKILL
+        cmd = ["taskkill", "/T", "/PID", str(pid)]
+        if force:
+            cmd.insert(1, "/F")
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+
+def _popen_kwargs() -> dict:
+    """平台相关的 Popen 进程组参数（建立新进程组，便于后续整组/整树终止）。"""
+    if _POSIX:
+        return {"start_new_session": True}
+    return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
 
 class ManagedProcess:
     def __init__(self, inst_id: str, log_dir: Path, port_resolver=None):
@@ -76,7 +116,7 @@ class ManagedProcess:
                 proc = subprocess.Popen(
                     cmd, cwd=cwd, env={**os.environ, **(env or {})},
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, start_new_session=_POSIX)   # Windows 本地开发/测试可运行
+                    text=True, **_popen_kwargs())
             except OSError as e:                           # exe 缺失/权限等：友好报错而非 500
                 raise RuntimeError(f"启动失败：{e}") from e
             self._proc = proc
@@ -107,7 +147,7 @@ class ManagedProcess:
             try:
                 p = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     text=True, start_new_session=_POSIX)
+                                     text=True, **_popen_kwargs())
                 assert p.stdout is not None          # 上面指定了 stdout=PIPE，此处收窄供 mypy
                 for line in p.stdout:
                     line = line.rstrip("\n")
@@ -204,16 +244,11 @@ class ManagedProcess:
     def stop(self):
         self._stop_flag.set()
         if self._proc and self._proc.poll() is None:
-            if _POSIX:                    # killpg 仅 POSIX；Windows 本地测试走 terminate
-                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
-            else:
-                self._proc.terminate()
+            # 我们亲自拉起的进程：按进程组/树终止（POSIX killpg / Windows taskkill /T）
+            _terminate_tree(self._proc.pid)              # SIGTERM 等价：先优雅退出
             try: self._proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                if _POSIX:
-                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-                else:
-                    self._proc.kill()
+                _terminate_tree(self._proc.pid, force=True)  # SIGKILL 等价：强制终止
         elif self._adopted_pid is not None:
             # 接管自外部进程（面板重启 / launcher reparent 后）：按 pid 杀整棵树，
             # 一并干掉 launcher，避免只杀 worker 被 launcher 重新拉起。

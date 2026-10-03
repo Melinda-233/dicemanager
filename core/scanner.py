@@ -1,10 +1,14 @@
-"""安装目录扫描：安装根下的目录与进程 vs 注册表比对。
+r"""安装目录扫描：安装根下的目录与进程 vs 注册表比对。
 
 游离目录的典型来源：管理器外的手工部署、删除链路失败的历史残留、程序自更新备份。
 分类口径（与前端展示一一对应）：
   owned    —— 注册表实例的 dir，受管理
   orphan   —— 目录名匹配已知程序名（含 -N 序号后缀），但无实例记录 → 可清理
   external —— 其余目录（alist/containerd 等无关软件）→ 只展示，不提供删除
+
+平台适配：
+  Linux 版 _under() / match_program_dir() 写死 / 分隔符，Windows 路径用 \，
+  改用 Path.is_relative_to()（Python 3.9+）统一处理分隔符差异，避免正则分支。
 """
 import re
 import time
@@ -18,6 +22,20 @@ def classify_dir(child: Path, owned: dict, names: list[str]) -> str:
     if any(re.fullmatch(re.escape(n) + r"(-\d+)?", child.name) for n in names):
         return "orphan"
     return "external"
+
+
+def _under(path: str, base: str) -> bool:
+    """path 是否等于或位于 base 之下。兼容 \\ 和 / 分隔符（Windows 路径混合）。
+
+    必须兼容「恰好相等」：venv 进程的 cwd 是 /opt/dicemanager（无尾斜杠），
+    旧写法 base 强拼尾斜杠导致 startswith 失配。Windows 版用 Path.is_relative_to()
+    统一处理分隔符差异（Python 3.9+），极端情况回退归一化字符串匹配。"""
+    try:
+        return Path(path).resolve().is_relative_to(Path(base).resolve())
+    except (OSError, ValueError):
+        norm_path = path.replace("\\", "/").rstrip("/")
+        norm_base = base.replace("\\", "/").rstrip("/")
+        return norm_path == norm_base or norm_path.startswith(norm_base + "/")
 
 
 def scan_dirs(roots: list[str], owned: dict, names: list[str],
@@ -42,26 +60,28 @@ def scan_dirs(roots: list[str], owned: dict, names: list[str],
     return result
 
 
-def _under(path: str, base: str) -> bool:
-    """path 是否等于或位于 base 之下。必须兼容「恰好相等」：venv 进程的 cwd 是
-    /opt/dicemanager（无尾斜杠），旧写法 base 强拼尾斜杠导致 startswith 失配。"""
-    b = base.rstrip("/")
-    return path == b or path.startswith(b + "/")
-
-
 def match_program_dir(path: str, roots: list[str], names: list[str]) -> bool:
     """path（exe 或 cwd）是否位于安装根内、且其下某级目录名匹配已知程序名
     （含 -N 序号后缀，与 classify_dir 的 orphan 口径同源）。
 
     进程侧「可结束」的判定依据：进程名不可靠（二进制改名、解释器包装启动
     都很常见），落盘位置才是锚点。external 软件（alist 等）的目录不匹配
-    → 返回 False，其进程只展示、不提供结束，与目录侧「避免误伤」一致。"""
-    p = path.rstrip("/")
+    → 返回 False，其进程只展示、不提供结束，与目录侧「避免误伤」一致。
+
+    Windows 版用 Path.is_relative_to() 替代字符串前缀匹配，兼容 \\ 和 / 分隔符；
+    相对路径归一化为 / 后再做正则匹配（与 classify_dir 同口径）。"""
+    p = Path(path)
     for r in roots:
-        rb = r.rstrip("/")
-        if not (p == rb or p.startswith(rb + "/")):
+        rp = Path(r)
+        try:
+            if not p.resolve().is_relative_to(rp.resolve()):
+                continue
+        except (OSError, ValueError):
             continue
-        rel = p[len(rb):].lstrip("/")
+        try:
+            rel = str(p.relative_to(rp)).replace("\\", "/")
+        except ValueError:
+            continue
         if any(seg and any(re.fullmatch(re.escape(n) + r"(-\d+)?", seg)
                            for n in names)
                for seg in rel.split("/")):
@@ -77,7 +97,8 @@ def scan_procs(roots: list[str], owned: dict, names: list[str],
     match_program_dir 命中的目录下才 killable（external 软件进程只展示）。
     skip: 管理器自身目录——其中的进程（如 venv 里的 api.app）不算游离。
     注意 psutil 的 exe 会解析符号链接（venv python → 系统解释器），目录归属
-    必须同时看 exe 与 cwd。"""
+    必须同时看 exe 与 cwd。Windows 上 psutil.exe() 返回带 .exe 后缀的路径，
+    _under() 已兼容分隔符，无需特殊处理。"""
     import psutil
     skipped = list(skip or [])
     out = []

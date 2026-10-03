@@ -14,8 +14,17 @@ from urllib.parse import urlparse
 
 from core import packages as pkgstore
 from core.atomicio import atomic_write_json
-from core.firewall import open_port
 from core.locks import program_dir_lock
+
+# 网络暴露（server / desktop 分化 C4）：
+#   server → core.firewall.open_port 真正放通防火墙端口（对外提供 WebUI/连接端口）
+#   desktop → no-op：单机本地工具只监听 127.0.0.1，无需放行任何端口
+# expose_webui 调用 open_port(port) 两侧都可用，desktop 侧恒返回 None。
+if os.name == "posix":
+    from core.firewall import open_port
+else:
+    def open_port(port):
+        return None
 
 # 视为「仅本机监听」的绑定地址：开放 WebUI 时统一放开为 0.0.0.0
 LOOPBACK_HOSTS = ("", "127.0.0.1", "localhost", "::1")

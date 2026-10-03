@@ -6,10 +6,15 @@
 此前总览误判「已停止」，自动恢复又会因句柄失效而再拉一个重复的实例。
 
 这里提供三件套：
-- find_pid_on_port：某 TCP 端口当前被哪个 pid 监听（psutil 优先，rootless 回退 /proc）
+- find_pid_on_port：某 TCP 端口当前被哪个 pid 监听（psutil 优先，Linux rootless 回退 /proc）
 - pid_alive：pid 是否仍然存活
 - kill_process_tree：按 pid 杀整棵进程树（向上找到 launcher 作为根，向下杀全部子进程），
   用于接管外部进程后正确停止（只杀 worker 会被 launcher 重新拉起）
+
+平台适配：
+  psutil.net_connections / Process.children / wait_procs 均跨平台，Windows 同样可用。
+  _conn_listen_pid_procfs 的 /proc 回退是 Linux 专属，Windows 直接返回 None
+  （psutil 在 Windows 同用户场景已能覆盖连接查询）。
 """
 import os
 import time
@@ -45,7 +50,10 @@ def _conn_listen_pid_procfs(port: int) -> int | None:
     再遍历 /proc/<pid>/fd 找出持有该 socket inode 的 pid。
 
     读取 /proc/<pid>/fd 的 readlink 对任意 uid 可见（只暴露 inode号），因此即便
-    非 root 也能在面板与子进程同用户的场景命中。非 Linux 平台直接返回 None。"""
+    非 root 也能在面板与子进程同用户的场景命中。非 Linux 平台直接返回 None
+    （Windows 上 psutil 已能覆盖同用户进程的连接查询）。"""
+    if os.name != "posix":
+        return None
     try:
         hexport = f"{int(port):04X}"
         inodes: set[str] = set()
@@ -120,7 +128,10 @@ def kill_process_tree(pid: int, timeout: float = 10.0) -> None:
     """杀掉 pid 及其整棵进程树：向上找到真正的根（launcher），向下杀全部子进程。
 
     用于 re-adopt 后接管外部进程时的停止——launcher(父) + worker(端口占用者) 一并退出，
-    避免只杀 worker 被 launcher 重新拉起。绝不杀 pid 1 或面板自身。"""
+    避免只杀 worker 被 launcher 重新拉起。绝不杀 pid 1 或面板自身。
+
+    跨平台：psutil.Process.children(recursive=True) 与 terminate()/kill() 在
+    Windows 同样可用，无需平台分支。"""
     if psutil is None:
         try:
             os.kill(pid, 9)
@@ -146,7 +157,7 @@ def kill_process_tree(pid: int, timeout: float = 10.0) -> None:
     except psutil.Error:
         victims = []
     victims.append(root)
-    # 先 SIGTERM，留窗口自然退出，再 SIGKILL 残留（子→父顺序，降低 reparent 抖动）
+    # 先 SIGTERM，留窗口自然退出，再 SIGKILL 犟留（子→父顺序，降低 reparent 抖动）
     for v in victims:
         try:
             v.terminate()
