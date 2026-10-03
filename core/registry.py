@@ -65,6 +65,10 @@ class Instance:
     # 接入通道：onebot=常规协议端（需登录端）；official=官方机器人通道（无需登录端，
     # 由程序自身 WebUI 走官方凭证/扫码，面板不写互联配置）
     bot_mode: str = "onebot"
+    # 实例归属的**登录名**（与 auth.CurrentUser.username 对齐，勿存 display_name）。
+    # None = 归属 admin（迁移兜底语义）：老实例无此字段，一律视为管理员所有，
+    # 否则升级后现存实例会从所有人的视图里消失。
+    owner: Optional[str] = None
     created_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%S"))
 
 class Registry:
@@ -143,6 +147,20 @@ class Registry:
         if not rec: raise KeyError(f"实例不存在: {inst_id}")
         return self._to_instance(rec)
 
+    def owned_by(self, inst_id: str, owner: str, is_admin: bool = False) -> dict:
+        """取实例记录并校验归属，返回 dict（已做 legacy 迁移）。
+
+        管理员放行全部；普通用户只能取自己名下的。越权与不存在**同样报 KeyError**
+        ——不区分「实例存在但不属于你」和「实例根本不存在」，否则可据此探测他人实例 ID。
+        """
+        rec = self._load().get(inst_id)
+        if not rec or rec.get("state") == "removed":
+            raise KeyError(f"实例不存在: {inst_id}")
+        rec = self._migrate_links(dict(rec))
+        if not is_admin and (rec.get("owner") or "admin") != owner:
+            raise KeyError(f"实例不存在: {inst_id}")
+        return rec
+
     def resume_pending(self) -> list[Instance]:
         """启动扫描：中间态实例允许向导继续或回滚。"""
         return [self._to_instance(v) for k, v in self._load().items()
@@ -151,14 +169,15 @@ class Registry:
 
     # ---------- 写（写穿 + 同步缓存）----------
     def create(self, iid, dice, arch, dir_, port, allocated_ports=None,
-               login_ref=None, links=None, bot_mode="onebot") -> Instance:
+               login_ref=None, links=None, bot_mode="onebot",
+               owner=None) -> Instance:
         if links is None and login_ref:
             links = [{"login_ref": login_ref}]
         links = [lk for lk in (links or []) if lk.get("login_ref")]
         inst = Instance(id=iid, dice=dice, arch=arch, dir=dir_, port=port,
                         allocated_ports=allocated_ports or {}, links=links,
                         login_ref=links[0].get("login_ref") if links else None,
-                        bot_mode=bot_mode)
+                        bot_mode=bot_mode, owner=owner or "admin")
         self._flush(atomic_write_json(self._path, lambda t: {**t, iid: asdict(inst)}))
         return inst
 

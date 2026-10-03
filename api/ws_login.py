@@ -14,9 +14,14 @@ router = APIRouter()
 
 @router.websocket("/ws/login/{inst_id}")
 async def ws_login(ws: WebSocket, inst_id: str):
-    ok, sub = auth.ws_handshake(ws)
-    if not ok:
+    ok, sub, user = auth.ws_handshake(ws)
+    if not ok or user is None:
         return await ws.close(code=4401)
+    # 归属校验：登录通道会回显二维码与账号信息，不容跨用户订阅
+    try:
+        ctx.registry.owned_by(inst_id, user.username, user.is_admin)
+    except KeyError:
+        return await ws.close(code=4404)
     await ws.accept(subprotocol=sub)
     inst = ctx.registry.get(inst_id)
     adapter = ctx.get_adapter(inst.dice)

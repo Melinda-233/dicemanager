@@ -10,26 +10,43 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from api.auth import require_auth
+from api.auth import (
+    CurrentUser,
+    admin_user,
+    auth,
+    current_user,
+    require_admin,
+    require_auth,
+    security,
+)
 from api.context import ctx
-from core import backup, exports, scanner
+from core import backup, exports, quota, scanner
 from core import packages as pkgstore
-from core.locks import instance_lock
+from core.locks import instance_lock, quota_lock
 from core.registry import State
+from core.roles import is_login_program
 
 # 登录入口必须无鉴权（原实现挂在带鉴权的 router 下，永远拿不到 token）
 public = APIRouter(prefix="/api")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+# 账号/配额管理：需登录 + 管理员位。与 router 分开是因为普通用户可访问其余全部只读/自助端点。
+# 两个依赖都要挂：require_auth 负责把 CurrentUser 写进 request.state.user（require_admin
+# 只从state 读，不自己解析 token），少挂一个就变成恒 401。顺序即执行顺序，不可颠倒。
+admin_router = APIRouter(prefix="/api/admin",
+                         dependencies=[Depends(require_auth), Depends(require_admin)])
 
 VALID_OPS = ("start", "stop", "restart")
 
 class LoginReq(BaseModel):
+    username: str = "admin"              # 省略即 admin：兼容单管理员旧语义
     password: str
 
 class CreateReq(BaseModel):
@@ -44,38 +61,152 @@ class StepReq(BaseModel):
     payload: dict = {}
 
 @public.post("/login")
-def login(req: LoginReq):
-    from api.auth import auth
-    return {"token": auth.login(req.password)}
+def login(req: LoginReq, request: Request):
+    """按用户名 + 密码登录，返回 token 与身份信息（前端据此渲染角色化菜单）。"""
+    client = request.client.host if request.client else ""
+    token = auth.login(req.password, req.username, client=client)
+    me = auth.current(token)
+    if me is None:                       # 刚签发的 token 必然有效；防御性兜底
+        raise HTTPException(401, "用户名或密码错误")
+    return {"token": token, "username": me.username, "role": me.role,
+            "display_name": me.display_name, "quota": me.quota}
+
+@public.post("/logout")
+def logout(cred: HTTPAuthorizationCredentials | None = Depends(security)):
+    """登出：吊销当前会话。失败不阻塞——前端本来就会清本地 token。"""
+    if cred:
+        auth.logout(cred.credentials)
+    return {"ok": True}
 
 class PasswordReq(BaseModel):
     old_password: str
     new_password: str
 
 @router.post("/password")
-def change_password(req: PasswordReq):
-    """修改管理密码：需登录；成功后旧 token 全部作废，返回新 token。"""
-    from api.auth import auth
-    return {"token": auth.change_password(req.old_password, req.new_password)}
+def change_password(req: PasswordReq, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """修改**自己的**密码：需登录；成功后旧 token 全部作废，返回新 token。"""
+    user = _u(user)
+    return {"token": auth.change_password(req.old_password, req.new_password, user.username)}
+
+class AccountReq(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    display_name: str = ""
+    quota: dict = {}
+
+@admin_router.get("/accounts")
+def list_accounts(_admin: CurrentUser = Depends(require_admin)):
+    """账号列表：含角色、配额与**当前占用**（实例数 / QQ 号数）。
+
+    密码永不回显——只在创建与改密时明文传输。
+    """
+    recs = ctx.registry.all()
+    out = []
+    for u in auth.list_users():
+        cur = quota.usage(u["username"], recs, ctx.adapters)
+        out.append({**u, "usage": cur})
+    return out
+
+@admin_router.post("/accounts")
+def create_account(req: AccountReq):
+    return auth.create_user(req.username, req.password, req.role,
+                            req.display_name, req.quota)
+
+@admin_router.delete("/accounts/{username}")
+def delete_account(username: str, user: CurrentUser = Depends(require_admin)):
+    auth.delete_user(username, by=user.username)   # 无返回值；失败抛 4xx
+    return {"ok": True, "deleted": username,
+            "note": "账号已删除，其名下实例已转为归属 admin"}
+
+@admin_router.put("/accounts/{username}/quota")
+def set_account_quota(username: str, quota: dict):
+    return auth.set_quota(username, quota)
+
+@admin_router.post("/accounts/{username}/password")
+def set_account_password(username: str, body: dict):
+    """管理员改密。改完该用户全部会话立即失效（对方需重新登录）。"""
+    auth.set_password(username, body.get("new_password", ""))
+    return {"ok": True, "note": "密码已修改，该用户需重新登录"}
+
+@admin_router.post("/accounts/{username}/revoke")
+def revoke_account_sessions(username: str):
+    """强制下线：吊销该用户全部会话（踢出在线会话），账号保留。"""
+    auth.revoke_sessions(username)
+    return {"ok": True}
+
+# ---------- 归属与配额辅助 ----------
+# 所有按inst_id 操作实例的端点都必须先过 _own。管理员放行全部，普通用户只能操作
+# 自己名下的实例。越权与不存在同样返回 404，不泄露他人实例是否存在。
+
+def _u(user: CurrentUser | None) -> CurrentUser:
+    """取当前身份，无注入上下文时回落 admin。
+
+    HTTP 路径由 FastAPI 注入真实 CurrentUser；进程内直接调用端点函数（services 层、
+    既有单测）时 user 为 None，此处回落 admin 以保持旧调用方式可用。
+    """
+    return user if user is not None else admin_user()
+
+def _own(inst_id: str, user: CurrentUser | None):
+    """校验实例归属并返回记录 dict。越权/不存在 → 404。"""
+    u = _u(user)
+    try:
+        return ctx.registry.owned_by(inst_id, u.username, u.is_admin)
+    except KeyError:
+        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+
+def _guard_quota(user: CurrentUser, add_app: int = 0, add_login_qq: int = 0) -> dict:
+    """配额预检。管理员不限；普通用户按其配额校验，越限抛 400。"""
+    if user.is_admin:
+        return {}
+    try:
+        return quota.check(user.username, user.quota, ctx.registry.all(),
+                           ctx.adapters, add_app=add_app, add_login_qq=add_login_qq)
+    except quota.QuotaExceeded as e:
+        raise HTTPException(400, e.message) from None
+
+@router.get("/me")
+def whoami(user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """当前身份 + 配额占用。前端首屏拉一次，决定菜单与「新建」按钮是否置灰。"""
+    user = _u(user)
+    usage = quota.usage(user.username, ctx.registry.all(), ctx.adapters)
+    return {**user.to_json(), "usage": usage,
+            "unlimited": user.is_admin or (user.quota.get("login_qq", -1) < 0
+                                          and user.quota.get("app", -1) < 0)}
 
 @router.post("/instances")
-def create_instance(req: CreateReq):
+def create_instance(req: CreateReq, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """创建实例。归属当前登录用户；普通用户受「应用端实例数」配额约束。
+
+    配额校验在**创建前**：实例创建会分配端口、写目录、落盘，超限后再回滚代价高。
+    """
+    user = _u(user)
     if req.dice not in ctx.adapters:
         raise HTTPException(400, f"未知程序: {req.dice}")
-    iid = ctx.wizard.create_instance(req.dice, req.arch,
-                                     login_ref=req.login_ref, confirm_dir=req.confirm_dir,
-                                     bot_mode=req.bot_mode)
+    # 官方通道（免登录端）只占应用端名额；登录端实例本身不占 app 名额（按 QQ 号计）
+    add_app = 0 if is_login_program(req.dice, ctx.adapters) else 1
+    with quota_lock():
+        _guard_quota(user, add_app=add_app)
+        iid = ctx.wizard.create_instance(req.dice, req.arch,
+                                         login_ref=req.login_ref, confirm_dir=req.confirm_dir,
+                                         bot_mode=req.bot_mode, owner=user.username)
     inst = ctx.registry.get(iid)
     return {"id": iid, "dir": inst.dir, "allocated_ports": inst.allocated_ports}
 
 @router.post("/instances/{inst_id}/wizard")
-def run_wizard_step(inst_id: str, req: StepReq):
+def run_wizard_step(inst_id: str, req: StepReq, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    user = _u(user)
+    _own(inst_id, user)
     return ctx.wizard.run_step(inst_id, req.step, req.payload)   # ok/conflict 统一
 
 @router.get("/instances")
-def list_instances():
+def list_instances(user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """实例列表：普通用户只看得到自己名下的（数据隔离的第一道闸）。"""
+    user = _u(user)
     out = []
     for r in ctx.registry.all():
+        if not user.is_admin and (r.get("owner") or "admin") != user.username:
+            continue
         proc = ctx.pm.get(r["id"])
         p = proc.probe()
         # 句柄失效但服务端口仍通（launcher 重启 / 面板重启后 worker reparent）→ 视为存活，
@@ -95,16 +226,18 @@ class LinkReq(BaseModel):
     links: list | None = None            # 新：完整关联列表，每项 {login_ref, account_qq?}
 
 @router.post("/instances/{inst_id}/link")
-def link_login(inst_id: str, req: LinkReq):
+def link_login(inst_id: str, req: LinkReq, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """总览页连接管理：建立/解除 骰子端 → 登录端 的关联（links 即拓扑连线数据源）。
 
     支持多连一（多个骰子端各持有指向同一登录端的 links）与一连多（单个骰子端
     links 含多个登录端）。兼容性由 manifest 的 compatible_login 声明驱动，后端不写程序名分支。
+
+    跨用户关联被拒：否则 A 的骰子端能挂上 B 的登录端，而互联 token 会自动同步
+    （见wizard._login_account_info），等于把 B 的登录态泄露给 A。
     """
-    try:
-        inst = ctx.registry.get(inst_id)
-    except KeyError:
-        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    user = _u(user)
+    _own(inst_id, user)                           # 归属校验：本端必须归本人
+    inst = ctx.registry.get(inst_id)
     # 归一化为 links 列表：优先 req.links；其次单关联（login_ref/account_qq）；否则解除全部
     if req.links is not None:
         raw = req.links or []
@@ -120,8 +253,9 @@ def link_login(inst_id: str, req: LinkReq):
         if lr == inst_id:
             raise HTTPException(400, "不能关联自己")
         try:
+            _own(lr, user)                  # 越权即 404：目标登录端也必须归本人
             target = ctx.registry.get(lr)
-        except KeyError:
+        except HTTPException:
             raise HTTPException(404, f"登录端实例不存在: {lr}") from None
         ok_set = [d for d in (ctx.adapters[inst.dice][0].get("compatible_login") or [])
                   if d != "builtin"]
@@ -135,28 +269,35 @@ def link_login(inst_id: str, req: LinkReq):
     return {"ok": True, "links": cleaned}
 
 @router.get("/instances/{inst_id}/webui")
-def instance_webui(inst_id: str):
+def instance_webui(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """WebUI 直连信息：实际端口优先（占用时程序可能自动 +1 换端口），令牌从启动日志回读。
 
     前端用 location.hostname 拼完整 URL（服务与面板同机部署，浏览器到的是同一个主机）。
+
+    配额 B 段（事前拦截）：登录端 QQ 号配额已满时**不放行** WebUI——用户在登录端
+    自带 WebUI 里扫码即可登新号，这里是唯一能拦住「继续扫码」的闸门。
     """
-    try:
-        rec = ctx.registry.get(inst_id)
-    except KeyError:
-        raise HTTPException(404, f"实例不存在: {inst_id}") from None
-    port = rec.actual_port or (rec.allocated_ports or {}).get("webui")
-    return {"port": port, "token": rec.webui_token}
+    user = _u(user)
+    rec = _own(inst_id, user)
+    if is_login_program(rec.get("dice", ""), ctx.adapters):
+        usage_now = quota.usage(user.username, ctx.registry.all(), ctx.adapters)
+        lim = user.quota.get("login_qq", -1)
+        # 管理员不限；配额为 -1 表示不限；已有账号数已达上限时拦下
+        if not user.is_admin and lim >= 0 and usage_now["login_qq"] >= lim:
+            raise HTTPException(400, f"登录端 QQ 号已达上限（{usage_now['login_qq']}/{lim}），"
+                                     f"无法再登录新账号；请管理员在账号管理中提额")
+    port = rec.get("actual_port") or (rec.get("allocated_ports") or {}).get("webui")
+    return {"port": port, "token": rec.get("webui_token")}
 
 @router.get("/instances/{inst_id}/metrics")
-def instance_metrics(inst_id: str, hours: float = 24.0):
+def instance_metrics(inst_id: str, hours: float = 24.0,
+                     user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """资源曲线：最近 hours 小时的 [时间戳, 内存MB, CPU%] 采样点（默认 60s 一点）。
 
     面板重启不丢历史（落盘 <state>/metrics/<id>.json），新部署实例前几分钟可能无点。
     """
-    try:
-        ctx.registry.get(inst_id)
-    except KeyError:
-        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    user = _u(user)
+    _own(inst_id, user)
     hours = min(max(hours, 0.1), 24 * 7)
     pts = ctx.metrics.points(inst_id, hours)
     mems = [p[1] for p in pts]; cpus = [p[2] for p in pts]
@@ -166,12 +307,14 @@ def instance_metrics(inst_id: str, hours: float = 24.0):
             "avg_cpu": round(sum(cpus) / len(cpus), 1) if cpus else None}
 
 @router.get("/pending")
-def list_pending():
+def list_pending(user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """未完成的中间态实例：管理器重启 / 断网后可经向导从这里继续。"""
+    user = _u(user)
     return [{"id": i.id, "dice": i.dice, "state": i.state, "dir": i.dir,
              "qq": i.qq, "login_ref": i.login_ref, "bot_mode": i.bot_mode,
              "next_step": ctx.wizard.next_step(i.id)}
-            for i in ctx.registry.resume_pending()]
+            for i in ctx.registry.resume_pending()
+            if user.is_admin or (ctx.registry.get(i.id).owner or "admin") == user.username]
 
 def _start_instance(inst_id: str) -> str | None:
     """start/restart 与备份导入恢复运行的公共启动路径（须持 instance_lock 调用）。
@@ -189,8 +332,15 @@ def _start_instance(inst_id: str) -> str | None:
 # 当作 op 先匹配（FastAPI 按注册顺序路由，实测踩过）。export/diagnose/upgrade 同理。
 
 
-def _inst_or_404(inst_id: str):
+def _inst_or_404(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """取实例；给了 user 就一并校验归属（普通用户只能碰自己名下的）。
+
+    所有按 inst_id 操作的端点都走这里，越权与不存在同样 404——不区分
+    「实例存在但不属于你」和「实例根本不存在」，否则可探测他人实例 ID。
+    """
+    user = _u(user)
     try:
+        ctx.registry.owned_by(inst_id, user.username, user.is_admin)
         return ctx.registry.get(inst_id)
     except KeyError:
         raise HTTPException(404, f"实例不存在: {inst_id}") from None
@@ -201,7 +351,8 @@ def _data_paths_of(dice: str) -> list[str] | None:
 
 
 @router.get("/instances/{inst_id}/export")
-async def export_instance(inst_id: str, scope: str = "full"):
+async def export_instance(inst_id: str, scope: str = "full",
+                 user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """导出实例备份（与「上传备份导入」对称）。
 
     两种口径严格区分：
@@ -210,7 +361,7 @@ async def export_instance(inst_id: str, scope: str = "full"):
       自身备份功能覆盖的局部数据），体积小、跨版本可移植，但恢复前提是
       实例已部署同版本程序。
     """
-    rec = _inst_or_404(inst_id)
+    rec = _inst_or_404(inst_id, user)
     if scope not in ("full", "data"):
         raise HTTPException(400, f"未知备份口径: {scope}")
     out_dir = exports.exports_dir()
@@ -231,13 +382,14 @@ async def export_instance(inst_id: str, scope: str = "full"):
 
 
 @router.get("/instances/{inst_id}/diagnose")
-def diagnose_instance(inst_id: str):
+def diagnose_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """互联诊断器（拓展2）：按原因链逐层检测，返回结构化检查项。
 
     通用层（进程→关联→端口→token）在此统一实现；本端配置文件层由适配器
     diagnose_conn 钩子补充（如海豹读 serve.yaml 端点 state）。
     """
-    rec = _inst_or_404(inst_id)
+    user = _u(user)
+    rec = _inst_or_404(inst_id, user)
     items: list[dict] = []
 
     def add(ok: bool, step: str, detail: str):
@@ -302,9 +454,10 @@ def diagnose_instance(inst_id: str):
 
 
 @router.get("/instances/{inst_id}/upgrade-check")
-def upgrade_check(inst_id: str):
+def upgrade_check(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """升级通道：比对当前部署版本（release tag）与上游最新版本。"""
-    rec = _inst_or_404(inst_id)
+    user = _u(user)
+    rec = _inst_or_404(inst_id, user)
     adapter = ctx.get_adapter(rec.dice)
     strat = ctx.adapters[rec.dice][0].get("download_strategy")
     if strat == "manual":
@@ -322,9 +475,10 @@ def upgrade_check(inst_id: str):
 
 
 @router.post("/instances/{inst_id}/upgrade")
-def upgrade_instance(inst_id: str):
+def upgrade_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """原地升级：自动整目录备份 → 停机 → 覆盖解压最新包（数据文件保留）→ 恢复运行。"""
-    rec = _inst_or_404(inst_id)
+    user = _u(user)
+    rec = _inst_or_404(inst_id, user)
     adapter = ctx.get_adapter(rec.dice)
     strat = ctx.adapters[rec.dice][0].get("download_strategy")
     if strat == "manual":
@@ -359,17 +513,15 @@ def upgrade_instance(inst_id: str):
     return {"ok": True, "version": tag, "backup": bak.name, "restarted": was_running,
             "restart_error": restart_error}
 @router.post("/instances/{inst_id}/backup")
-async def upload_backup(inst_id: str, request: Request):
+async def upload_backup(inst_id: str, request: Request,
+                       user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """导入实例备份（手册 §5 上传约定：原始字节流，非 multipart）。
 
     流程：原本在运行则先停止 → 流式接收压缩包（魔数识别 + 完整性校验）
     → 解压覆盖到实例目录 → 原本在运行的实例自动重启。
     覆盖语义：只覆盖包内出现的文件，不删除包外文件（core/backup.py 模块注释）。
     """
-    try:
-        ctx.registry.get(inst_id)
-    except KeyError:
-        raise HTTPException(404, f"实例不存在: {inst_id}") from None
+    _inst_or_404(inst_id, user)
     cl = request.headers.get("content-length")
     if cl and int(cl) > pkgstore.MAX_PKG_BYTES:
         raise HTTPException(413, f"压缩包超过大小上限（{pkgstore.MAX_PKG_BYTES // 1048576} MB）")
@@ -422,7 +574,13 @@ async def upload_backup(inst_id: str, request: Request):
 # 必须注册在所有具体的 POST 子路由（/backup、/webui、/metrics…）之后：否则 {op} 会按
 # 注册顺序抢先匹配到 backup 等字面路径（同源坑见 /packages/unused、/exports/prune）。
 @router.post("/instances/{inst_id}/{op}")
-def instance_op(inst_id: str, op: str):
+def instance_op(inst_id: str, op: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    user = _u(user)
+    # 归属校验：越权与不存在同样 404。必须放在 VALID_OPS 校验**之前**——否则普通用户
+    # 拿到「未知操作」400（说明实例 ID 存在）vs 真实越权的 404，可据此探测他人实例。
+    # 端点直接停/启他人进程，是最直接的越权提权面（DoS），故与其余按 inst_id 操作的
+    # 端点同口径走 _inst_or_404。
+    _inst_or_404(inst_id, user)
     if op not in VALID_OPS:                              # 显式校验（assert 会被 -O 剥离）
         raise HTTPException(404, f"未知操作: {op}")
     with instance_lock(inst_id):
@@ -444,7 +602,8 @@ def instance_op(inst_id: str, op: str):
 
 @router.delete("/instances/{inst_id}")
 def delete_instance(inst_id: str, confirm: bool = False,
-                    remove_dir: bool = False, keep_save: bool = True):
+                    remove_dir: bool = False, keep_save: bool = True,
+                    user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """二次确认；remove_dir=true 时 keep_save 决定是否保留 config 存档目录。
 
     目录删除失败时**先于墓碑**抛 500（实例记录保留，用户可直接重试）——
@@ -452,6 +611,8 @@ def delete_instance(inst_id: str, confirm: bool = False,
     """
     if not confirm:
         raise HTTPException(400, "删除需二次确认 confirm=true")
+    user = _u(user)
+    _inst_or_404(inst_id, user)
     with instance_lock(inst_id):
         inst = ctx.registry.get(inst_id)
         ctx.pm.stop(inst_id)
@@ -492,8 +653,13 @@ def delete_instance(inst_id: str, confirm: bool = False,
                          + "; ".join(dir_errors[:3]))
         # 级联解除引用：否则骰子端 links 悬空——总览连线消失、向导 step4 重写时会
         # 静默生成新 token 与登录端残留配置不一致（两端连不上且难排查）
+        #
+        # 跨用户边界：普通用户删除自己的登录端时，**不得**去改别人实例的 links
+        # （那既是越权写，也会把对方的连线静默清掉）。管理员不受此限。
         unlinked = []
         for r in ctx.registry.all():
+            if not user.is_admin and (r.get("owner") or "admin") != user.username:
+                continue
             links = r.get("links") or []
             if any(lk.get("login_ref") == inst_id for lk in links):
                 new_links = [lk for lk in links if lk.get("login_ref") != inst_id]
@@ -584,9 +750,11 @@ def kill_orphan_proc(req: KillReq):
 
 
 @router.get("/deploy-progress/{inst_id}")
-def deploy_progress(inst_id: str):
+def deploy_progress(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """部署进度快照（step2 同步部署期间前端 1s 轮询）：下载字节数 / 解压阶段。"""
+    user = _u(user)
     from adapters.base import deploy_progress_of
+    _inst_or_404(inst_id, user)
     return deploy_progress_of(inst_id)
 
 @router.get("/manifests")
@@ -709,7 +877,9 @@ def delete_export(name: str):
 
 
 @router.get("/logs/{inst_id}/download")
-def download_log(inst_id: str):
+def download_log(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    user = _u(user)
+    _inst_or_404(inst_id, user)                    # 日志含消息内容，不容跨用户读
     p = ctx.log_dir / f"{inst_id}.log"
     if not p.exists():
         raise HTTPException(404, "日志不存在")
@@ -719,10 +889,15 @@ def download_log(inst_id: str):
 # ---------- 定时任务（拓展7）：按「每 X 天 X 小时」间隔定时重启 / 定时备份 ----------
 
 @router.get("/schedules")
-def list_schedules():
+def list_schedules(user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    user = _u(user)
     recs = {r["id"]: r for r in ctx.registry.all()}
+    tasks = ctx.scheduler.list_all()
+    if not user.is_admin:                        # 定时任务会对实例动刀，只列自己名下
+        tasks = [t for t in tasks
+                 if (recs.get(t["inst_id"], {}).get("owner") or "admin") == user.username]
     return [{"inst_dice": recs.get(t["inst_id"], {}).get("dice", "(已删除)"), **t}
-            for t in ctx.scheduler.list_all()]
+            for t in tasks]
 
 
 class SchedReq(BaseModel):
@@ -735,8 +910,9 @@ class SchedReq(BaseModel):
 
 
 @router.post("/schedules")
-def add_schedule(req: SchedReq):
-    _inst_or_404(req.inst_id)
+def add_schedule(req: SchedReq, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    user = _u(user)
+    _inst_or_404(req.inst_id, user)
     try:
         return ctx.scheduler.add(req.inst_id, req.kind,
                                  req.every_days, req.every_hours,
@@ -769,17 +945,24 @@ SEARCH_TAIL_BYTES = 2 * 1024 * 1024           # 磁盘日志只扫尾部 2MB，�
 
 
 @router.get("/logs/search")
-def logs_search(q: str, inst_id: str | None = None, limit: int = 100):
+def logs_search(q: str, inst_id: str | None = None, limit: int = 100,
+                user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """跨实例日志检索：ring（最近 2000 行）+ 磁盘日志尾部（各 2MB）。
 
-    仅面板单管理员使用，正则元字符按字面处理（fnmatch 无关，直接 in 匹配）。
+    普通用户只检索自己名下实例——日志里是机器人收到的真实消息，跨用户可读属泄露。
+    正则元字符按字面处理（fnmatch 无关，直接 in 匹配）。
     """
     q = (q or "").strip()
     if len(q) < 2:
         raise HTTPException(400, "搜索词至少 2 个字符")
+    user = _u(user)
     limit = max(1, min(limit, 300))
+    if inst_id:
+        _inst_or_404(inst_id, user)
     results: list[dict] = []
     for rec in ctx.registry.all():
+        if not user.is_admin and (rec.get("owner") or "admin") != user.username:
+            continue
         if inst_id and rec["id"] != inst_id:
             continue
         seen: set[str] = set()
@@ -859,11 +1042,14 @@ def _schedule_restart() -> None:
 
 
 @router.post("/panel/restart")
-def restart_panel():
+def restart_panel(_admin: CurrentUser = Depends(require_admin)):
     """整体重启管理面板：先应答前端，延迟 <1s 后进程自杀换新。
 
     运行中的骰子实例随面板进程一起退出，新进程起来后由 resume 线程自动拉回
     （只认 RUNNING 实例，DM_AUTO_RESUME=0 可关）。
+
+    **仅管理员**：重启会连带杀掉所有用户的实例，等于面板级高危操作；
+    分权后留在普通用户手里等于 anyone can DoS。
     """
     _schedule_restart()
     log.warning("[panel] 收到面板重启请求，%.1fs 后重启", _RESTART_DELAY)

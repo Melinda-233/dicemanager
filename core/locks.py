@@ -91,3 +91,14 @@ def program_dir_lock(program: str):
     """目录部署互斥：同名程序并发部署只允许一个进行。"""
     with _file_lock(f"dir-{program}"):
         yield
+
+@contextmanager
+def quota_lock():
+    """配额校验 + 实例登记的跨实例临界区。
+
+    为什么必须独立成锁：create_instance 要做「计数 → 判断 → 落盘」三步，而此时
+    实例还不存在，拿不到 instance_lock；只靠 atomic_write_json 的进程内 _write_lock
+    和 port_allocation_lock 挡不住并发创建下的配额超卖（本进程/跨进程都要防）。
+    """
+    with _file_lock("quota"):
+        yield

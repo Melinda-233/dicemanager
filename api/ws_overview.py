@@ -113,10 +113,18 @@ def _service_reachable(rec: dict) -> bool:
         return False
 
 
-async def overview_loop(ws: WebSocket):
+async def overview_loop(ws: WebSocket, user=None):
+    """周期推送总览拓扑。
+
+    user 非None 且非管理员时**只推本人名下实例**——拓扑含QQ 号、连接关系与
+    告警，跨用户可见即泄露。
+    """
+    mine = None if (user is None or user.is_admin) else user.username
     while True:
         nodes, edges = [], []
         for rec in ctx.registry.all():
+            if mine is not None and (rec.get("owner") or "admin") != mine:
+                continue
             try:
                 proc = ctx.pm.get(rec["id"])
                 handle_alive = proc.is_alive()
@@ -180,11 +188,11 @@ async def overview_loop(ws: WebSocket):
 
 @router.websocket("/ws/overview")
 async def ws_overview(ws: WebSocket):
-    ok, sub = auth.ws_handshake(ws)
-    if not ok:
+    ok, sub, user = auth.ws_handshake(ws)      # 必须取 user：用于按 owner 过滤推送
+    if not ok or user is None:
         return await ws.close(code=4401)
     await ws.accept(subprotocol=sub)
     try:
-        await overview_loop(ws)
+        await overview_loop(ws, user)
     except (WebSocketDisconnect, asyncio.CancelledError):
         pass

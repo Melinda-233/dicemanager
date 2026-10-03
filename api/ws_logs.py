@@ -35,9 +35,14 @@ def compile_filter(kw: str | None):
 
 @router.websocket("/ws/logs/{inst_id}")
 async def ws_logs(ws: WebSocket, inst_id: str):
-    ok, sub = auth.ws_handshake(ws)
-    if not ok:
+    ok, sub, user = auth.ws_handshake(ws)
+    if not ok or user is None:
         return await ws.close(code=4401)
+    # 归属校验：日志含机器人收到的真实消息，跨用户订阅即泄露
+    try:
+        ctx.registry.owned_by(inst_id, user.username, user.is_admin)
+    except KeyError:
+        return await ws.close(code=4404)
     await ws.accept(subprotocol=sub)
     proc = ctx.pm.get(inst_id)
     error_re = error_re_for(inst_id)

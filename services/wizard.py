@@ -19,7 +19,7 @@ class Wizard:
         return self._adapter_cache[name]
 
     def create_instance(self, dice, arch, login_ref=None, links=None, confirm_dir=False,
-                        bot_mode="onebot") -> str:
+                        bot_mode="onebot", owner=None) -> str:
         if dice not in self.adapters:
             raise ValueError(f"未知程序: {dice}")
         manifest, _ = self.adapters[dice]
@@ -39,7 +39,8 @@ class Wizard:
             d = root / f"{dice}-{n}"
         self.reg.create(iid, dice=dice, arch=arch, dir_=str(d),
                         port=ports.get("webui", 0), allocated_ports=ports,
-                        login_ref=login_ref, links=links, bot_mode=bot_mode)
+                        login_ref=login_ref, links=links, bot_mode=bot_mode,
+                        owner=owner or "admin")
         return iid
 
     def next_step(self, instance_id: str) -> int:

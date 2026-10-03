@@ -76,11 +76,20 @@ def test_delete_cascades_unlink_and_reports():
 
 
 def test_auth_token_expiry_and_ws_handshake():
-    """token 超过 TTL → HTTP 401（文案「登录已过期」）/ WS 拒绝；子协议与查询参数两路鉴权。"""
+    """会话过期 → HTTP 401（文案「登录已过期」）/ WS 拒绝；子协议与查询参数两路鉴权。
+
+    用**v2 格式**构造：v1 单条凭据在加载时会被 _migrate 重置 TTL 起点（升级不该让
+    存量token 失效），要测「运行中的面板遇到过期会话」必须直接写 sessions 表。
+    """
     from api.auth import AUTH_TTL, Auth
     tf = Path(tmp, "auth_optim.json")
-    tf.write_text(json.dumps({"password_hash": "x", "salt": "ab", "token": "tok-1",
-                              "issued_at": time.time() - AUTH_TTL - 10}), encoding="utf-8")
+    tf.write_text(json.dumps({
+        "version": 2,
+        "users": {"admin": {"role": "admin", "password_hash": "x", "salt": "ab",
+                            "display_name": "管理员", "quota": {}}},
+        "sessions": {"tok-1": {"username": "admin",
+                               "issued_at": time.time() - AUTH_TTL - 10}},
+    }), encoding="utf-8")
     a = Auth(tf)
     cred = SimpleNamespace(credentials="tok-1")
     with pytest.raises(HTTPException) as e:
@@ -88,19 +97,24 @@ def test_auth_token_expiry_and_ws_handshake():
     assert e.value.status_code == 401 and "过期" in e.value.detail
     assert a.verify_ws(SimpleNamespace(query_params={"token": "tok-1"})) is False
 
-    # 未过期：子协议头匹配 → (True, proto)；查询参数匹配 → (True, None)；都不匹配 → 拒绝
+    # 未过期：子协议头匹配 → (True, proto, user)；查询参数匹配 → (True, None, user)；都不匹配 → 拒绝
     tf2 = Path(tmp, "auth_optim2.json")
-    tf2.write_text(json.dumps({"password_hash": "x", "salt": "ab", "token": "tok-2",
-                               "issued_at": time.time()}), encoding="utf-8")
+    tf2.write_text(json.dumps({
+        "version": 2,
+        "users": {"admin": {"role": "admin", "password_hash": "x", "salt": "ab",
+                            "display_name": "管理员", "quota": {}}},
+        "sessions": {"tok-2": {"username": "admin", "issued_at": time.time()}},
+    }), encoding="utf-8")
     b = Auth(tf2)
     ws_ok = SimpleNamespace(headers={"sec-websocket-protocol": "tok-2"}, query_params={})
-    ok, sub = b.ws_handshake(ws_ok)
+    ok, sub, who = b.ws_handshake(ws_ok)
     assert (ok, sub) == (True, "tok-2")
+    assert who.username == "admin", "ws_handshake 必须带回身份供调用方做归属过滤"
     ws_legacy = SimpleNamespace(headers={}, query_params={"token": "tok-2"})
-    ok2, sub2 = b.ws_handshake(ws_legacy)
+    ok2, sub2, _ = b.ws_handshake(ws_legacy)
     assert (ok2, sub2) == (True, None)
     ws_bad = SimpleNamespace(headers={"sec-websocket-protocol": "evil"}, query_params={})
-    assert b.ws_handshake(ws_bad) == (False, None)
+    assert b.ws_handshake(ws_bad) == (False, None, None)
 
 
 def test_run_once_and_start_mutual_exclusion():

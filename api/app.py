@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api import ws_login, ws_logs, ws_overview
 from api.context import ctx
-from api.rest import public, router
+from api.rest import admin_router, public, router
 from core.logutil import console_only, setup_logging
 from core.metrics import MetricsSampler
 from services.resume import resume_running_instances
@@ -55,6 +55,8 @@ async def lifespan(app: FastAPI):
     console_only(f"[auth] 本次管理密码: {pwd}" if pwd else
                  "[auth] 密码为 PBKDF2 哈希存储（明文见首次启动的控制台输出）；"
                  "忘记密码请删除 auth.json 后重启服务重置")
+    if pwd:
+        console_only("[auth] 首次登录用户名: admin")
     ctx.registry.purge_tombstones()                     # 兑现「墓碑保留 30 天」承诺
     for inst in ctx.registry.resume_pending():          # 启动恢复：中间态扫描
         log.info("[resume] 实例 %s 停留在 %s，可经向导继续或回滚", inst.id, inst.state)
@@ -69,8 +71,9 @@ async def lifespan(app: FastAPI):
     ctx.scheduler.stop()
 
 app = FastAPI(title="DiceManager", lifespan=lifespan)
-app.include_router(public)                              # 无鉴权：仅 /api/login
+app.include_router(public)                              # 无鉴权：/api/login /api/logout
 app.include_router(router)
+app.include_router(admin_router)                        # 账号/配额管理：需管理员位
 app.include_router(ws_overview.router)
 app.include_router(ws_logs.router)
 app.include_router(ws_login.router)

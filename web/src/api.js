@@ -1,12 +1,28 @@
+// 登录态：token + 身份（用户名/角色/配额）。身份落 localStorage 是为了让刷新后
+// 首屏就能渲染角色化菜单，不必等 /me 回来再闪一下。
 let token = localStorage.getItem('dm_token') || ''
+const readUser = () => {
+  try { return JSON.parse(localStorage.getItem('dm_user') || 'null') }
+  catch { return null }
+}
+let user = readUser()
 export const getToken = () => token
-export const setToken = t => {
+export const getUser = () => user
+export const isAdmin = () => !!user && user.role === 'admin'
+const setUser = u => {
+  user = u
+  if (u) localStorage.setItem('dm_user', JSON.stringify(u))
+  else localStorage.removeItem('dm_user')
+}
+export const setToken = (t, u) => {
   token = t; localStorage.setItem('dm_token', t)
+  if (u !== undefined) setUser(u)
   dispatchEvent(new Event('dm-auth'))          // 通知导航栏刷新登录状态
 }
 // 401：凭据失效（服务重启/换密码/旧 token），清掉本地 token 再回登录页
 export const unauthorized = () => {
   token = ''; localStorage.removeItem('dm_token')
+  setUser(null)
   dispatchEvent(new Event('dm-auth'))
   if (!location.hash.startsWith('#/login')) location.hash = '#/login'
 }
@@ -18,21 +34,74 @@ export async function api(path, opts = {}) {
                ...(token && { Authorization: `Bearer ${token}` }), ...opts.headers },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
-  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
+  if (r.status === 401) {
+    // 登录接口的 401 是「密码错/用户不存在」，**不是**凭据失效：清 token + 跳登录页
+    // 只会抹掉后端给出的原因（"用户名或密码错误"），用户看到的会是毫无线索的「未授权」。
+    // 这类 401 只如实抛后端的 detail，不碰本地登录态。
+    if (path === '/login') {
+      let detail = '用户名或密码错误'
+      try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 兜底 */ }
+      const e = new Error(detail)
+      e.status = 401
+      throw e
+    }
+    unauthorized(); throw new Error('未授权')
+  }
   if (!r.ok) {
     let detail = r.statusText
     try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 响应兜底 */ }
-    throw new Error(detail)
+    const e = new Error(detail)
+    e.status = r.status
+    throw e
   }
   return r.json()
 }
 
-export const login = async pwd =>
-  setToken((await api('/login', { method: 'POST', body: { password: pwd } })).token)
+// 403：登录了但权限不足（例如普通用户点管理员端点）——不能当成未授权去清 token
+export async function adminApi(path, opts = {}) {
+  try {
+    return await api(path, opts)
+  } catch (e) {
+    if (e.status === 403) throw new Error('需要管理员权限')
+    throw e
+  }
+}
+
+export const login = async (username, pwd) => {
+  const r = await api('/login', { method: 'POST', body: { username, password: pwd } })
+  setToken(r.token, { username: r.username, role: r.role,
+                      display_name: r.display_name, quota: r.quota })
+  return r
+}
+export const logout = async () => {
+  try { await api('/logout', { method: 'POST' }) } catch { /* 本地清理即可 */ }
+  token = ''; localStorage.removeItem('dm_token')
+  setUser(null)
+  dispatchEvent(new Event('dm-auth'))
+  location.hash = '#/login'
+}
 // 改密成功后服务端轮换 token（所有旧凭据失效）——必须立刻替换本地 token，否则自己被 401
-export const changePassword = async (oldPwd, newPwd) =>
-  setToken((await api('/password', { method: 'POST',
-                                     body: { old_password: oldPwd, new_password: newPwd } })).token)
+export const changePassword = async (oldPwd, newPwd) => {
+  const r = await api('/password', { method: 'POST',
+                                      body: { old_password: oldPwd, new_password: newPwd } })
+  setToken(r.token)                             // 身份未变，保留 dm_user
+  return r
+}
+export const whoami = () => api('/me')
+
+// ---------- 账号管理（仅管理员） ----------
+export const listAccounts = () => adminApi('/admin/accounts')
+export const createAccount = b =>
+  adminApi('/admin/accounts', { method: 'POST', body: b })
+export const deleteAccount = name =>
+  adminApi(`/admin/accounts/${encodeURIComponent(name)}`, { method: 'DELETE' })
+export const setAccountQuota = (name, q) =>
+  adminApi(`/admin/accounts/${encodeURIComponent(name)}/quota`, { method: 'PUT', body: q })
+export const setAccountPassword = (name, pwd) =>
+  adminApi(`/admin/accounts/${encodeURIComponent(name)}/password`,
+           { method: 'POST', body: { new_password: pwd } })
+export const revokeAccount = name =>
+  adminApi(`/admin/accounts/${encodeURIComponent(name)}/revoke`, { method: 'POST' })
 export const listInstances = () => api('/instances')
 export const listPending = () => api('/pending')
 export const listManifests = () => api('/manifests')
