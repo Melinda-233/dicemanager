@@ -64,7 +64,9 @@ def _popen_kwargs() -> dict:
     """平台相关的 Popen 进程组参数（建立新进程组，便于后续整组/整树终止）。"""
     if _POSIX:
         return {"start_new_session": True}
-    return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    # getattr：该常量仅存在于 Windows 的 subprocess 模块；CI 的 mypy 以
+    # platform=linux 检查，裸属性访问会报 Module has no attribute。
+    return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)}
 
 class ManagedProcess:
     def __init__(self, inst_id: str, log_dir: Path, port_resolver=None):

@@ -23,7 +23,9 @@ from core.locks import program_dir_lock
 if os.name == "posix":
     from core.firewall import open_port
 else:
-    def open_port(port):
+    # 签名须与 server 侧逐字一致：mypy 要求条件定义的函数变体同签名，
+    # 省略注解会被推成 def open_port(port: Any) -> Any 而报错。
+    def open_port(port: int | None) -> str | None:
         return None
 
 # 视为「仅本机监听」的绑定地址：开放 WebUI 时统一放开为 0.0.0.0

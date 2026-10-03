@@ -45,8 +45,9 @@ def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     #     字面路径会变成 cwd 下带 % 的怪目录。该占位符是 Windows 版的历史数据位置，
     #     Linux 版清单无此问题，故覆盖只在 desktop 生效。
     #   server → None 表示不覆盖，沿用 manifest 自带的部署位。
-    install_root = default_install_root()
-    install_root = None if install_root is None else str(install_root)
+    # str 化后再传给 manifest：原 Path 对象会让 mypy 在赋值回同一变量时报类型冲突
+    _root = default_install_root()
+    install_root: str | None = None if _root is None else str(_root)
     for f in sorted(Path(manifest_dir).glob("*.json")):
         # 分化：Linux 与 Windows 清单同处一个目录（<dice>.json / <dice>_win.json），
         # 两侧 name 相同（都叫 sealdice 等），不按 edition 过滤就会互相覆盖——
