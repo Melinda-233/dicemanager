@@ -13,7 +13,9 @@
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# 共享内核已上提到仓库根，项目根 = 仓库根（data/、package/ 落在仓库根下）。
+# 本文件无论在 windows/tests/ 还是 tests/win/ 下，parents[2] 都指向仓库根。
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 

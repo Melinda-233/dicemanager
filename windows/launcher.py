@@ -57,13 +57,24 @@ if sys.stderr is None:
     _diag("stderr was None → replaced with StringIO")
 
 
-# ---- 2. frozen 模式路径修正 ----
+# ---- 2. 模块解析路径修正 ----
 if getattr(sys, "frozen", False):
     _base = Path(sys._MEIPASS)
     if str(_base) not in sys.path:
         sys.path.insert(0, str(_base))
     try:
         os.chdir(_base)
+    except OSError:
+        pass
+else:
+    # 开发模式：共享内核（core/ api/ adapters/ services/）在仓库根，不在 windows/ 下。
+    # 内核只有一份，windows/ 仅保留 desktop 独有的入口与清单，故必须把仓库根
+    # 加进 sys.path，否则 `from core...` / `import api` 解析不到。
+    _repo = Path(__file__).resolve().parent.parent
+    if str(_repo) not in sys.path:
+        sys.path.insert(0, str(_repo))
+    try:
+        os.chdir(_repo)
     except OSError:
         pass
 

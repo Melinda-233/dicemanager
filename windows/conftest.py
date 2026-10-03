@@ -12,7 +12,8 @@
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+# 共享内核已上提到仓库根（windows/core 等副本已删），ROOT 指向仓库根
+ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
