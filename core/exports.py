@@ -16,12 +16,14 @@ import os
 import time
 from pathlib import Path
 
+from core.pathutil import default_state_dir
+
 EXPORTS_DIRNAME = "exports"
 DEFAULT_KEEP_DAYS = 30        # 一键清理的默认阈值：超过 30 天的备份视为过期
 
 
 def exports_dir() -> Path:
-    d = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager")) / EXPORTS_DIRNAME
+    d = Path(os.environ.get("DM_STATE_DIR", str(default_state_dir()))) / EXPORTS_DIRNAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 

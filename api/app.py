@@ -4,12 +4,14 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from core.pathutil import default_state_dir
+
 # 必须先于任何模块级 Auth()/registry 创建文件：auth.json（哈希+token）、instances.json
 # （webui/conn token）都是敏感状态，默认 0644 会被同机其他用户读取。仅 POSIX 生效。
 if os.name == "posix":
     try:
         os.umask(0o077)
-        _state = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager"))
+        _state = Path(os.environ.get("DM_STATE_DIR", str(default_state_dir())))
         if _state.is_dir():
             _state.chmod(0o700)
             for _f in _state.glob("*.json"):

@@ -6,15 +6,17 @@ from pathlib import Path
 from adapters import load_registry
 from core.exports import exports_dir
 from core.metrics import MetricsStore
+from core.pathutil import default_log_dir, default_state_dir
 from core.ports import PortAllocator
 from core.process import ProcessManager
 from core.registry import Registry
 from core.scheduler import Scheduler
 from services.wizard import Wizard
 
-# 默认 Linux 生产路径；Windows 开发 / 非 root 运行可用 DM_STATE_DIR / DM_LOG_DIR 覆盖
-STATE_DIR = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager"))
-LOG_DIR = Path(os.environ.get("DM_LOG_DIR", "/var/log/dicemanager"))
+# 默认路径按平台取值（server: /var/lib、/var/log；desktop: 项目根 data/ 下），
+# 两版均可用 DM_STATE_DIR / DM_LOG_DIR 覆盖。见 core/pathutil.py。
+STATE_DIR = Path(os.environ.get("DM_STATE_DIR", str(default_state_dir())))
+LOG_DIR = Path(os.environ.get("DM_LOG_DIR", str(default_log_dir())))
 
 @dataclass
 class AppContext:

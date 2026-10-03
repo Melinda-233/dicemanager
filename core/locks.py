@@ -13,22 +13,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
+from core.pathutil import default_lock_dir
+
 # 平台适配：mypy 以 platform=linux 检查时，裸 `import fcntl` 会让 else 分支被判为
 # 「永不可达」（warn_unreachable 报错）；显式声明成可选模块可让两条分支都参与检查。
+# 两条分支都是 OS 级跨进程文件锁（flock 与 msvcrt.locking），语义等价；
+# 早期注释称 Windows「退化为进程内锁」是误判，已纠正。
 fcntl: ModuleType | None = None
 msvcrt: ModuleType | None = None
 if os.name == "posix":
     import fcntl as _fcntl
     fcntl = _fcntl
 else:
-    import msvcrt as _msvcrt  # Windows 本地开发/测试：退化为进程内锁
+    import msvcrt as _msvcrt  # Windows：OS 级跨进程文件锁
     msvcrt = _msvcrt
 
 _dir_lock = threading.Lock()
 _instance_locks: dict[str, threading.RLock] = {}
 _file_guard = threading.Lock()
 _file_locks: dict[str, list] = {}          # name -> [refcount, fileobj]
-_LOCK_DIR = Path(os.environ.get("DM_LOCK_DIR", "/tmp/dicemanager"))
+_LOCK_DIR = Path(os.environ.get("DM_LOCK_DIR", str(default_lock_dir())))
 
 def _acquire_file(name: str) -> list:
     """同一进程内对同一锁名只锁一次，重复进入仅增加引用计数。"""

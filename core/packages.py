@@ -10,13 +10,15 @@ import time
 import zipfile
 from pathlib import Path
 
+from core.pathutil import default_state_dir
+
 MAX_PKG_BYTES = 2 * 1024 * 1024 * 1024     # 2GB 上限，防误传超大文件撑爆磁盘
 
 KNOWN_EXTS = (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".tar", ".zip")
 
 
 def pkg_dir() -> Path:
-    d = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager")) / "packages"
+    d = Path(os.environ.get("DM_STATE_DIR", str(default_state_dir()))) / "packages"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
