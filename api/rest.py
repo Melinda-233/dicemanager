@@ -30,6 +30,7 @@ from api.auth import (
 from api.context import ctx
 from core import backup, exports, quota, scanner
 from core import packages as pkgstore
+from core.edition import EDITION, is_desktop, is_server
 from core.locks import instance_lock, quota_lock
 from core.registry import State
 from core.roles import is_login_program
@@ -70,6 +71,45 @@ def login(req: LoginReq, request: Request):
         raise HTTPException(401, "用户名或密码错误")
     return {"token": token, "username": me.username, "role": me.role,
             "display_name": me.display_name, "quota": me.quota}
+
+class SetupReq(BaseModel):
+    new_password: str
+
+@public.get("/edition")
+def edition():
+    """当前产品形态：server（Linux 服务器）/ desktop（Windows 单机本地）。
+
+    前端据此决定渲染哪些分化功能（面板重启按钮、首启设置界面等），
+    避免前端用 UA 或路径各猜各的。
+    """
+    return {"edition": EDITION}
+
+@public.get("/needs-setup")
+def needs_setup():
+    """前端启动时探测：needs_setup=True 表示尚未设置管理密码，登录页切到「设置管理密码」。
+
+    判定依据是**磁盘上 auth.json 的实时状态**（is_initialized 内部先 _refresh），
+    而非进程启动时的快照——运行中删除 auth.json 也会立刻返回 True。
+
+    分化 C2：仅 desktop 版有首启设置流程；server 版首启自动生成密码
+    （安装脚本依赖控制台 [auth] 行），故恒返回 False。
+    """
+    if not is_desktop():
+        return {"needs_setup": False}
+    return {"needs_setup": not auth.is_initialized}
+
+@public.post("/setup")
+def setup(req: SetupReq):
+    """首次设置管理密码：仅未初始化时可用，已初始化返 409。
+
+    替代早期 launcher 弹原生密码框的方案——走 WebUI 更直观、可移植，
+    不依赖 win32gui（避免精简版 Windows 缺 GUI 子系统时弹窗失败）。
+
+    分化 C2：仅 desktop 版提供。
+    """
+    if not is_desktop():
+        raise HTTPException(404, "首次设置流程仅 desktop 版提供")
+    return {"token": auth.setup_password(req.new_password)}
 
 @public.post("/logout")
 def logout(cred: HTTPAuthorizationCredentials | None = Depends(security)):
@@ -1050,7 +1090,12 @@ def restart_panel(_admin: CurrentUser = Depends(require_admin)):
 
     **仅管理员**：重启会连带杀掉所有用户的实例，等于面板级高危操作；
     分权后留在普通用户手里等于 anyone can DoS。
+
+    分化 C3：仅 server 版提供（systemd Restart=always 拉起 / 裸跑接班进程 exec）。
+    desktop 版是托盘常驻的单机工具，重启面板无意义，故返 404 且前端不渲染按钮。
     """
+    if not is_server():
+        raise HTTPException(404, "面板重启仅 server 版提供")
     _schedule_restart()
     log.warning("[panel] 收到面板重启请求，%.1fs 后重启", _RESTART_DELAY)
     return {"ok": True, "msg": "面板正在重启，约 5-10 秒后恢复；运行中的实例将自动拉回"}

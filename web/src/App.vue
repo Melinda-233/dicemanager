@@ -25,7 +25,7 @@ import Wizard from './pages/Wizard.vue'
 import Login from './pages/Login.vue'
 import Password from './pages/Password.vue'
 import Accounts from './pages/Accounts.vue'
-import { getToken, getUser, logout } from './api'
+import { getToken, getUser, logout, needsSetup, setToken } from './api'
 
 const token = ref(getToken())
 const user = ref(getUser())
@@ -33,9 +33,19 @@ const hash = ref(location.hash)
 // 登录/退出都要刷新身份：dm-auth 是 api.js 唯一的登录态信号源，漏接菜单不会更新
 const onAuth = () => { token.value = getToken(); user.value = getUser() }
 const onHash = () => (hash.value = location.hash)
-onMounted(() => {
+onMounted(async () => {
   addEventListener('hashchange', onHash)
   addEventListener('dm-auth', onAuth)
+  // 首次启动 / 凭据文件被移除（忘记密码时的重置办法）：即使 localStorage 还残留旧
+  // token，也必须清掉并把路由压回登录页——否则会停在总览页（甚至 #/logs、#/wizard），
+  // 而「设置管理密码」界面只在登录页里，用户永远看不到。
+  // 分化 C2：仅 desktop 有首启流程，server 版 needsSetup 恒为 false。
+  try {
+    if (await needsSetup()) {
+      setToken('')
+      if (!location.hash.startsWith('#/login')) location.hash = '#/login'
+    }
+  } catch { /* 探测失败不阻断渲染：登录页自身还会再探一次并给出可见提示 */ }
 })
 onUnmounted(() => {
   removeEventListener('hashchange', onHash)

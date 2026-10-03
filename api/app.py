@@ -52,13 +52,23 @@ def _sample_metrics():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from api.auth import auth
-    # 敏感：只进控制台，不落盘。非首次启动只有哈希，拿不到明文（重置需删 auth.json）
-    pwd = auth.admin_password
-    console_only(f"[auth] 本次管理密码: {pwd}" if pwd else
-                 "[auth] 密码为 PBKDF2 哈希存储（明文见首次启动的控制台输出）；"
-                 "忘记密码请删除 auth.json 后重启服务重置")
-    if pwd:
-        console_only("[auth] 首次登录用户名: admin")
+    # 敏感：明文只进控制台，不落盘。非首次启动只有哈希，拿不到明文（重置需删 auth.json）
+    if not auth.is_initialized:
+        # desktop：首启未设置，走 WebUI 流程；同时打印凭据文件绝对路径——
+        # 报障里最常见的困惑是「密码文件不存在却没提示设置密码」，根因常是看错了
+        # auth.json（开发模式在 <项目根>/data，打包后在 <exe 同级>/data）。
+        console_only(
+            f"[auth] 首次启动：尚未设置管理密码（凭据文件 {auth.path} 不存在）。"
+            "请打开 http://127.0.0.1:8765 在登录页设置管理密码（≥6 位）。"
+        )
+    else:
+        console_only(
+            f"[auth] 管理密码以 PBKDF2 哈希存储（明文从不落盘），凭据文件：{auth.path}。"
+            "忘记密码请删除该文件后重启服务重置")
+        pwd = auth.admin_password        # 仅 server 首启自动生成时非 None
+        if pwd:
+            console_only(f"[auth] 本次管理密码: {pwd}")
+            console_only("[auth] 首次登录用户名: admin")
     ctx.registry.purge_tombstones()                     # 兑现「墓碑保留 30 天」承诺
     for inst in ctx.registry.resume_pending():          # 启动恢复：中间态扫描
         log.info("[resume] 实例 %s 停留在 %s，可经向导继续或回滚", inst.id, inst.state)

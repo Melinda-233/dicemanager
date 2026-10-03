@@ -239,6 +239,17 @@ export const searchLogs = (q, instId) =>
 export const upgradeCheck = id => api(`/instances/${id}/upgrade-check`)
 export const upgradeInstance = id => api(`/instances/${id}/upgrade`, { method: 'POST' })
 
-// ---------- 面板自管理：整体重启 ----------
+// ---------- 面板自管理：整体重启（分化 C3，仅 server）----------
 // 面板进程自杀换新（systemd 自动拉起 / 裸跑由接班进程接管）；运行中的实例由 resume 线程拉回
 export const restartPanel = () => api('/panel/restart', { method: 'POST' })
+
+// ---------- 首启设置（分化 C2，仅 desktop）----------
+// needs_setup=true 表示尚未设置管理密码（auth.json 不存在），登录页据此切到设置界面
+export const needsSetup = async () => (await api('/needs-setup')).needs_setup
+// 首次设置管理密码：返回新 token 并自动登录（仅未初始化时可用，已设置时后端返 409）
+export const setup = async newPwd =>
+  setToken((await api('/setup', { method: 'POST', body: { new_password: newPwd } })).token)
+
+// ---------- edition（server / desktop）----------
+// 前端据此决定渲染哪些分化功能；后端是唯一事实来源，避免前端各猜各的
+export const getEdition = async () => (await api('/edition')).edition

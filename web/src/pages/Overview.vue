@@ -275,7 +275,8 @@
         </div>
       </div>
       <p v-if="connMsg" class="hint">{{ connMsg }}</p>
-      <div class="panel-ops">
+      <!-- 分化 C3：面板重启仅 server 有意义（systemd 拉起）；desktop 是托盘常驻，无此入口 -->
+      <div class="panel-ops" v-if="isServer">
         <button class="danger" :disabled="panelRestarting" @click="restartPanelNow">重启面板</button>
         <span class="hint">整体重启管理面板，运行中的实例会自动拉回</span>
       </div>
@@ -300,7 +301,7 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
-         listExports, deleteExport, pruneExports, restartPanel } from '../api'
+         listExports, deleteExport, pruneExports, restartPanel, getEdition } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -355,6 +356,10 @@ const pos = id => {
   const y = n <= 1 ? 215 : 60 + j * (310 / (n - 1))
   return { x: isLogin(node) ? colX.value.login : colX.value.dice, y }
 }
+// 分化 C3：面板重启按钮只在 server 版渲染（后端 /panel/restart 对 desktop 返 404）
+const isServer = ref(false)
+getEdition().then(e => { isServer.value = e === 'server' }).catch(() => {})
+
 onMounted(() => {
   sock = connectWS('/ws/overview', m => {
     if (m.type !== 'overview') return

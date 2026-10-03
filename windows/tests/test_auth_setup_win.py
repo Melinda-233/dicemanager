@@ -50,8 +50,11 @@ def test_setup_allowed_again_after_delete(tmp_path):
     f.unlink()
     token = a.setup_password("newpass1")
     assert token and a.is_initialized is True
-    assert json.loads(f.read_text("utf-8"))["token"] == token
-    assert a.login("newpass1") == token
+    # auth.json 已是 v2 多用户 schema：token 挂在 sessions 下，不再有顶层 token 字段；
+    # 且 login() 会**另签**新会话 token（多会话语义），不再是复用同一条 token。
+    assert token in json.loads(f.read_text("utf-8"))["sessions"]
+    assert a.current(token) is not None        # setup 签发的 token 立即有效
+    assert a.login("newpass1")                 # 登录另签一条，同样可用
 
 
 def test_file_appearing_later_is_picked_up(tmp_path):

@@ -27,8 +27,10 @@ from fastapi import Depends, HTTPException, Request, WebSocket
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.atomicio import write_atomic
+from core.edition import is_desktop
+from core.pathutil import default_state_dir
 
-AUTH_FILE = Path(os.environ.get("DM_STATE_DIR", "/var/lib/dicemanager")) / "auth.json"
+AUTH_FILE = Path(os.environ.get("DM_STATE_DIR", str(default_state_dir()))) / "auth.json"
 PBKDF2_ITER = 200_000
 LOGIN_MAX_FAILS = 5                     # 60s 窗口内 ≥5 次失败 → 限速
 LOGIN_WINDOW = 60
@@ -86,9 +88,23 @@ class Auth:
         self._file = state_file                     # 写操作需要回写同一文件
         self._initial_password: str | None = None   # 仅首次生成时持有，供启动横幅打印一次
         self._fails: dict[str, list[float]] = {}    # "ip|username" -> 失败时间戳，滑动窗口限速
+        self._initialized = False
         if state_file.exists():
-            d = self._migrate(json.loads(state_file.read_text("utf-8")))
+            try:
+                d = self._migrate(json.loads(state_file.read_text("utf-8")))
+                self._initialized = True
+            except (OSError, ValueError):
+                # 损坏 / 写一半 / 并发删除：按未初始化处理而不抛异常。
+                # Auth() 在 import 路径上构造，任何异常都会让整个面板变 500，
+                # 比「当作没设过密码」严重得多（desktop 下还能重新设置一次）。
+                d = self._empty()
+        elif is_desktop():
+            # 分化 C1/C2：desktop 首启**不**生成随机密码，进入未初始化态，
+            # 由用户在 WebUI 设置（首次密码明文从此不落盘、不进控制台）。
+            d = self._empty()
         else:
+            # server 部署场景：安装脚本依赖控制台 [auth] 行取初始密码，
+            # 故首次启动仍自动生成并打印一次。
             pwd = secrets.token_urlsafe(12)
             self._initial_password = pwd
             d = self._blank(pwd)
@@ -108,6 +124,59 @@ class Auth:
                     "display_name": "管理员", "quota": dict(DEFAULT_QUOTA),
                     "created_at": now}},
                 "sessions": {token: {"username": ROLE_ADMIN, "issued_at": now}}}
+
+    @staticmethod
+    def _empty() -> dict:
+        """未初始化态（desktop 首启）：无账号、无会话，等待用户在 WebUI 设置。"""
+        return {"version": 2, "users": {}, "sessions": {}}
+
+    def _refresh(self) -> None:
+        """以磁盘实际状态为准同步内存态：auth.json 被删除/新增后无需重启即生效。
+
+        修的就是这个现象——「密码文件不存在，但访问 WebUI 未显示设置密码」：
+        单例只在 import 时读一次磁盘，之后 _initialized 常驻内存，于是运行中删除
+        auth.json 后 needs-setup 仍返回 False，前端停在普通登录页。
+        """
+        if not self._file.exists():
+            if self._initialized:                  # 凭据文件被移除 → 回到未初始化态
+                self._initialized = False
+                self._data = self._empty()
+                self._fails.clear()
+            return
+        if not self._initialized:                  # 文件在进程启动后才出现 → 重新加载
+            try:
+                self._data = self._migrate(json.loads(self._file.read_text("utf-8")))
+                self._initialized = True
+            except (OSError, ValueError):
+                return                             # 写一半/损坏：保持未初始化，不抛异常
+
+    @property
+    def is_initialized(self) -> bool:
+        """是否已完成首次密码设置。每次都与磁盘核对，不取进程启动时的快照。"""
+        self._refresh()
+        return self._initialized
+
+    @property
+    def path(self) -> Path:
+        """凭据文件绝对路径（排障用：用户常分不清该删哪个 auth.json）。"""
+        return self._file
+
+    def setup_password(self, new_password: str) -> str:
+        """首次设置管理密码：仅在未初始化时可用，已初始化返 409。
+
+        替代 launcher 弹原生密码框的方案——走 WebUI 更直观、可移植，不依赖
+        win32gui（避免精简版 Windows 缺 GUI 子系统时弹窗失败）。
+        """
+        self._refresh()                            # 文件已被删除 → 视为重新首次设置
+        if self._initialized:
+            raise HTTPException(409, "管理密码已设置，请走「修改密码」流程")
+        if not new_password or len(new_password) < 6:
+            raise HTTPException(400, "管理密码至少 6 位")
+        d = self._blank(new_password)
+        write_atomic(self._file, json.dumps(d, ensure_ascii=False).encode("utf-8"))
+        self._data = d
+        self._initialized = True
+        return self._token_of(ROLE_ADMIN)
 
     def _migrate(self, d: dict) -> dict:
         """旧版（无 users 键）→ v2：单条凭据升为 admin 账号。
@@ -250,6 +319,10 @@ class Auth:
 
         省略 username 时按 admin 登录（保留单管理员旧语义）。
         """
+        self._refresh()
+        if not self._initialized:
+            # 未初始化：统一返 428 引导前端走 setup 流程，且不计入失败计数
+            raise HTTPException(428, "首次启动，请先设置管理密码")
         user = self._user_or_401(username)
         self._verify(password, user, f"{client or '-'}|{username}")
         return self._issue(username)
@@ -360,6 +433,8 @@ class Auth:
 
     # ---------- 请求鉴权 ----------
     def _expired(self) -> bool:
+        if not self._initialized:
+            return False      # 未初始化不参与过期判断（此时根本签不出 token）
         return time.time() - self._cred.get("issued_at", time.time()) > AUTH_TTL
 
     def _token_expired(self, token: str) -> bool:
