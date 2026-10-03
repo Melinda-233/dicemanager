@@ -20,8 +20,19 @@ Path(tmp, "auth.json").write_text(json.dumps(legacy), encoding="utf-8")
 from api.auth import Auth
 a = Auth(Path(tmp, "auth.json"))
 d = json.loads(Path(tmp, "auth.json").read_text())
-assert "password" not in d and "password_hash" in d and d["salt"], "明文未迁移为哈希"
-assert a.login("test-pwd-123") == "tok-abc", "迁移后原密码应可登录"
+# v2 schema 为嵌套结构：凭据在 users.admin 下，顶层只留 version / sessions。
+# （v1 曾是顶层 password_hash + salt，多用户改造后下移到账号对象）
+u = d.get("users", {}).get("admin", {})
+assert "password" not in d and u.get("password_hash") and u.get("salt"), \
+    f"明文未迁移为哈希: {d}"
+# 「迁移必须保留旧 token」的真正含义是旧会话不失效（升级不该全员掉线）。
+# v2 支持会话表后 login() 每次签发新 token，故不能再断言 login 返回旧值，
+# 改为直接验证旧 token 仍可解析出 admin——比原断言更强。
+assert "tok-abc" in d["sessions"], f"迁移后旧 token 应保留: {d}"
+old = a.current("tok-abc")
+assert old and old.username == "admin", f"旧 token 应仍可用: {old}"
+new_tok = a.login("test-pwd-123")
+assert new_tok and new_tok != "tok-abc", "v2 每次登录签发新会话 token"
 try:
     a.login("wrong")
     raise SystemExit("错误密码竟然通过")
