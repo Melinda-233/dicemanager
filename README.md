@@ -1,7 +1,7 @@
 # DiceManager — 骰子管理器
 
 在 Linux 服务器上统一管理多个 QQ 骰子程序的 Web 管理器。支持 **4 个骰子端 + 6 个登录端**
-（共 11 份程序清单）的一键部署、登录承载、互联配置与进程守护，通过拓扑总览实时掌握
+（共 12 份程序清单）的一键部署、登录承载、互联配置与进程守护，通过拓扑总览实时掌握
 每个骰子的运行与连接状态。
 
 > 📖 **[使用手册](docs/使用手册.md)** —— 面向使用者的完整操作手册（Linux / Windows 两版通用，
@@ -10,7 +10,7 @@
 
 ## 支持的程序
 
-### 骰子端（5）
+### 骰子端（6）
 
 | 程序 | 架构 | 登录方式 | 互联说明 |
 |---|---|---|---|
@@ -19,6 +19,7 @@
 | 青果 [OlivaDice](https://github.com/OlivOS-Team/OlivaDiceCore) | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
 | [Dice!Next](https://github.com/DiceZone/Dice-Next) | 独立程序 | 外置登录端 | OneBot v11 适配器写入 config/adapters.json |
 | [NoneBot2](https://github.com/nonebot/nonebot2) | Python 项目 | 外置登录端 | 需 Python ≥3.10；管理器把依赖 `pip install --target` 到实例 `libs/`（`pip_project`），面板里可直接装卸插件；OneBot 连接写入 .env，**改配置需重启生效** |
+| [AstrBot](https://github.com/AstrBotDevs/AstrBot) | Python 项目 | 外置登录端 | 需 Python ≥3.12；同为 `pip_project`，但 OneBot 是**反向 WS**（AstrBot 监听 6199，登录端连它），配置写入 `data/cmd_config.json` |
 
 ### 登录端（6）
 
@@ -97,6 +98,7 @@ dice-manager/
 │   ├── sealdice.py     # serve.yaml 与 1.x 单文件 dice.yaml 双形态端点写入
 │   ├── shiki.py        # AutoLogin.yml / config.txt 双版本识别；删实例保留存档
 │   ├── nonebot2.py     # pip_project：--target 装依赖 + 插件装卸；.env 写 OneBot 连接；TOML 文本级合并
+│   ├── astrbot.py      # 继承 nonebot2 的 pip 机制；反向 WS（服务端）+ cmd_config.json 写连接 + astrbot init 前置
 │   ├── olivadice.py    # OPK 组合部署，缺核阻断 / 缺件告警
 │   ├── dicenext.py     # config/adapters.json 的 OneBot v11 适配器条目
 │   ├── napcat.py       # WebUI API 写配置 + 手动兜底 WriteResult

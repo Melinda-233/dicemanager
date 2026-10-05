@@ -615,6 +615,28 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
   （`[tool.nonebot]` 的 `plugin_dirs`/`builtins` 是 nonebot2 启动依赖，弄丢就跑不起来）。
   合并后**必须用 `tomllib.loads` 回读校验**——补引号漏一处就会写出裸串，解析直接失败。
 
+**D-2. 依赖型项目的第二个实例：AstrBot（`astrbot.py`，2026-10-05 新增）**
+
+同为 `pip_project`，`AstrBotAdapter` **继承 `NoneBot2Adapter`** 复用整套 pip
+机制（解释器探测 / `--target libs/` / 依赖快照 / 插件装卸），只覆写四处差异。
+这也给出D类扩展的通用做法：**先看能不能继承，再谈独立成类**。
+
+| 差异点 | nonebot2 | AstrBot | 为什么要紧 |
+|---|---|---|---|
+| OneBot 方向 | 正向 WS（**客户端**连登录端） | 反向 WS（**服务端**监听 6199） | 方向写反的表征是「部署成功但连不上」，用户无从查起。故 `write_conn_config` 对不支持的方向直接返回 `ok=False` + 指引，**不默默写坏** |
+| 配置载体 | `.env`（dotenv 文本） | `data/cmd_config.json` 的 `platform` 数组 | 字段名跟着上游漂移（`ws_reverse_host/port/token` 直接抄自 `aiocqhttp_platform_adapter.py`），解析不了要给手工指引 |
+| 启动前置 | 无 | 必须先 `astrbot init`（生成 `.astrbot` 标记 + `data/{config,plugins,temp}`） | 缺标记时 `astrbot run` 抛 "not a valid AstrBot root directory"。标记要在 `required_files` 里，否则部署判绿但起不来 |
+| 插件管理 | 面板装卸（靠 `pyproject.toml` 落声明） | **不提供** `python_deps` 能力 | AstrBot 没有 pyproject，继承来的面板点了会**静默不生效**（`merge_pyproject_deps` 找不到文件就 return）。故 `extra_manage_capabilities` 返回 `[]` |
+
+另两条 AstrBot 特有的：
+- **`_init_project` 必须先判 `_needs_init`**：upstream 的 `astrbot init` 会**重置
+  用户配置**（写一份新的 `cmd_config.json`），重复跑等于清空用户的 API key。
+- **启动命令要带 `--port`**：6185 是 AstrBot 写死在 `DEFAULT_CONFIG` 里的默认值，
+  不显式覆盖则两个实例必然撞车（`astrbot run --port N` → `DASHBOARD_PORT`）。
+
+⚠️ 这类「继承 + 覆写」的前提是**被继承的那份足够稳**。若日后 nonebot2 的
+pip 机制要大改，记得同步评估 AstrBot 是否需要跟着改——它的正确性依赖父类。
+
 **E. 可管理能力（横切机制，2026-10-05 新增）**
 
 「管理应用」不是一个新页面，而是**由适配器声明能力、前端按能力渲染**的机制。

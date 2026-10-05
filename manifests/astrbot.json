@@ -1,0 +1,53 @@
+// manifests/astrbot.json
+// AstrBot：Python 源码项目（pip 依赖 + data/cmd_config.json），复用 pip_project 策略
+// 与 nonebot2 的三处关键差异（详见 adapters/astrbot.py 模块 docstring）：
+//   ① OneBot 是**反向 WS 服务端**（AstrBot 监听，登录端连它）——与 nonebot2 相反
+//   ② 配置在 data/cmd_config.json 的 platform 数组里（不是 .env）
+//   ③ 启动前必须先 `astrbot init`（生成 .astrbot 标记与目录骨架）
+{
+  "name": "astrbot", "arch": "standalone", "multi_account": false,
+  "exe": "run.py",
+  "install_root": "/opt",
+
+  "login_type": "external",
+  "compatible_login": ["napcat", "llbot", "snowluma", "lagrange"],
+  "protocol": "ob11",
+
+  "delete_keeps_save": true,
+  // 存档面：配置、插件、知识库、用户数据都在 data/ 下（AstrBot 自己的目录约定）
+  "save_keep_dir": ["data"],
+  "data_paths": ["data"],
+
+  "download_strategy": "pip_project",
+  "prerequisite": "需 Python ≥3.12（上游 pyproject 锁 requires-python>=3.12；管理器会自行探测，找不到时请设置 DM_PYTHON）",
+
+  // AstrBot 从 PyPI 装（uv tool install astrbot / pip install astrbot），
+  // 无需骨架文件：入口脚本与配置文件都由适配器生成。
+  // 保留 skeleton 段是为了让部署流程统一走「取骨架 → 装依赖」两步（此处files 为空）
+  "skeleton": {
+    "repo": "AstrBotDevs/AstrBot",
+    "ref": "master",
+    "files": []
+  },
+  // ⚠️ 只列**直接依赖**里我们必须保证的部分。AstrBot 的依赖树很重
+  // （aiodocker / faiss 向量库 / python-ripgrep 等），全量装可达数百 MB。
+  // 这里依赖 AstrBot 本体把整棵树带进来，故只钉本体 + WebUI 必需项。
+  "dependencies": {
+    "astrbot": ">=4.0.0"
+  },
+  // AstrBot 不读requirements.txt，配置路径是它自己的 JSON
+  "config_path": "data/cmd_config.json",
+  // OneBot 反向 WS 监听端口（AstrBot 做服务端）；0 = 用清单默认值
+  "ob11_reverse_default_port": 6199,
+  "webui_default_port": 6185,
+  // 启动时用 --port 传给 CLI，覆盖 data/cmd_config.json 里的 dashboard.port
+  "webui_port_flag": "--port",
+
+  // 解释器候选：只列 3.12（上游 requires-python >=3.12）
+  "python_candidates": ["python3.12", "python3.13", "python3", "python"],
+  "python_requires": [3, 12],
+
+  // .astrbot 是 astrbot run 的启动前提（check_astrbot_root 判它是root 标记）
+  "required_files": ["run.py", ".astrbot", "libs"],
+  "approx_memory_mb": 400
+}

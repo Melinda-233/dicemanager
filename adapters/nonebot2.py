@@ -237,15 +237,23 @@ class NoneBot2Adapter(BaseAdapter):
             cmd += ["--index-url", DEFAULT_PIP_INDEX]
         cmd += list(targets)
         self._progress(instance, "pip", 0, len(targets))
-        # embeddable 的 ._pth 会无视 PYTHONPATH，故必须清空可能存在的干扰项
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("PYTHONHOME", "PYTHONPATH")}
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           env=self._clean_env())
         if r.returncode != 0:
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
             raise RuntimeError(
                 f"依赖安装失败（rc={r.returncode}）：\n" + "\n".join(tail))
         self._progress(instance, "pip", len(targets), len(targets))
+
+    def _clean_env(self) -> dict:
+        """子进程环境：剔除 PYTHONHOME / PYTHONPATH。
+
+        embeddable 的 `._pth` 会无视 PYTHONPATH，留着只会让排错时误以为
+        「路径已经注入了怎么还 import 不到」。剔掉后行为两版一致。
+        依赖隔离靠 `run.py` 里的 `sys.path.insert`，不靠环境变量。
+        """
+        return {k: v for k, v in os.environ.items()
+                if k not in ("PYTHONHOME", "PYTHONPATH")}
 
     def _progress(self, instance, stage: str, done: int, total: int) -> None:
         key = getattr(instance, "id", None)

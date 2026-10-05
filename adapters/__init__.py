@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from adapters import (
+    astrbot,
     dicenext,
     lagrange,
     lagrange_milky,
@@ -39,7 +40,8 @@ classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "lagrange": lagrange.LagrangeAdapter,
            "lagrange_milky": lagrange_milky.LagrangeMilkyAdapter,
            "yogurt": yogurt.YogurtAdapter,
-           "nonebot2": nonebot2.NoneBot2Adapter}
+           "nonebot2": nonebot2.NoneBot2Adapter,
+           "astrbot": astrbot.AstrBotAdapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out: dict[str, tuple[dict, type]] = {}
