@@ -427,9 +427,14 @@ def _merge_onebot_yaml(path: Path, port: int, token: str, ws_path: str) -> None:
 def _replace_or_append_plugin(text: str, key: str, block: str) -> str:
     """在 plugins: 下替换同名 key 的整段，没有则追加到 plugins: 末尾。
 
-    段边界靠"下一个**行首无缩进**的键"判定——Koishi 的插件名都是两空格缩进
-    （如 `  adapter-onebot:`），顶层键无缩进。找不到边界时退化为「替换到文件末」，
-    这在最后一个插件的情况下是正确的。
+    ⚠️ 段边界 = **与目标键同缩进**的下一个键，不是"顶层键"（踩过）：
+    Koishi 的插件段都缩进两空格，而 `group:xxx:` 这些分组键**也是**两空格，
+    与插件名同级。早期实现找的是"行首无缩进的键"，找不到就替换到文件末——
+    结果把 `group:adapter` 整段（含 ~adapter-discord、database-sqlite）
+    全部吃掉了，表现为「配置写完后别的插件凭空消失」。
+
+    正确判据：目标键缩进 2 → 边界是下一个**缩进恰好 2**的键
+    （`group:` 与其它插件都算）；目标键是缩进 0（顶层）→ 找下一个缩进 0 的键。
     """
     m = _PLUGINS_RE.search(text)
     if not m:
@@ -450,10 +455,10 @@ def _replace_or_append_plugin(text: str, key: str, block: str) -> str:
         # 追加到 body 末尾（保证与plugins: 之间有空行）
         add = "" if body_lines and not body_lines[-1].strip() else "\n"
         return f"{head}{body.rstrip()}\n{add}{block}{tail}"
-    # 段结束 = 下一个行首无缩进的非空行
+    # 段结束 = 下一个**同缩进**的键（含空行时以键行为准）
     seg_start = hit.start()
     indent = hit.group(1)
     seg_rest = body[hit.end():]
-    nxt2 = re.search(rf"^{indent[:-2]}[A-Za-z_][\w-]*:", seg_rest, re.M) if indent else None
+    nxt2 = re.search(rf"^{re.escape(indent)}[A-Za-z_~][\w-]*:", seg_rest, re.M)
     seg_end = hit.end() + (nxt2.start() if nxt2 else len(seg_rest))
     return f"{head}{body[:seg_start]}{block}{body[seg_end:]}{tail}"

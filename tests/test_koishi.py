@@ -449,6 +449,48 @@ def test_yaml_merge_appends_when_no_plugins_section(tmp_path):
     assert "token: ''" in y, "无 token 时也要写出来（覆盖旧值）"
 
 
+def test_yaml_merge_preserves_sibling_plugin_groups(tmp_path):
+    """回归（2026-10-05 真YAML 解析验证抓到的）：替换不能吃掉同级的其它段。
+
+    Koishi 的插件都缩进两空格，而 `group:xxx:` 这些**分组键也是两空格**
+    （与插件名同级）。早期实现把段边界判成「下一个行首无缩进的键」，找不到就
+    替换到文件末 —— 结果把 `group:adapter` 整段（含 ~adapter-discord、
+    ~adapter-qq、database-sqlite）全吃掉了。表现为「面板写完配置后别的插件
+    凭空消失」，且因为 YAML 仍合法，**不会报错**，只能靠对比发现。
+
+    正确判据：边界是**与目标键同缩进**的下一个键。
+    """
+    src = (
+        "plugins:\n"
+        "  group:server:\n"
+        "    server:\n"
+        "      port: 5140\n"
+        "  group:adapter:\n"
+        "    ~adapter-discord: {}\n"
+        "    ~adapter-qq: {}\n"
+        "    database-sqlite:\n"
+        "      path: data/koishi.db\n"
+        "  adapter-onebot:\n"
+        "    protocol: ws-reverse\n"
+        "    path: /onebot\n"
+        "    port: 1111\n"
+        "    token: |\n"
+        "      OLD\n"
+    )
+    out = tmp_path / "koishi.yml"
+    out.write_text(src, encoding="utf-8")
+    _merge_onebot_yaml(out, 2222, "NEW", "/onebot")
+    y = out.read_text("utf-8")
+    assert "group:adapter:" in y, "group:adapter 整段被吃掉了"
+    assert "~adapter-discord" in y
+    assert "~adapter-qq" in y
+    assert "data/koishi.db" in y
+    assert "group:server" in y
+    assert y.count("adapter-onebot:") == 1
+    assert "port: 2222" in y and "port: 1111" not in y
+    assert "NEW" in y and "OLD" not in y
+
+
 def test_yaml_merge_replaces_old_section_in_place(tmp_path):
     """重复写入是**替换**整段，不会留下上一次的残留键。"""
     out = tmp_path / "koishi.yml"
