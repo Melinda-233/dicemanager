@@ -132,18 +132,39 @@ class KoishiAdapter(BaseAdapter):
         """npm install（把清单声明的依赖一并装上）。
 
         分两步（先 `npm install` 装模板自带，再单独装清单声明项）会让
-        "哪些是必需"的语义变模糊，故统一交给npm 一次性装：
+        "哪些是必需"的语义变模糊，故统一交给 npm 一次性装：
         清单声明项先写进 package.json 的 dependencies，再 `npm install`。
+
+        ⚠️ npm 自身的超时/重试参数也要给足：默认 fetch-retries=2、timeout 5分钟，
+        网络差时某个包会反复重试把整个部署拖到半小时以上。参数含义：
+          - fetch-retries=4 / fetch-retry-maxtimeout=120s：单个包多试几次
+          - fetch-timeout=300000：单次请求 5 分钟上限（默认无上限，
+            **卡住的连接会让整体挂死**——本项目实测过）
         """
         node = self._require_node(instance)
         npm = self._npm(node)
         self._merge_deps_to_pkgjson(instance)
-        r = subprocess.run([npm, "install", "--no-audit", "--no-fund"],
-                           cwd=str(instance.dir), capture_output=True,
-                           text=True, timeout=NPM_TIMEOUT, env=self._clean_env())
+        cmd = [npm, "install", "--no-audit", "--no-fund",
+               "--fetch-retries=4", "--fetch-retry-maxtimeout=120000",
+               "--fetch-timeout=300000"]
+        try:
+            r = subprocess.run(cmd, cwd=str(instance.dir), capture_output=True,
+                               text=True, timeout=NPM_TIMEOUT,
+                               env=self._clean_env())
+        except subprocess.TimeoutExpired as e:
+            #裸的 TimeoutExpired 对用户毫无意义，给一句能行动的
+            raise RuntimeError(
+                f"npm install 超时（超过 {NPM_TIMEOUT // 60} 分钟仍未完成）。"
+                f"常见原因：网络慢或某个包的下载卡住。"
+                f"建议在服务器上先执行 "
+                f"`npm config set registry https://registry.npmmirror.com` "
+                f"换国内镜像源，然后重新部署该实例。") from e
         if r.returncode != 0:
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-8:]
-            raise RuntimeError("npm install 失败：\n" + "\n".join(tail))
+            raise RuntimeError("npm install 失败：\n" + "\n".join(tail)
+                               + "\n（网络问题可先设国内镜像源："
+                                 "npm config set registry "
+                                 "https://registry.npmmirror.com）")
 
     def _merge_deps_to_pkgjson(self, instance) -> None:
         """把清单 `dependencies` 并入 package.json 的 dependencies。

@@ -289,6 +289,51 @@ def test_scaffold_failure_surfaces_output(tmp_path, monkeypatch):
     assert "line0" not in str(e.value)
 
 
+def test_npm_install_timeout_gives_actionable_error(tmp_path, monkeypatch):
+    """npm install 超时要给可操作建议，不能抛裸的 TimeoutExpired。
+
+    TimeoutExpired 里只有"command timed out after 1800 seconds"，
+    用户看不出该做什么（换镜像源？重试？）。实测过卡死场景，故必须有这句。
+    """
+    import subprocess
+    d = tmp_path / "kb-timeout"
+    d.mkdir()
+    ad = _ad()
+    ad._require_node = lambda i: NODE                           # noqa: SLF001
+    ad._npm = lambda node: "npm"                                # noqa: SLF001
+
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1800)
+
+    monkeypatch.setattr("subprocess.run", boom)
+    with pytest.raises(RuntimeError) as e:
+        ad._ensure_deps(_inst(d))                              # noqa: SLF001
+    msg = str(e.value)
+    assert "超时" in msg
+    assert "npmmirror" in msg, "超时提示要含换镜像源的可操作建议"
+
+
+def test_npm_install_passes_retry_and_timeout_flags(tmp_path, monkeypatch):
+    """npm 的 fetch 超时/重试参数要给足。
+
+    默认 fetch-timeout 无上限，网络卡住时整个部署会挂死到面板超时
+    （本项目 E2E 实测：单个包卡住 → 18 分钟无进展）。
+    """
+    d = tmp_path / "kb-flags"
+    d.mkdir()
+    ad = _ad()
+    ad._require_node = lambda i: NODE                           # noqa: SLF001
+    ad._npm = lambda node: "npm"                                # noqa: SLF001
+    calls: list = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: (
+        calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    ad._ensure_deps(_inst(d))                                  # noqa: SLF001
+    assert calls, "应发起过 npm install"
+    cmd = " ".join(calls[0])
+    assert "--fetch-retries=4" in cmd
+    assert "--fetch-timeout=300000" in cmd, "缺单请求超时上限 → 卡死会挂住整体"
+
+
 # ---------- package.json 依赖合并 ----------
 
 def test_merge_deps_writes_missing_only(tmp_path):
