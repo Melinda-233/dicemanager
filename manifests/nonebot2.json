@@ -1,0 +1,55 @@
+// manifests/nonebot2.json
+// NoneBot2：Python 源码项目（pip 依赖 + .env），上游在 PyPI 而非 GitHub Release
+// → 无可下载的程序包，走 pip_project 策略：取骨架 → pip 装依赖到 libs/ → 写 .env
+// 依赖装在`<实例>/libs`（pip install --target），入口脚本 sys.path.insert 引入
+{
+  "name": "nonebot2", "arch": "standalone", "multi_account": false,
+  "exe": "bot.py",
+  "install_root": "/opt",
+
+  "login_type": "external",
+  "compatible_login": ["napcat", "llbot", "snowluma", "lagrange"],
+  "protocol": "ob11",
+
+  "delete_keeps_save": true,
+  "save_keep_dir": ["plugins", ".env"],
+  "data_paths": ["plugins", ".env", "data"],
+
+  "download_strategy": "pip_project",
+  "prerequisite": "需Python ≥3.10（管理器会自行探测；找不到时请安装或设置 DM_PYTHON 环境变量）",
+
+  // 骨架来源：NoneBot2 官方模板。逐文件 raw 拉取，免打包 zip 与解压后目录上移的麻烦
+  "skeleton": {
+    "repo": "nonebot/nonebot2-template",
+    "ref": "main",
+    "files": ["pyproject.toml"]
+  },
+  // 骨架 pyproject 里可能未列全，这里显式声明要装的运行时依赖（版本下限随实测校准）
+  // fastapi/uvicorn/websockets 是 DRIVER=~fastapi+~websockets 的必需项：
+  // 基础 nonebot2 不含它们，缺任一则实例一起来就抛
+  // ImportError: Please install FastAPI first（2026-10-05 实测），故显式声明。
+  // 刻意不写 nonebot2[fastapi]——extras 键进 pyproject.toml 会被 nb run 二次解析
+  "dependencies": {
+    "nonebot2": ">=2.4.0",
+    "fastapi": ">=0.110",
+    "uvicorn": "",
+    "websockets": "",
+    "nonebot-adapter-onebot": ">=2.4.0",
+    "onedice": ""
+  },
+  "requirements_file": "requirements.txt",
+  "config_path": ".env",
+
+  // 解释器候选：按序探测，第一个能**真正响应解释器请求**的即采用。
+  // Windows 侧另有管理器自带的 embeddable Python（core/interpreter.bundled_interpreters），
+  // 优先于本列表——用户双击即用，不需要自装Python。
+  // ⚠️ 探测不是「rc==0 就算」：面板自己的 dicemanager.exe 会无视 argv 直接启动
+  // 服务且 rc=0（2026-10-05 实测），朴素判据会把它误判成解释器。详见 core/interpreter.py。
+  "python_candidates": ["python3.12", "python3.11", "python3.10", "python3", "python"],
+  // 版本下限：探测通过后再核对一次，不够时给可操作报错（而非装到一半才炸）
+  "python_requires": [3, 10],
+
+  // libs/ 是 pip --target 的依赖目录（**不是 venv**，见 adapters/nonebot2._libs_dir 的注释）
+  "required_files": ["bot.py", "pyproject.toml", "libs"],
+  "approx_memory_mb": 120
+}

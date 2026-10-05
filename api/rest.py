@@ -506,6 +506,14 @@ def upgrade_check(inst_id: str, user: Annotated[CurrentUser | None, Depends(curr
     if strat == "direct":
         return {"supported": False,
                 "message": "该程序为固定直链下载，无法判定版本；可直接点「升级」用最新包覆盖"}
+    if strat == "pip_project":
+        # 上游在 PyPI 而非 GitHub Release：没有 release tag 可比对，
+        # 但「升级」动作本身可用（NoneBot2Adapter.upgrade 走 pip install -U）。
+        # 故此处不返回 supported=False——否则前端会连升级入口一起藏掉。
+        return {"supported": True, "current": rec.version, "latest": None,
+                "up_to_date": False,
+                "message": "该程序为 Python 依赖项目，版本以已装依赖为准；"
+                           "点「升级」将执行 pip install -U 升级全部依赖"}
     try:
         latest = adapter.latest_tag()
     except Exception as e:
@@ -610,6 +618,109 @@ async def upload_backup(inst_id: str, request: Request,
                     "conn_rewrite_error": conn_rewrite_error, **info}
     finally:
         tmp.unlink(missing_ok=True)
+
+# ---------- 管理应用（总览页「管理应用」面板）----------
+
+def _manage_adapter(inst):
+    """取实例的管理适配器。
+
+    能力判定在适配器里（manage_capabilities），不在这里 if dice == ... ——
+    程序形态差异是清单/适配器的事，前端与 API 都不该按程序名分支。
+    """
+    manifest, cls = ctx.adapters[inst.dice]
+    return cls(manifest)
+
+
+@router.get("/instances/{inst_id}/manage")
+def instance_manage(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """该实例能提供哪些管理入口 + 每个入口的当前数据。
+
+    前端「管理应用」按钮点开就是这份返回：有 WebUI 的程序给一条打开入口，
+    依赖型程序（NoneBot2）给插件列表。两者可并存，故是数组不是单对象。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    caps = ad.manage_capabilities(inst)
+    data: dict = {}
+    for c in caps:
+        if c["kind"] == "webui":
+            # 实际端口优先于分配端口：占用时程序常自动 +1 换端口
+            data["webui"] = {
+                "port": inst.actual_port or (inst.allocated_ports or {}).get("webui"),
+                "token": inst.webui_token,
+            }
+        elif c["kind"] == "python_deps":
+            data["python_deps"] = ad.list_plugins(inst)
+    return {"ok": True, "capabilities": caps, "data": data}
+
+
+@router.post("/instances/{inst_id}/plugins/install")
+async def instance_plugin_install(inst_id: str, body: dict,
+                            user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """装一个 pip 插件（pip install --target libs + 同步 pyproject）。
+
+    **同步 pyproject 是必须的**，否则 `nb run` 下次按 pyproject 同步依赖时
+    会把刚装的插件悄悄移除（用户视角：装完重启就没了）。
+
+    装依赖要跑网络（可能几分钟），放线程池避免阻塞事件循环。
+    实例须停机：正在跑的进程 import 着 libs/ 里的 .py，替换文件会得到
+    半新半旧的模块状态。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    if not hasattr(ad, "install_package"):
+        raise HTTPException(400, "该程序不支持插件安装")
+    if ctx.pm.is_alive(inst_id):
+        raise HTTPException(400, "请先停止该实例再安装插件（运行中替换依赖文件不安全）")
+    try:
+        ver = await asyncio.to_thread(ad.install_package, inst, body.get("spec", ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"插件安装失败: {e}") from e
+    return {"ok": True, "version": ver, "data": ad.list_plugins(inst)}
+
+
+@router.post("/instances/{inst_id}/plugins/uninstall")
+async def instance_plugin_uninstall(inst_id: str, body: dict,
+                              user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """卸载一个 pip 插件（按 dist-info 的 RECORD 删文件 + 从 pyproject 移除声明）。"""
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    if not hasattr(ad, "uninstall_package"):
+        raise HTTPException(400, "该程序不支持插件卸载")
+    if ctx.pm.is_alive(inst_id):
+        raise HTTPException(400, "请先停止该实例再卸载插件")
+    try:
+        ver = await asyncio.to_thread(ad.uninstall_package, inst, body.get("name", ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"插件卸载失败: {e}") from e
+    return {"ok": True, "version": ver, "data": ad.list_plugins(inst)}
+
+
+@router.post("/instances/{inst_id}/plugins/sync")
+async def instance_plugin_sync(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """把 libs/ 里现有的包全量同步进 pyproject.toml。
+
+    给「用户自己在实例目录 pip install --target libs 装了插件」的场景兜底：
+    缺这一步，`nb run` 下次同步依赖会把它们移除。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    if not hasattr(ad, "sync_pyproject"):
+        raise HTTPException(400, "该程序不支持该操作")
+    try:
+        path = await asyncio.to_thread(ad.sync_pyproject, inst)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"ok": True, "path": path, "data": ad.list_plugins(inst)}
+
 
 # 必须注册在所有具体的 POST 子路由（/backup、/webui、/metrics…）之后：否则 {op} 会按
 # 注册顺序抢先匹配到 backup 等字面路径（同源坑见 /packages/unused、/exports/prune）。

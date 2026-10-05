@@ -232,6 +232,13 @@ class BaseAdapter(ABC):
                     self._last_tag = tag
                     return a["browser_download_url"], tag
             raise RuntimeError(f"release 未找到匹配资产（pattern={pattern}, suffix={suffix}）")
+        if strat == "pip_project":
+            # 无可下载的程序包（上游在 PyPI）：部署走适配器覆写的 deploy()，
+            # 升级语义是 pip install -U 而非换包，故到不了这里。留这条分支是为了
+            # 将来若有调用方误用时报出人话，而不是掉到末尾的「未知下载策略」。
+            raise RuntimeError(
+                "该程序为 Python 依赖项目（pip_project），无可下载的程序包；"
+                "依赖升级请用「管理应用」或 pip install -U")
         raise ValueError(f"未知下载策略: {strat}")
 
     def verify_required(self, instance) -> list:
@@ -240,11 +247,12 @@ class BaseAdapter(ABC):
 
     # ---------- 升级通道 ----------
     def latest_tag(self) -> str | None:
-        """上游最新版本号；无法判定（直链固定 URL / manual）返回 None。"""
+        """上游最新版本号；无法判定（直链固定 URL / manual / pip_project）返回 None。"""
         strat = self.m.get("download_strategy", "direct")
-        if strat == "manual":
-            return None
-        if strat == "direct":
+        if strat in ("manual", "direct", "pip_project"):
+            # pip_project 无上游 release 概念，版本基线是「已装依赖快照」
+            # （由适配器自己 freeze，见 NoneBot2Adapter._freeze_baseline），
+            # 不走 release tag 比对，升级语义是 pip install -U 而非换包。
             return None
         _, tag = self._resolve_release()
         return tag
@@ -299,14 +307,44 @@ class BaseAdapter(ABC):
         监听（_ensure_webui_binding），再尽力经 ufw 放行端口。任何失败都不
         阻断启动；返回给前端的提示，无动作时 None。"""
         self._ensure_webui_binding(instance)
-        port = ((instance.allocated_ports or {}).get("webui")
-                or self.m.get("webui_default_port"))
-        return open_port(port)
+        return open_port(self._webui_port(instance))
 
     def _ensure_webui_binding(self, instance) -> None:
         """有 WebUI 监听配置文件的适配器覆写：把回环绑定放开为 0.0.0.0。
         默认无配置文件可改（如 Lagrange 无 WebUI）。具体实现复用 _open_bind_host。"""
         return None
+
+    # ---------- 管理应用（总览页「管理应用」按钮的后端）----------
+    def manage_capabilities(self, instance) -> list[dict]:
+        """该实例能提供哪些「管理」入口，供前端渲染「管理应用」面板。
+
+        为什么要有这一层而不是前端按dice 名硬编码：程序形态差异很大——
+        有的自带 WebUI（NapCat/LLBot 扫码、OlivaDice 配置），有的什么都没有
+        （NoneBot2 只有一堆 pip 依赖可管）。让前端写 if (dice === 'nonebot2')
+        就等于把后端契约漏进前端，改清单就会漏改前端。
+
+        默认实现：只报一条 `webui`（端口可推导时）。适配器有额外能力就覆写
+        并 `super()` 追加——这样"有 WebUI"这条永远由本方法统一判定，
+        不会因某个适配器覆写而丢掉 WebUI 入口。
+        """
+        caps: list[dict] = []
+        if self._webui_port(instance):
+            caps.append({"kind": "webui", "label": "打开 WebUI"})
+        caps.extend(self.extra_manage_capabilities(instance))
+        return caps
+
+    def extra_manage_capabilities(self, instance) -> list[dict]:
+        """本程序特有的管理能力（默认无）。子类覆写时记得调super()."""
+        return []
+
+    def _webui_port(self, instance) -> int | None:
+        """本实例的 WebUI 端口；无 WebUI 返回 None。
+
+        实际端口优先于清单默认值：端口被占时程序常自动 +1 换端口，
+        用默认值会打不开（这类"点开是空白页"的坑之前踩过）。
+        """
+        return ((instance.allocated_ports or {}).get("webui")
+                or self.m.get("webui_default_port"))
 
     @staticmethod
     def _open_bind_host(cfg: Path, *, host_key: str, port: int | None = None,

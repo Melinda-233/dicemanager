@@ -1,0 +1,53 @@
+// manifests/nonebot2_win.json
+// Windows 版：与 server 版同构，差异仅在解释器候选（python.exe）与目录形态
+{
+  "name": "nonebot2", "arch": "standalone", "multi_account": false,
+  "exe": "bot.py",
+  "install_root": "%LOCALAPPDATA%\\DiceManager",
+
+  "login_type": "external",
+  "compatible_login": ["napcat", "llbot", "snowluma", "lagrange"],
+  "protocol": "ob11",
+
+  "delete_keeps_save": true,
+  "save_keep_dir": ["plugins", ".env"],
+  "data_paths": ["plugins", ".env", "data"],
+  "platform": ["win32"],
+
+  "download_strategy": "pip_project",
+  "prerequisite": "需 Python ≥3.10（管理器会自行探测；找不到时请安装 Python 并勾选 Add to PATH，或设置 DM_PYTHON 指向 python.exe）",
+
+  "skeleton": {
+    "repo": "nonebot/nonebot2-template",
+    "ref": "main",
+    "files": ["pyproject.toml"]
+  },
+  // fastapi/uvicorn/websockets 是 DRIVER=~fastapi+~websockets 的必需项：
+  // 基础 nonebot2 不含它们，缺任一则实例一起来就抛
+  // ImportError: Please install FastAPI first（2026-10-05 实测），故显式声明。
+  // 刻意不写 nonebot2[fastapi]——extras 键进 pyproject.toml 会被 nb run 二次解析
+  "dependencies": {
+    "nonebot2": ">=2.4.0",
+    "fastapi": ">=0.110",
+    "uvicorn": "",
+    "websockets": "",
+    "nonebot-adapter-onebot": ">=2.4.0",
+    "onedice": ""
+  },
+  "requirements_file": "requirements.txt",
+  "config_path": ".env",
+
+  // 解释器候选：按序探测，第一个能**真正响应解释器请求**的即采用。
+  // 优先用管理器自带的 embeddable Python（core/interpreter.bundled_interpreters，
+  // 位于 exe 同级 runtime/python/），用户双击即用、无需自装。
+  // ⚠️ 探测不是「rc==0 就算」：面板自己的 dicemanager.exe 会无视 argv 直接启动
+  // 服务且 rc=0（2026-10-05 实测），朴素判据会把它误判成解释器。详见 core/interpreter.py。
+  // ⚠️ 不列 python3.exe —— embeddable 里没有这个别名。
+  "python_candidates": ["python", "py"],
+  // 版本下限：探测通过后再核对一次，不够时给可操作报错（而非装到一半才炸）
+  "python_requires": [3, 10],
+
+  // libs/ 是 pip --target 的依赖目录（**不是 venv**，见 adapters/nonebot2._libs_dir 的注释）
+  "required_files": ["bot.py", "pyproject.toml", "libs"],
+  "approx_memory_mb": 120
+}

@@ -103,6 +103,12 @@ paths = [getattr(r, "path", "") for r in app.routes]
 assert "/api/instances/{inst_id}/backup" in paths, paths
 assert paths.index("/api/instances/{inst_id}/backup") \
     < paths.index("/api/instances/{inst_id}/{op}"), "backup 路由被 {op} 通配抢先"
-print("[6] 路由顺序（backup 先于 {op}）OK")
+# 新增的三个子路径同样会被 {op} 通配抢先匹配，逐个核对顺序
+for _sub in ("plugins/install", "plugins/uninstall", "plugins/sync"):
+    _p = f"/api/instances/{{inst_id}}/{_sub}"
+    assert _p in paths, f"{_sub} 路由缺失: {paths}"
+    assert paths.index(_p) < paths.index("/api/instances/{inst_id}/{op}"), \
+        f"{_sub} 被 {{op}} 通配抢先"
+print("[6] 路由顺序（backup 与 plugins/* 先于 {op}）OK")
 
 print("SMOKE_ALL_OK")

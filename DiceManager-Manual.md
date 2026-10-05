@@ -383,6 +383,12 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 3. **适配器实例是共享单例，禁止写 `self` 保存请求态。**
 4. **manifest 里的字符串必须单行。** JSON 不支持相邻字符串字面量拼接，写成两行会让整个 manifest 解析失败 → `load_registry` 抛错 → **服务启动即挂**。
 5. **新增 `download_strategy` 必须同步 `adapters/__init__.py::ALLOWED_STRATEGY`**，否则同样启动即挂。单测直接实例化适配器会绕过这道校验，所以务必用 `load_registry` 做端到端加载用例兜底。
+6. **（2026-10-05 起）唯一允许的例外：适配器可覆写 `deploy()`。**
+   `base.deploy()` 是"下载压缩包 → 解压 → 校验"的纯解压语义，无法表达"装依赖"这类动作。
+   已有两个先例：`OlivaDiceAdapter`（OPK 组合部署）、`NoneBot2Adapter`（建 venv + pip 装依赖）。
+   覆写 `deploy()` 时**必须自行保证幂等**——判据不能用"目录存在"（目录可能是上次中断的残留），
+   而要用"程序真的装好了"的标志（NoneBot2 用 venv 解释器是否存在）。判据错会导致
+   断点续跑的用户看到"目录冲突"弹窗，而真实原因无处可查。
 
 ### 6.2 manifest 字段全表
 
@@ -408,6 +414,7 @@ manifest 是标准 JSON，但**允许整行 `//` 注释**（加载时按行剥�
 | `resolve_latest_via_api` | 用 `release_page` 推出 `owner/repo`，调 GitHub API 取 latest release；`asset_name_pattern`（正则）优先精确选资产，否则退回 `asset_suffix`（默认 `.zip`）后缀匹配 |
 | `manual` | 上游不提供可直接运行的程序包，本地无包时给出明确引导（附 `prerequisite` 文案），要求用户先上传离线包 |
 | `olivos_bundle_or_opk` | Olivadice 专用：`opk_modules` + `download_opk_pattern` 逐个拉 `.opk` |
+| `pip_project` | NoneBot2 专用：上游在 PyPI 而非 GitHub Release，没有可下载的程序包。`skeleton`（repo/ref/files）逐文件拉骨架 → 建 venv → `pip install` 装 `dependencies` → 依赖同步进 `pyproject.toml` |
 
 > 走 GitHub 的请求统一经过 `mirror_url()`，受 `DM_GITHUB_MIRROR` 控制。
 
@@ -430,6 +437,10 @@ manifest 是标准 JSON，但**允许整行 `//` 注释**（加载时按行剥�
 | `delete_keeps_save` | 前端 | 为真时删除确认框文案提示「建议保留存档目录」，并传 `keep_save=true` |
 | `approx_memory_mb` | 前端 | 下拉里的内存预估，纯展示 |
 | `opk_dir` / `opk_modules` / `download_opk_pattern` | Olivadice 适配器 | OPK 组合部署专用 |
+| `skeleton` | NoneBot2 适配器 | `{repo, ref, files[]}`，逐文件从 raw.githubusercontent 拉骨架（走 `mirror_url`） |
+| `dependencies` | NoneBot2 适配器 | `{包名: 版本约束}`，装进 venv 并同步进 `pyproject.toml` 的 `project.dependencies` |
+| `python_candidates` | NoneBot2 适配器 | 解释器候选，按序探测第一个能跑通 `-V` 的；`DM_PYTHON` 优先于它 |
+| `requirements_file` | NoneBot2 适配器 | 骨架内的依赖清单路径（供用户手工 `pip install -r` 排查用） |
 
 #### 文档性字段（当前无代码消费，保留备用）
 
@@ -493,6 +504,8 @@ def write_conn_config(self, instance, mode: str, direction: str,
 | `get_conn_token(instance) -> str \| None` | **不存在该属性** | 登录端自己生成 OneBot token 时（SnowLuma）。这是**鸭子类型探测**（`hasattr`），不是基类方法 |
 | `extract_qrcode(line) -> dict \| None` | 正则匹配 `data:image/png;base64,` 或含 `qrcode` 的 URL | 二维码形态不同时 |
 | `extract_verify(line) -> dict \| None` | 匹配 `ticket url: <url>` | 滑块验证的日志锚点不同时 |
+| `extra_manage_capabilities(instance) -> list[dict]` | `[]` | 本程序有 WebUI 之外的可管理对象时（NoneBot2 的插件/依赖）。⚠️ 覆写时**不要**自己判 WebUI 有无——那由 `manage_capabilities` 统一判定，否则 WebUI 入口会被这行覆写吞掉 |
+| `list_plugins / install_package / uninstall_package` | **不存在这三个方法** | 提供可安装的插件/依赖时。⚠️ 这是**鸭子类型探测**（`hasattr`）：API 层靠 `hasattr` 决定是否开放对应端点，不实现就没有该功能 |
 
 #### 基类可复用的工具
 
@@ -518,7 +531,7 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
 `core/process.py` 在尾部线程与一次性命令两条路径上都按 `cb(seq, line)` 调用。回调抛出的任何异常都会被静默吞掉（`except Exception: pass`），所以签名写错不会报错，只会「什么都不发生」。
 `ring` 的结构同样是 `(seq, line)` 对，`seq` 单调递增、全局唯一，用于回放与实时的去重。
 
-### 6.4 三种形态的适配器要点
+### 6.4 四种形态的适配器要点
 
 拿到一个新程序，先判断它属于哪一类，再照葫芦画瓢：
 
@@ -549,6 +562,89 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
 - 部署流程特殊，通常覆盖 `deploy()`；缺核心模块要**阻断**，缺子模块只**告警**
 - ⚠️ 告警写进 `instance.warnings` 后**必须由调用方显式落盘**（`wizard.run_step` 第 2 步会做）。适配器里改的只是副本——历史上有过「告警改了临时副本、从未落盘、总览永远看不到」的 bug
 
+**D. 依赖型项目**（`download_strategy: pip_project`，范例 `nonebot2.py`，2026-10-05 新增）
+
+上游在 PyPI 而非 GitHub Release，**没有可下载的程序包**，形态是「源码 + 依赖」。
+这类适配器与 A/B/C 的差异贯穿部署、启动、配置、升级四条链路：
+
+- **部署**：覆写 `deploy()`，语义是「拉骨架 → 装依赖到 `libs/` → 生成入口」。
+  幂等判据**不能用目录是否存在**——目录可能只是上次中断的残留或用户手放的骨架，
+  那样会让断点续跑的用户看到「目录冲突」弹窗而真实原因（依赖没装完）无处可查。
+  正确判据是**清单声明的依赖是否全部装上**（扫 `libs/*.dist-info`），
+  两个条件（`_deps_installed()` 与 `verify_required()`）合起来才算装好。
+- **依赖隔离用 `pip install --target`，不是 venv**（2026-10-05 实测后定的，两版统一）。
+  原设计是每实例 `python -m venv`，在 Windows 版上**根本走不通**：内置的
+  embeddable Python 不带 venv 模块，且 `pip install venv` 也失败——venv 是标准库
+  模块，PyPI 上没有，换版本也解决不了。改为装进 `<实例>/libs`，入口脚本
+  `sys.path.insert` 引入。
+  - 之所以不能改用 `PYTHONPATH`：embeddable 的 `._pth` 存在时**无视环境变量**
+    （实测），只有改 `sys.path` 一条路。故入口里那句 `sys.path.insert` 是承重墙，
+    不可省、也不可改成写死绝对路径（实例目录会被备份还原/换盘/改名）。
+  - 入口路径必须与 `_instance_python`（装依赖的解释器）**同源**，否则二进制包
+    （cryptography 之类）会「用A 解释器装、用 B 解释器跑」，import 时报找不到 DLL。
+  - 已知副作用：`libs/` 里没有 `.venv/bin` 的激活机制，也**没有 console_scripts
+    入口**。D 类程序若需要带 CLI 的依赖，只能 `python -m 包名` 或自写包装脚本。
+- **`required_files` 里的目录项要覆写 `verify_required`**：`.exists()` 对空目录
+  返回 True，`pip` 装到一半失败留下的空 `libs/` 会被判成「装好了」，deploy 误判
+  幂等返回 ok，实例一启动就 `ModuleNotFoundError`。
+- **版本基线**：没有 release tag，改用「已装依赖快照」（`libs/*.dist-info` 目录名
+  排序后哈希，形如 `pip:ab12cd34`）。⚠️ **不能用 `pip list`**——那列的是解释器
+  自己 site-packages 里的包，与 `libs/` 毫无关系。⚠️ 覆写了 `deploy()` 就**必须
+  自己写 `DEPLOY_VERSION[instance.id]`**（`_publish_baseline`），否则 wizard 取不到
+  基线，实例 `version` 永远为 None。
+- **配置**：`config_path` 指向 dotenv（`.env`），用 `atomic_write_dotenv`
+  （保留行序与注释，值变才重写该行）。**不要**复用 `atomic_write_json`——
+  dotenv 的引号语义、注释、重复键都与 JSON 不同。
+- **升级**：覆写 `upgrade()` 为 `pip install -U --target <libs>`。⚠️ 升完必须把
+  已装版本抬成 `pyproject.toml` 里的新下限，否则 `nb run` 依 pyproject 同步依赖时
+  会把刚升的包降回去（用户视角：「点了升级，一重启又变回旧版」）。版本替换用
+  `bump_pyproject_versions`，它与 `merge_pyproject_deps` 共用 `_locate_deps` 定位。
+- **解释器探测不是 `rc==0 就算`**：PyInstaller `--onefile` 打出的 `dicemanager.exe`
+  会**完全无视 argv**——传 `-V` / `-c` 给它一律启动整个面板且 rc=0，朴素判据会把它
+  误判成合法解释器。三重校验（排除 frozen 形态 + 版本 banner 正则 + `-c` 求值自检）
+  统一放在 `core/interpreter.py`，适配器与打包流程共用一处真相。
+- **`latest_tag()` 语义**：无上游 tag，返回 `None`；`base.latest_tag` 已把
+  `pip_project` 归入这一类。`/upgrade-check` 对它返回 `supported: True` +
+  `latest: None`——返回 `False` 会让前端把升级入口一起藏掉。
+- **依赖声明**：`DRIVER=~fastapi+~websockets` 所需的 `fastapi`/`uvicorn`/`websockets`
+  必须在清单里显式声明。少装的报错发生在**实例首次启动**（`ImportError: Please
+  install FastAPI first`），部署阶段一路绿灯——只有清单测试拦得住。
+  刻意不要写 `nonebot2[fastapi]`：extras 键进 `pyproject.toml` 会被 `nb run` 二次解析。
+- **文本级配置编辑**：项目未引入 TOML 写库（`tomllib` 只读），故 `pyproject.toml`
+  只能文本定位改。只改 `[project]` 段内的 `dependencies` 一处，其余字节原样保留
+  （`[tool.nonebot]` 的 `plugin_dirs`/`builtins` 是 nonebot2 启动依赖，弄丢就跑不起来）。
+  合并后**必须用 `tomllib.loads` 回读校验**——补引号漏一处就会写出裸串，解析直接失败。
+
+**E. 可管理能力（横切机制，2026-10-05 新增）**
+
+「管理应用」不是一个新页面，而是**由适配器声明能力、前端按能力渲染**的机制。
+加这个机制的原因：程序形态差异太大——有的自带 WebUI（扫码、配置），
+有的什么都没有、只有一堆 pip 依赖可管。若让前端 `if (dice === 'nonebot2')`，
+就把后端契约漏进了前端，改清单就会漏改前端。
+
+契约只有两个方法，都在 `BaseAdapter` 上：
+
+```python
+def manage_capabilities(self, instance) -> list[dict]:
+    """基类实现：有 WebUI 端口就报一条 {"kind": "webui"}，
+    再 extend(self.extra_manage_capabilities(instance))。"""
+```
+
+- 能力条目是 `{"kind", "label", ...}` 的 dict，`kind` 是前端分支依据。
+  已定义两种：`webui`（前端开子窗口）、`python_deps`（前端渲染依赖与插件面板）。
+- **有 `webui_default_port` 的程序不需要改任何代码**——基类会自动产出该能力。
+  收益是「加新能力形态时只动适配器与前端，不动已有程序」。
+- 插件/依赖的增删改用**鸭子类型**：API 层 `hasattr(ad, "install_package")`
+  决定是否开放端点。新增一种可安装对象（如「数据集」「模型」）时，
+  实现同名方法即可，**不需要在 `api/rest.py` 里加 `if dice == ...`**。
+- 卸载**不能靠 `pip uninstall`**：pip 不认 `--target` 装进去的包（会报
+  "not installed"），只能按 `dist-info/RECORD` 逐文件删，并做目录穿越校验
+  （RECORD 是包作者写的，不可全信）。
+
+⚠️ 端点必须注册在 `/instances/{inst_id}/{op}` **之前**（同源坑：`/packages/unused`）。
+⚠️ 装卸依赖要跑网络，必须 `asyncio.to_thread` 包裹，否则阻塞事件循环。
+⚠️ 运行中的实例要拒绝装卸（换 `libs/` 里的 `.py` 会让已 import 的模块处于半新半旧状态）。
+
 ### 6.5 契约测试建议
 
 新增/修改适配模块后，至少覆盖：
@@ -558,8 +654,26 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
 3. **部署路径**：本地包优先、缺必备文件要报错、`manual` 策略要给出引导。
 4. **配置写入**：用临时目录造出目标配置文件，写入后回读断言结构；重复写要幂等（按名去重）。
 5. **日志解析**：把真实日志粘贴进测试，断言 `get_actual_port` / `detect_account` 等能命中。
+6. **文本级配置编辑**（仅 D 类）：`.env` 与 `pyproject.toml` 改完要用
+   `read_dotenv` / `tomllib.loads` **回读校验**，并断言幂等（同一份输入改两次，
+   第二次文件字节不变）。这类代码的 bug 不在语法而在「改完之后语义对不对」，
+   而 `[tool.nonebot]` 段必须逐字保留——有专门的参数化用例覆盖多行数组、顶格单行
+   数组、带行尾注释三种形态。见 `tests/test_nonebot2.py`。
+7. **隔离方案的可执行性**（仅 D 类）：只测「命令行拼对了」不够，必须断言
+   **改完之后语义真的成立**——入口脚本里有 `sys.path.insert` 且指向依赖目录、
+   生成的代码能 `compile()` 过、路径是现算的而非写死的。
+   这类方案性约束没有运行时反馈，只能靠测试钉死。
+8. **端到端真跑**（D 类改动后手动跑，不进 CI）：`.workbuddy/e2e_libs_check.py`
+   会真跑一次 `pip install --target`、真把 `bot.py` 拉起来看进程是否存活，
+   并验证「给/不给 `libs` 的 import 结果相反」。
+   单测里全是 monkeypatch，跑得再全也证明不了 `--target` 这条路真的通——
+   实测正是它推翻了原先的 venv 方案。
 
-参考现有测试：`tests/test_pkg_deploy.py`、`tests/test_shiki_offline.py`、`tests/test_snowluma_dicenext.py`、`tests/test_patch_regress.py`。
+9. **管理能力**（E 类改动后）：必须有一条**回归**断言「有 WebUI 的程序
+   （NapCat 等）仍能拿到 `webui` 能力」——「打开 WebUI」改成「管理应用」是加法
+   不是替换，丢了这条等于用新功能的名义砍了旧功能。见 `tests/test_manage_app.py`。
+
+参考现有测试：`tests/test_pkg_deploy.py`、`tests/test_shiki_offline.py`、`tests/test_snowluma_dicenext.py`、`tests/test_patch_regress.py`、`tests/test_nonebot2.py`、`tests/test_manage_app.py`。
 
 ---
 

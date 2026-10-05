@@ -123,6 +123,14 @@ export const linkInstance = (id, payload) =>
   })
 // WebUI 直连信息：port 可能与分配端口不同（占用时程序自动 +1），token 来自启动日志回读
 export const instanceWebui = id => api(`/instances/${id}/webui`)
+// 管理应用：后端按适配器能力返回（webui / python_deps），前端不按程序名分支
+export const instanceManage = id => api(`/instances/${id}/manage`)
+export const installPackage = (id, spec) =>
+  api(`/instances/${id}/plugins/install`, { method: 'POST', body: { spec } })
+export const uninstallPackage = (id, name) =>
+  api(`/instances/${id}/plugins/uninstall`, { method: 'POST', body: { name } })
+export const syncPyproject = id =>
+  api(`/instances/${id}/plugins/sync`, { method: 'POST' })
 // 资源曲线：[时间戳, 内存MB, CPU%] 采样点，默认 24h
 export const instanceMetrics = (id, hours = 24) =>
   api(`/instances/${id}/metrics?hours=${hours}`)

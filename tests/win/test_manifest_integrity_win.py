@@ -69,11 +69,21 @@ def test_platform_field_includes_win32():
 
 
 def test_exe_has_windows_extension():
-    """Windows 版 exe 必须带 .exe / .bat / .cmd 后缀（防止从 Linux 版直接拷贝漏改）。"""
+    """Windows 版 exe 必须带 .exe / .bat / .cmd 后缀（防止从 Linux 版直接拷贝漏改）。
+
+    例外：pip_project 类程序（nonebot2）启动的是 Python 脚本 `bot.py`，
+    本就没有 Windows 可执行后缀——它由 venv 里的 python.exe 解释执行，
+    build_start_cmd 拼的是 `[<venv>/Scripts/python.exe, "bot.py"]`。
+    对这类程序断言后缀只会逼着人把清单改成假的 `bot.py.exe`。
+    """
     import re
     ext_re = re.compile(r"\.(exe|bat|cmd)$", re.I)
     for name, m in ALL.items():
         exe = m.get("exe", "")
+        if m.get("download_strategy") == "pip_project":
+            assert exe.endswith(".py"), \
+                f"{name}: pip_project 程序的 exe 应为入口脚本，实际 {exe!r}"
+            continue
         assert ext_re.search(exe), \
             f"{name}: exe '{exe}' 缺 Windows 可执行后缀 (.exe/.bat/.cmd)"
 

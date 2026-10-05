@@ -136,6 +136,29 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
   padding: 1px 6px; border-radius: 5px;
   background: var(--code-bg); font-family: ui-monospace, Menlo, Consolas, monospace;
 }
+.hint.warn { color: var(--warn); }
+.hint.err { color: var(--danger); }
+
+/* ---------- 管理应用面板（能力由后端适配器声明）---------- */
+.manage {
+  margin-top: 12px; padding: 12px 14px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.manage-cap + .manage-cap { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.manage-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.manage-row input { flex: 1 1 260px; min-width: 0; }
+.pkg-list { margin-top: 10px; }
+.pkg-row {
+  display: flex; gap: 8px; align-items: center;
+  padding: 5px 0; border-bottom: 1px solid var(--border);
+}
+.pkg-row code { word-break: break-all; }
+.pkg-row .hint { flex: 0 0 auto; }
+button.lnk {
+  padding: 0 4px; background: none; border: none;
+  color: var(--brand); text-decoration: underline; cursor: pointer;
+}
 
 /* ---------- 空状态 ---------- */
 .empty {

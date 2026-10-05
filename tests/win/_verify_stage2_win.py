@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.pathutil import expand_windows_vars
 
-# 1. 加载 10 份 manifest 并校验字段
+# 1. 加载全部 Windows 侧 manifest 并校验字段
 manifest_dir = Path(__file__).parent.parent / "manifests"
 manifests = []
 for f in sorted(manifest_dir.glob("*_win.json")):
@@ -19,11 +19,17 @@ for f in sorted(manifest_dir.glob("*_win.json")):
     manifests.append(m)
     print(f"  {f.name}: name={m['name']}, exe={m['exe']}")
 
-assert len(manifests) == 10, f"期望 10 份 manifest，实际 {len(manifests)}"
+# 数量按目录实际清点，不写死：新增程序时不必再回来改这个数字
+_want = len(list(manifest_dir.glob("*_win.json")))
+assert len(manifests) == _want, f"期望 {_want} 份 manifest，实际 {len(manifests)}"
 
 for m in manifests:
     assert m["install_root"] != "/opt", f"{m['name']}: install_root 仍是 /opt"
-    assert m["exe"].endswith((".exe", ".bat")), f"{m['name']}: exe 不带 Windows 后缀: {m['exe']}"
+    # pip_project 类程序（nonebot2）启动的是 Python 脚本，由 venv 里的
+    # python.exe 解释执行，本就没有 .exe/.bat 后缀——断言后缀只会逼人改成假名。
+    want_exe = (".py",) if m.get("download_strategy") == "pip_project" else (".exe", ".bat")
+    assert m["exe"].endswith(want_exe), \
+        f"{m['name']}: exe {m['exe']} 不符合 {m['download_strategy']} 的预期后缀 {want_exe}"
     assert "win32" in m.get("platform", []), f"{m['name']}: platform 不含 win32"
 print("  [1] manifest 字段校验通过（install_root 已不为 Linux 路径/exe/platform 全部 Windows 形态）")
 
@@ -53,7 +59,7 @@ print("  [4] process.py re_adopt 接管逻辑校验通过")
 try:
     from adapters import load_registry
     reg = load_registry(manifest_dir)
-    assert len(reg) == 10, f"load_registry 返回 {len(reg)} 份，期望 10"
+    assert len(reg) == _want, f"load_registry 返回 {len(reg)} 份，期望 {_want}"
     print(f"  [5] load_registry 成功加载 {len(reg)} 份 manifest（含 adapter class）")
     print("\n=== 阶段2 全部验证通过 ===")
 except ImportError as e:

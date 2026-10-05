@@ -9,6 +9,7 @@ from adapters import (
     lagrange_milky,
     llbot,
     napcat,
+    nonebot2,
     olivadice,
     sealdice,
     shiki,
@@ -25,8 +26,10 @@ REQUIRED_KEYS = ("name", "arch", "multi_account", "exe", "install_root",
                  "required_files", "download_strategy")
 ALLOWED_ARCH = ("standalone", "allinone")
 # manual：上游不发行可直接运行的程序包（如 Dice! 只发平台 dll 模块），只能离线上传
+# pip_project：上游是 PyPI 包而非可执行程序包（nonebot2），需 pip install --target
+#   到<实例>/libs 再由入口脚本 sys.path.insert 引入
 ALLOWED_STRATEGY = ("direct", "resolve_latest_via_api", "olivos_bundle_or_opk",
-                    "manual")
+                    "manual", "pip_project")
 
 classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "napcat": napcat.NapCatAdapter, "shiki": shiki.ShikiAdapter,
@@ -35,7 +38,8 @@ classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "dicenext": dicenext.DiceNextAdapter,
            "lagrange": lagrange.LagrangeAdapter,
            "lagrange_milky": lagrange_milky.LagrangeMilkyAdapter,
-           "yogurt": yogurt.YogurtAdapter}
+           "yogurt": yogurt.YogurtAdapter,
+           "nonebot2": nonebot2.NoneBot2Adapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out: dict[str, tuple[dict, type]] = {}

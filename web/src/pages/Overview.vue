@@ -122,7 +122,7 @@
         <button @click="op('start')">启动</button>
         <button @click="op('stop')">停止</button>
         <button @click="op('restart')">重启</button>
-        <button @click="openWebui">打开 WebUI</button>
+        <button @click="toggleManage">管理应用</button>
         <button @click="toggleMetrics">{{ showMetrics ? '收起资源曲线' : '资源曲线' }}</button>
         <button @click="goLogs">查看日志</button>
         <button @click="pickBackup">上传备份</button>
@@ -130,7 +130,7 @@
         <button @click="doExport('data')" title="仅应用数据/存档（对应程序自身备份功能口径）">导出数据备份</button>
         <button v-if="linkTarget" @click="runDiagnose">诊断连接</button>
         <button @click="checkUpgrade">检查更新</button>
-        <button v-if="upgradeLatest" @click="doUpgrade">升级到 {{ upgradeLatest }}</button>
+        <button v-if="upgradeLatest" @click="doUpgrade">{{ upgradeLatest ? `升级到 ${upgradeLatest}` : '升级依赖' }}</button>
         <button v-if="uploading" class="danger" @click="cancelUpload">取消上传</button>
         <button class="danger" @click="del">删除</button>
         <input ref="backupInput" type="file" hidden
@@ -192,6 +192,57 @@
           <label class="hint" style="margin:0">小时</label>
           <button :disabled="!(newSched.days > 0 || newSched.hours > 0)" @click="addSched">添加</button>
         </div>
+      </div>
+      <!-- ===== 管理应用：能力由后端适配器声明，前端不按程序名分支 ===== -->
+      <div v-if="manageOpen" class="manage">
+        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
+        <template v-else-if="manage.capabilities && manage.capabilities.length">
+          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
+            <b>{{ c.label }}</b>
+            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
+            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
+            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
+            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
+            <template v-else-if="c.kind === 'python_deps'">
+              <p v-if="c.missing && c.missing.length" class="hint warn">
+                缺少依赖：{{ c.missing.join('、') }}
+              </p>
+              <div class="manage-row">
+                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
+                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
+                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
+                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
+                <button :disabled="manageBusy" @click="doSyncPyproject"
+                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
+                  同步依赖声明</button>
+              </div>
+              <p v-if="sel.state === 'running'" class="hint warn">
+                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
+              </p>
+              <div v-if="depsData" class="pkg-list">
+                <p class="hint">
+                  已装插件（{{ (depsData.packages || []).length }}）：
+                  <button class="lnk" @click="loadManage">刷新</button>
+                </p>
+                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
+                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
+                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
+                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
+                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
+                </div>
+                <p v-if="(depsData.dir_plugins || []).length" class="hint">
+                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
+                </p>
+                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
+                  <code>{{ dp.name }}</code>
+                </div>
+                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
+              </div>
+            </template>
+          </div>
+        </template>
+        <p v-else class="hint">该程序未提供可管理的能力。</p>
+        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
       </div>
       <p v-if="webuiInfo" class="hint">
         WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
@@ -296,6 +347,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
 import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
+         instanceManage, installPackage, uninstallPackage, syncPyproject,
          instanceMetrics, wizardStep,
          scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
@@ -388,7 +440,13 @@ const linkCandidates = computed(() => {
     .filter(o => o !== 'builtin')
   return nodes.value.filter(n => opts.includes(n.dice) && n.id !== sel.value.id)
 })
-watch(sel, () => { webuiInfo.value = null; connMsg.value = ''; newLoginRef.value = ''; newAccountQq.value = '' })
+watch(sel, () => {
+  webuiInfo.value = null; connMsg.value = ''
+  newLoginRef.value = ''; newAccountQq.value = ''
+  // 管理面板必须收起：能力属于上一个实例，留着会让人对着 A 实例点 B 实例的操作
+  manageOpen.value = false; manage.value = {}; manageErr.value = ''
+  manageMsg.value = ''; depsData.value = null; pkgSpec.value = ''
+})
 
 // 启停操作：后端在启动/重启时会顺带开放 WebUI 端口（绑定修正 + ufw），有提示就展示
 const op = o => guard(async () => {
@@ -526,6 +584,77 @@ const killProc = pid => guard(async () => {
   connMsg.value = `已结束进程 ${pid}`
   scanRes.value = await scanInstallRoots()
 })
+// ---------- 管理应用（能力由后端适配器声明）----------
+const manageOpen = ref(false), manageBusy = ref(false)
+const manage = ref({}), manageErr = ref(''), manageMsg = ref('')
+const depsData = ref(null), pkgSpec = ref('')
+const depsDataOf = () => manage.value?.data?.python_deps || null
+
+const loadManage = () => guard(async () => {
+  manageErr.value = ''
+  manage.value = await instanceManage(sel.value.id)
+  depsData.value = depsDataOf()
+})
+
+const toggleManage = () => {
+  manageOpen.value = !manageOpen.value
+  if (manageOpen.value) { manageMsg.value = ''; loadManage() }
+}
+
+// 装/卸插件都可能跑几分钟（pip 装依赖），故用 manageBusy 独占按钮；
+// 期间实例状态可能变，装完重新拉一次能力列表让 UI 与后端一致
+const doInstallPkg = () => guard(async () => {
+  const spec = pkgSpec.value.trim()
+  if (!spec) return
+  manageBusy.value = true
+  manageErr.value = ''
+  manageMsg.value = `正在安装 ${spec}（首次可能需要几分钟，取决于网络）…`
+  try {
+    const r = await installPackage(sel.value.id, spec)
+    pkgSpec.value = ''
+    depsData.value = r.data || depsDataOf()
+    manageMsg.value = `已安装 ${spec} ${r.version || ''}。需重启实例后生效。`.trim()
+  } catch (e) {
+    manageErr.value = String(e.message || e)
+  } finally {
+    manageBusy.value = false
+  }
+})
+
+const doUninstallPkg = async (name) => {
+  if (!confirm(`确认卸载插件 ${name}？\n\n将同时删除 libs/ 下的包文件与 pyproject.toml 里的依赖声明。\n插件自身的数据文件（若有）不会删除。`))
+    return
+  guard(async () => {
+    manageBusy.value = true
+    manageErr.value = ''
+    manageMsg.value = `正在卸载 ${name}…`
+    try {
+      const r = await uninstallPackage(sel.value.id, name)
+      depsData.value = r.data || depsDataOf()
+      manageMsg.value = `已卸载 ${name} ${r.version || ''}。需重启实例后生效。`.trim()
+    } catch (e) {
+      manageErr.value = String(e.message || e)
+    } finally {
+      manageBusy.value = false
+    }
+  })()
+}
+
+const doSyncPyproject = () => guard(async () => {
+  manageBusy.value = true
+  manageErr.value = ''
+  manageMsg.value = '正在同步依赖声明…'
+  try {
+    const r = await syncPyproject(sel.value.id)
+    depsData.value = r.data || depsDataOf()
+    manageMsg.value = '已把 libs/ 中的包补写进 pyproject.toml。'
+  } catch (e) {
+    manageErr.value = String(e.message || e)
+  } finally {
+    manageBusy.value = false
+  }
+})
+
 // WebUI：端口由后端回读（实际端口优先），URL 用面板同主机名拼接（服务与面板同机）
 const openWebui = () => guard(async () => {
   const w = await instanceWebui(sel.value.id)
@@ -678,15 +807,23 @@ const checkUpgrade = () => guard(async () => {
   const r = await upgradeCheck(sel.value.id)
   if (!r.supported) { connMsg.value = r.message; upgradeLatest.value = ''; return }
   if (r.up_to_date) { connMsg.value = `已是最新版本（${r.current}）`; upgradeLatest.value = ''; return }
-  upgradeLatest.value = r.latest
-  connMsg.value = `发现新版本：${r.current || '(未知)'} → ${r.latest}。点「升级」开始（自动先整目录备份）。`
+  // pip_project 无 release tag（latest 为 null）：仍要给出升级入口，
+  // 只是按钮文案从「升级到 vX」退化为「升级依赖」。
+  upgradeLatest.value = r.latest || 'deps'
+  connMsg.value = r.message
+    || `发现新版本：${r.current || '(未知)'} → ${r.latest}。点「升级」开始（自动先整目录备份）。`
 })
 const doUpgrade = () => guard(async () => {
+  const pipMode = upgradeLatest.value === 'deps'
   if (!confirm(`升级 ${sel.value.dice} 实例？\n\n`
     + '· 会自动先做整目录备份（升级失败可回退）\n'
-    + '· 运行中的实例先停止，覆盖解压最新包（数据/存档保留）后自动重启\n'
+    + (pipMode
+      ? '· 运行中的实例先停止，用 pip install -U 升级全部依赖后自动重启\n'
+      : '· 运行中的实例先停止，覆盖解压最新包（数据/存档保留）后自动重启\n')
     + '· 需从上游下载程序包，可能耗时数分钟')) return
-  connMsg.value = '升级中（备份 → 停机 → 覆盖新包 → 重启）…'
+  connMsg.value = pipMode
+    ? '升级中（备份 → 停机 → pip install -U → 重启）…'
+    : '升级中（备份 → 停机 → 覆盖新包 → 重启）…'
   const r = await upgradeInstance(sel.value.id)
   connMsg.value = `升级完成：${r.version || '新包已部署'}；升级前备份 ${r.backup}`
     + (r.restart_error ? `；⚠ 重启失败：${r.restart_error}` : r.restarted ? '，实例已重启' : '')
