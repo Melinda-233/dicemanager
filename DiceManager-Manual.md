@@ -670,6 +670,23 @@ Node.js 项目。与 D/D-2 的**语言栈不同**，所以**不能继承** NoneB
 | `core/backup.py` 排除规则 | 排除 `node_modules` | 备份包几百 MB，导出/上传必然超时 |
 | 适配器 `verify_required()` | 目录项要额外判空 | 空 `node_modules/` 被判「装好了」，部署假成功 |
 
+**Koishi 第二步（升级 + 插件装卸）的关键取舍**：
+
+- **升级用 `npm update` 而非 `npm update --latest`**：`--latest` 会无视
+  package.json 的版本范围直接跳最新，可能引入破坏性变更；`npm update`
+  是「在声明的兼容范围内取最新」—— 与 nonebot2 的 `pip install -U`
+  （同样尊重声明的下限）口径一致。
+- **升完必须把实装版本抬进 package.json**（`^4.18.0` → `^4.19.1`）：
+  不抬的话下次 `npm install` 会按旧下限把刚升的包降回去。
+  用 `_raise_floor` 保留原有的范围类型（`~` 不能变成 `^`，那会放宽兼容范围）。
+- **scoped 包的 `@` 不是版本分隔符**：`@koishijs/pkg@^6.0.0` 里分隔符是
+  **第二个** `@`。切错会把包名截断、或把 `@` 带进版本约束（npm 解析不了）。
+  `_npm_name` / `_spec_version` 都从 `find("@", 1)` 起切。
+- **`sync_pyproject` 必须扫 node_modules 全量（不能只看声明）**：
+  它的语义就是「把手工 `--no-save` 装的包补写进声明」，只看声明永远补不上。
+- **插件与核心依赖要分开列**：判定用命名约定（`@koishijs/plugin-*` /
+  `koishi-plugin-*`）。混在一起用户会以为能卸载 koishi 本体 → 实例起不来。
+
 **E. 可管理能力（横切机制，2026-10-05 新增）**
 
 「管理应用」不是一个新页面，而是**由适配器声明能力、前端按能力渲染**的机制。

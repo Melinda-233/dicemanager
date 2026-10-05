@@ -503,6 +503,246 @@ def test_yaml_merge_replaces_old_section_in_place(tmp_path):
     assert "NEW" in y and "OLD" not in y
 
 
+def test_manage_capability_exposes_python_deps(tmp_path):
+    """Koishi 要暴露「依赖与插件」面板 —— kind 与 nonebot2 一致，前端同一套渲染。"""
+    d = _ready_dir(tmp_path / "kb-cap")
+    caps = _ad().extra_manage_capabilities(_inst(d))
+    assert [c["kind"] for c in caps] == ["python_deps"]
+    assert caps[0].get("deployed") is True
+
+
+def test_manage_capability_marks_undeployed(tmp_path):
+    d = tmp_path / "kb-cap2"
+    d.mkdir()
+    caps = _ad().extra_manage_capabilities(_inst(d))
+    assert caps[0].get("requires_deployed") is True
+    assert "部署" in caps[0].get("disabled_reason", "")
+
+
+# ---------- 升级通道 ----------
+
+def test_upgrade_runs_npm_update_and_raises_floor(tmp_path, monkeypatch):
+    """升级 = `npm update`（尊重 package.json 的范围），不是 `--latest`。
+
+    `--latest` 会无视版本范围直接跳最新，可能引入破坏性变更；
+    `npm update` 是「在声明的兼容范围内取最新」，与 nonebot2 的
+    `pip install -U` 口径一致。
+
+    升完必须把已装版本抬进package.json，否则下次 npm install 会降回去。
+    """
+    from adapters.base import DEPLOY_VERSION
+    d = _ready_dir(tmp_path / "kb-up")
+    ad = _ad()
+    ad._require_node = lambda i: NODE# noqa: SLF001
+    ad._npm = lambda node: "npm"                                  # noqa: SLF001
+    calls: list = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: (
+        calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    # 模拟 upgrade 后实装版本变了
+    (d / "node_modules" / "koishi" / "package.json").write_text(
+        json.dumps({"name": "koishi", "version": "4.19.1"}), encoding="utf-8")
+
+    inst = _inst(d, id="kb-up")
+    try:
+        tag = ad.upgrade(inst)
+    finally:
+        DEPLOY_VERSION.pop("kb-up", None)
+    assert calls, "应发起过 npm"
+    assert "update" in calls[0]
+    assert "--latest" not in " ".join(calls[0]), \
+        "npm update --latest 会无视版本范围，引入破坏性变更"
+    assert tag and tag.startswith("npm:")
+    deps = json.loads((d / "package.json").read_text("utf-8"))["dependencies"]
+    assert deps["koishi"] == "^4.19.1", \
+        f"下限没抬到实装版本（实际 {deps['koishi']}）→ 下次 install 会降回去"
+
+
+def test_upgrade_refuses_when_not_deployed(tmp_path):
+    d = tmp_path / "kb-up2"
+    d.mkdir()
+    with pytest.raises(RuntimeError) as e:
+        _ad().upgrade(_inst(d))
+    assert "重新部署" in str(e.value)
+
+
+def test_raise_floor_preserves_range_type():
+    """抬下限要保留原有的范围类型，否则把 `~1.2` 变成 `^1.2` 会放宽兼容范围。"""
+    from adapters.koishi import _raise_floor
+    assert _raise_floor("^1.2.3", "1.4.0") == "^1.4.0"
+    assert _raise_floor("~1.2.3", "1.2.9") == "~1.2.9"
+    assert _raise_floor(">=1.0.0", "1.4.0") == ">=1.4.0"
+    assert _raise_floor("1.2.3", "1.4.0") == "^1.4.0", "精确版本升不动，要改范围"
+    assert _raise_floor("*", "1.4.0") == "*", "无约束不动"
+    assert _raise_floor("^4.18.0", "4.19.0-beta.1") == "^4.19.0-beta.1", \
+        "预发布版本原样用：那才是实际跑着的版本"
+
+
+def test_npm_name_keeps_scoped_package_intact():
+    """scoped 包名里的 `@` 不是版本分隔符 —— 切错会把包名截断。"""
+    from adapters.koishi import _npm_name, _spec_version
+    assert _npm_name("@koishijs/plugin-adapter-onebot") == \
+        "@koishijs/plugin-adapter-onebot"
+    assert _npm_name("@koishijs/plugin-adapter-onebot@^6.0.0") == \
+        "@koishijs/plugin-adapter-onebot"
+    assert _spec_version("@koishijs/plugin-adapter-onebot@^6.0.0") == "^6.0.0"
+    assert _npm_name("koishi-plugin-schedule@5.0.1") == "koishi-plugin-schedule"
+    assert _spec_version("koishi-plugin-schedule@5.0.1") == "5.0.1"
+    assert _spec_version("koishi") == ""
+
+
+def test_is_koishi_plugin_distinguishes_core_deps():
+    """核心依赖（koishi 本体）不算插件，否则用户能把它卸载掉→ 实例起不来。"""
+    from adapters.koishi import _is_koishi_plugin
+    assert _is_koishi_plugin("koishi-plugin-schedule")
+    assert _is_koishi_plugin("@koishijs/plugin-adapter-onebot")
+    assert not _is_koishi_plugin("koishi")
+    assert not _is_koishi_plugin("@satorijs/adapter-onebot")
+    assert not _is_koishi_plugin("typescript")
+
+
+# ---------- 插件装卸 ----------
+
+def test_install_package_syncs_pkgjson(tmp_path, monkeypatch):
+    """装插件必须同时写 package.json —— 只 npm install 的话下次 install 会丢。"""
+    d = _ready_dir(tmp_path / "kb-ins")
+    ad = _ad()
+    ad._require_node = lambda i: NODE# noqa: SLF001
+    ad._npm = lambda node: "npm"                                  # noqa: SLF001
+    calls: list = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        name = [a for a in cmd if a.startswith("koishi-plugin-")]
+        if name:
+            (d / "node_modules" / name[0]).mkdir(parents=True, exist_ok=True)
+            (d / "node_modules" / name[0] / "package.json").write_text(
+                json.dumps({"name": name[0], "version": "5.0.1"}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ver = ad.install_package(_inst(d, id="kb-i"), "koishi-plugin-schedule@^5.0.0")
+    assert ver == "5.0.1"
+    deps = json.loads((d / "package.json").read_text("utf-8"))["dependencies"]
+    assert "koishi-plugin-schedule" in deps, "装完没写进 package.json"
+    assert "install" in calls[0] and "koishi-plugin-schedule" in calls[0]
+    assert "koishi-plugin-schedule" in ad.list_plugins(_inst(d))["packages"][0]["name"] \
+        or any(p["name"] == "koishi-plugin-schedule"
+               for p in ad.list_plugins(_inst(d))["packages"])
+
+
+def test_install_package_rejects_bad_spec(tmp_path):
+    d = _ready_dir(tmp_path / "kb-ins2")
+    ad = _ad()
+    for spec in ("   ", "a b"):
+        with pytest.raises(ValueError) as e:
+            ad.install_package(_inst(d), spec)
+        assert "包名" in str(e.value)
+
+
+def test_uninstall_removes_from_pkgjson(tmp_path, monkeypatch):
+    """卸载要同时删package.json 里的声明，否则下次 install 会装回来。"""
+    d = _ready_dir(tmp_path / "kb-un")
+    (d / "package.json").write_text(json.dumps({
+        "name": "kb",
+        "dependencies": {"koishi": "^4.18.0",
+                         "koishi-plugin-schedule": "^5.0.0"},
+    }), encoding="utf-8")
+    (d / "node_modules" / "koishi-plugin-schedule").mkdir(parents=True)
+    (d / "node_modules" / "koishi-plugin-schedule" / "package.json").write_text(
+        json.dumps({"name": "koishi-plugin-schedule", "version": "5.0.1"}),
+        encoding="utf-8")
+    ad = _ad()
+    ad._require_node = lambda i: NODE# noqa: SLF001
+    ad._npm = lambda node: "npm"                                  # noqa: SLF001
+    calls: list = []
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: (
+        calls.append(cmd) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    ad.uninstall_package(_inst(d, id="kb-un"), "koishi-plugin-schedule")
+    assert "remove" in calls[0]
+    deps = json.loads((d / "package.json").read_text("utf-8"))["dependencies"]
+    assert "koishi-plugin-schedule" not in deps, "声明没删 → 下次 install 会装回来"
+    assert "koishi" in deps, "不该动别的依赖"
+
+
+def test_uninstall_rejects_not_declared(tmp_path):
+    d = _ready_dir(tmp_path / "kb-un2")
+    with pytest.raises(ValueError) as e:
+        _ad().uninstall_package(_inst(d), "koishi-plugin-nope")
+    assert "不在 package.json" in str(e.value)
+
+
+def test_sync_pyproject_pulls_in_installed(tmp_path):
+    """用户手工 `npm install --no-save` 装过插件 → sync 补写进 package.json。"""
+    d = _ready_dir(tmp_path / "kb-sync")
+    (d / "node_modules" / "koishi-plugin-schedule").mkdir(parents=True)
+    (d / "node_modules" / "koishi-plugin-schedule" / "package.json").write_text(
+        json.dumps({"name": "koishi-plugin-schedule", "version": "5.0.1"}),
+        encoding="utf-8")
+    # 已装版本读的是 node_modules/<pkg>/package.json，故每个包都要有
+    for n in ("koishi", "@koishijs/plugin-adapter-onebot"):
+        (d / "node_modules" / n / "package.json").write_text(
+            json.dumps({"name": n, "version": "1.0.0"}), encoding="utf-8")
+    r = _ad().sync_pyproject(_inst(d))
+    assert r.endswith("package.json")
+    deps = json.loads((d / "package.json").read_text("utf-8"))["dependencies"]
+    assert deps["koishi-plugin-schedule"] == ">=5.0.1"
+
+
+def test_list_plugins_separates_core_from_plugins(tmp_path):
+    """核心依赖与插件要分开列：混在一起用户会以为能卸载 koishi 本体。"""
+    d = _ready_dir(tmp_path / "kb-ls")
+    (d / "package.json").write_text(json.dumps({
+        "name": "kb",
+        "dependencies": {"koishi": "^4.18.0",
+                         "@koishijs/plugin-adapter-onebot": "^6.0.0",
+                         "koishi-plugin-schedule": "^5.0.0"},
+    }), encoding="utf-8")
+    for n in ("koishi", "@koishijs/plugin-adapter-onebot",
+              "koishi-plugin-schedule"):
+        (d / "node_modules" / n).mkdir(parents=True, exist_ok=True)
+        (d / "node_modules" / n / "package.json").write_text(
+            json.dumps({"name": n, "version": "1.0.0"}), encoding="utf-8")
+    (d / "plugins" / "my_local").mkdir(parents=True)
+    (d / "plugins" / "__pycache__").mkdir()
+
+    data = _ad().list_plugins(_inst(d))
+    names = [p["name"] for p in data["packages"]]
+    assert names == ["@koishijs/plugin-adapter-onebot", "koishi-plugin-schedule"]
+    assert [p["name"] for p in data["core_deps"]] == ["koishi"]
+    assert data["core_deps"][0].get("core") is True
+    assert [p["name"] for p in data["dir_plugins"]] == ["my_local"]
+    off = [p["name"] for p in data["packages"] if p.get("official")]
+    assert off == ["@koishijs/plugin-adapter-onebot"], "官方包应可识别"
+
+
+def test_version_tag_is_stable_and_changes_with_deps(tmp_path):
+    """基线标签：依赖快照不变则标签不变；变了就变（供「已是最新」判定）。"""
+    d = _ready_dir(tmp_path / "kb-tag")
+    ad = _ad()
+    t1 = ad._version_tag(_inst(d))                             # noqa: SLF001
+    t2 = ad._version_tag(_inst(d))                             # noqa: SLF001
+    assert t1 == t2 and t1.startswith("npm:")
+    (d / "package.json").write_text(json.dumps({
+        "name": "kb", "dependencies": {"koishi": "^4.19.0"}}), encoding="utf-8")
+    assert ad._version_tag(_inst(d)) != t1# noqa: SLF001
+
+
+def test_npm_failure_gives_actionable_error(tmp_path, monkeypatch):
+    """npm 非零退出要带尾部输出，且提示镜像源（用户能据此行动）。"""
+    d = _ready_dir(tmp_path / "kb-npmfail")
+    ad = _ad()
+    ad._require_node = lambda i: NODE# noqa: SLF001
+    ad._npm = lambda node: "npm"                                  # noqa: SLF001
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: SimpleNamespace(
+        returncode=1, stdout="", stderr="\n".join(f"l{i}" for i in range(6))
+        + "\nERESOLVE conflicting peer dependency"))
+    with pytest.raises(RuntimeError) as e:
+        ad._run_npm(_inst(d), ["install", "x"], stage="安装")  # noqa: SLF001
+    assert "ERESOLVE" in str(e.value)
+    assert "l0" in str(e.value), "尾部输出要保留（真实原因就在最后几行）"
+    assert len(str(e.value)) < 400, "报错要短，整段 stderr 塞进去反而看不清重点"
+
+
 # ---------- 能力声明 ----------
 
 def test_health_port_keys_empty():

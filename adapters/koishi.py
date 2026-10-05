@@ -33,13 +33,14 @@ URL 形如 `ws://<host>:5140/onebot`。故 `write_conn_config` 的方向判定�
 在文件里追加/更新 `plugins:` 下`adapter-onebot:` 一段，其余字节原样保留。
 写入形态必须用 YAML 块标量 (`|`) 才能安全承载任意字符串。
 """
+import hashlib
 import json
 import os
 import re
 import subprocess
 from pathlib import Path
 
-from adapters.base import DEPLOY_VERSION, BaseAdapter, WriteResult
+from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult
 from core.atomicio import write_atomic
 from core.interpreter import find_node, node_with_npm
 from core.locks import program_dir_lock
@@ -166,8 +167,11 @@ class KoishiAdapter(BaseAdapter):
                                  "npm config set registry "
                                  "https://registry.npmmirror.com）")
 
-    def _merge_deps_to_pkgjson(self, instance) -> None:
-        """把清单 `dependencies` 并入 package.json 的 dependencies。
+    def _merge_deps_to_pkgjson(self, instance, extra: dict | None = None) -> None:
+        """把依赖并入 package.json 的 dependencies。
+
+        `extra` 为空时并入清单声明的 `dependencies`（部署用）；
+        非空时并入 `extra`（装单个插件时用）。
 
         为什么必须写进去：Node 的依赖只有进了 package.json（+package-lock.json）
         才会在 `npm install` 时被装上。只在命令行临时 `npm install koishi`
@@ -189,7 +193,7 @@ class KoishiAdapter(BaseAdapter):
         if not isinstance(deps, dict):
             return
         changed = False
-        for k, v in self._declared_deps().items():
+        for k, v in (extra if extra is not None else self._declared_deps()).items():
             if k not in deps:                # 不覆盖用户/模板自己钉的版本
                 deps[k] = v or "*"
                 changed = True
@@ -254,11 +258,9 @@ class KoishiAdapter(BaseAdapter):
         （基类只在 deploy 末尾 publish），不自己写的话 wizard 取不到基线，
         实例 `version` 永远是 None。
         """
-        blob = self._installed_versions_blob(instance)
-        if blob:
-            import hashlib
-            DEPLOY_VERSION[instance.id] = "npm:" + hashlib.sha256(
-                blob.encode("utf-8")).hexdigest()[:12]
+        tag = self._version_tag(instance)
+        if tag:
+            DEPLOY_VERSION[instance.id] = tag
 
     def _installed_versions_blob(self, instance) -> str:
         """已装依赖快照（版本基线的输入）。
@@ -278,6 +280,272 @@ class KoishiAdapter(BaseAdapter):
         return "\n".join(f"{k}@{v}" for k, v in sorted(deps.items()))
 
     # ---------- 启动 ----------
+
+    # ---------- 升级通道（npm install -U，不是换包） ----------
+
+    def upgrade(self, instance) -> str | None:
+        """升级依赖：npm update（把 package.json 里的依赖升到各自最新版）。
+
+        base.upgrade 走「下载新包 → 覆盖解压」，对 npm_project 不存在可下载的包。
+        这里改为升依赖，返回**新的依赖快照基线**（与 nonebot2 语义一致）。
+
+        **为什么不是 `npm update --latest`**：`--latest` 会无视 package.json
+        的版本范围直接跳到最新，可能引入破坏性变更；而 `npm update` 尊重
+        `^`/`~` 范围，是「在声明的兼容范围内取最新」—— 与 nonebot2 的
+        `pip install -U`（同样尊重声明的下限）口径一致。
+
+        **必须同步 package.json**：升级后把已装版本回写成新的**下限**
+        （见 _bump_deps_floor），否则下次 `npm install` 会按旧下限
+        把刚升的包降回去（用户视角：「点了升级，一重启又变回旧版」）。
+        """
+        with program_dir_lock(self.m["name"]):
+            if not self._deps_installed(instance):
+                raise RuntimeError("实例尚未完成部署（依赖目录为空），请先重新部署")
+            key = getattr(instance, "id", None)
+            if key:
+                DEPLOY_PROGRESS[key] = {"stage": "npm", "done": 0,
+                                        "total": len(self._declared_deps())}
+            try:
+                self._run_npm(instance, ["update"], stage="升级")
+                self._bump_deps_floor(instance)
+                self._publish_baseline(instance)
+            finally:
+                if key:
+                    DEPLOY_PROGRESS.pop(key, None)
+        return self._version_tag(instance)
+
+    def _bump_deps_floor(self, instance) -> None:
+        """把 package.json 里各依赖的版本约束抬成「已装版本的下限」。
+
+        形如`^4.18.0` → `^4.19.1`（已是精确版本的补 `>=`）。
+        **只改已存在的条目**，不新增也不删除 —— 新增/删除是
+        `install_package` / `uninstall_package` 的职责。
+        """
+        path = Path(instance.dir) / "package.json"
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            return
+        deps = data.get("dependencies")
+        if not isinstance(deps, dict):
+            return
+        installed = self._installed_dep_versions(instance)
+        changed = False
+        for name, spec in list(deps.items()):
+            ver = installed.get(name)
+            if not ver:
+                continue                       # 没装/装不上，保持原约束
+            new = _raise_floor(spec, ver)
+            if new != spec:
+                deps[name] = new
+                changed = True
+        if changed:
+            write_atomic(path, json.dumps(data, ensure_ascii=False,
+                                          indent=2).encode("utf-8"))
+
+    # ---------- 插件管理（npm install / remove + 同步 package.json） ----------
+
+    def extra_manage_capabilities(self, instance) -> list[dict]:
+        """提供「依赖与插件」面板（kind 与 nonebot2 一致，前端同一套渲染）。
+
+        与 nonebot2 的差别：Koishi 侧的动作是 `npm install/remove <包名>`，
+        没有 pyproject 那种"声明与实装分离"的问题——package.json 既是
+        声明也是记录，故装/卸只需改 package.json + 重跑 npm。
+        """
+        if not self._deps_installed(instance):
+            return [{"kind": "python_deps", "label": "依赖与插件",
+                     "requires_deployed": True,
+                     "disabled_reason": "实例尚未完成部署（依赖未装齐），请先重新部署"}]
+        return [{"kind": "python_deps", "label": "依赖与插件",
+                 "deployed": True, "missing": []}]
+
+    def list_plugins(self, instance) -> dict:
+        """已装依赖/插件 + 本地插件目录，供「管理应用」面板渲染。
+
+        插件分两类（Koishi 生态的命名约定）：
+        1. **npm 包**：官方 `@koishijs/plugin-*`、社区 `koishi-plugin-*`。
+           装在 node_modules，靠 package.json 的 dependencies 识别。
+        2. **目录形态插件**（`plugins/<name>/` 下直接是 .py/js）：不在 npm
+           体系内，卸载就是删目录——面板只列出来，不提供卸载按钮。
+        """
+        pkg = self._read_pkg(instance)
+        installed = self._installed_dep_versions(instance)
+        declared = pkg.get("dependencies") or {}
+        plugins = [
+            {"name": name, "version": installed.get(name) or declared.get(name, ""),
+             "official": name.startswith("@koishijs/")}
+            for name in sorted(declared)
+            if _is_koishi_plugin(name)
+        ]
+        base = [
+            {"name": name, "version": installed.get(name) or declared.get(name, ""),
+             "official": name.startswith("@koishijs/"), "core": True}
+            for name in sorted(declared)
+            if not _is_koishi_plugin(name)
+        ]
+        pdir = Path(instance.dir) / "plugins"
+        dirs = (sorted(p.name for p in pdir.iterdir()
+                       if p.is_dir() and not p.name.startswith((".", "_")))
+                if pdir.is_dir() else [])
+        return {
+            "packages": plugins,
+            "core_deps": base,
+            "dir_plugins": [{"name": n, "path": str(pdir / n)} for n in dirs],
+            "missing": self._deps_missing(instance),
+            "libs_path": str(Path(instance.dir) / "node_modules"),
+        }
+
+    def install_package(self, instance, spec: str) -> str:
+        """装一个 npm 插件并同步进 package.json。
+
+        **两步缺一不可**：只 `npm install <pkg>` 而不写 package.json，
+        下次 `npm install` / 恢复备份后依赖就没了（package.json 是
+        「声明」也是「记录」，Node 没有 pip 那种 --target 式的分离）。
+        """
+        spec = (spec or "").strip()
+        if not spec:
+            raise ValueError("请填写包名")
+        name = _npm_name(spec)
+        if not name or any(ch.isspace() for ch in name):
+            raise ValueError(f"包名不合法：{spec!r}")
+        with program_dir_lock(self.m["name"]):
+            self._merge_deps_to_pkgjson(instance, {name: _spec_version(spec)})
+            self._run_npm(instance, ["install", name], stage="安装")
+        ver = self._installed_dep_versions(instance).get(name, "?")
+        self._bump_deps_floor(instance)
+        self._publish_baseline(instance)
+        return ver
+
+    def uninstall_package(self, instance, name: str) -> str:
+        """卸载一个 npm 插件：`npm remove` + 从 package.json 移除声明。
+
+        ⚠️ 不做 `npm uninstall --no-save` 那种"只删文件留声明"的做法：
+        那样下次 `npm install` 会把它装回来（与 nonebot2 卸载必须同步
+        删pyproject 声明同理）。
+        """
+        name = _npm_name(name)
+        pkg = self._read_pkg(instance)
+        if name not in (pkg.get("dependencies") or {}):
+            raise ValueError(f"{name} 不在 package.json 的依赖里")
+        with program_dir_lock(self.m["name"]):
+            self._run_npm(instance, ["remove", name], stage="卸载")
+            self._remove_dep_from_pkgjson(instance, name)
+        ver = self._installed_dep_versions(instance).get(name, "")
+        self._publish_baseline(instance)
+        return ver
+
+    def sync_pyproject(self, instance) -> str:
+        """把 node_modules 里现有的包补写进 package.json。
+
+        场景：用户在实例目录手工 `npm install --no-save xxx` 装了插件，
+        缺这一步，下次 `npm install` 会把它清掉。
+        """
+        path = Path(instance.dir) / "package.json"
+        if not path.exists():
+            raise ValueError("package.json 不存在，无法同步")
+        #全量扫：手工 --no-save 装的包不在 package.json 里，只看声明补不上
+        installed = self._installed_dep_versions(instance, only_declared=False)
+        if not installed:
+            raise ValueError("node_modules 里没有已装依赖，无可同步")
+        with program_dir_lock(self.m["name"]):
+            self._merge_deps_to_pkgjson(instance,
+                                        {k: f">={v}" for k, v in installed.items()})
+        return str(path)
+
+    # ---------- npm 调用与版本读取 ----------
+
+    def _run_npm(self, instance, args: list[str], stage: str = "npm") -> str:
+        """跑一次 npm，失败时报出可操作的错误（与 _ensure_deps 同一套）。"""
+        node = self._require_node(instance)
+        npm = self._npm(node)
+        cmd = [npm, *args, "--no-audit", "--no-fund",
+               "--fetch-retries=4", "--fetch-retry-maxtimeout=120000",
+               "--fetch-timeout=300000"]
+        try:
+            r = subprocess.run(cmd, cwd=str(instance.dir), capture_output=True,
+                               text=True, timeout=NPM_TIMEOUT,
+                               env=self._clean_env())
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                f"npm {stage}超时（超过 {NPM_TIMEOUT // 60} 分钟仍未完成）。"
+                f"常见原因：网络慢或某个包的下载卡住。可先执行 "
+                f"`npm config set registry https://registry.npmmirror.com` "
+                f"换国内镜像源后重试。") from e
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-8:]
+            raise RuntimeError(f"npm {stage}失败：\n" + "\n".join(tail))
+        return r.stdout or ""
+
+    def _read_pkg(self, instance) -> dict:
+        path = Path(instance.dir) / "package.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _installed_dep_versions(self, instance, *, only_declared: bool = True) -> dict:
+        """已装依赖的**实装版本**：读 node_modules/<pkg>/package.json。
+
+        与 `_installed_versions_blob`（读 package.json 的声明）不同：
+        那个是「声明是什么」，这个是「实际装了什么」。升级后抬下限要用
+        实际版本，才不会出现「声明 ^4.18.0 但实装 4.19.1」时的错位。
+
+        `only_declared=False` 时扫 node_modules 下**所有**已装包（含用户
+        手工 `--no-save` 装的）—— `sync_pyproject` 要用它：那正是「手工装了
+        没写进 package.json、差点被清掉」的补救场景，只看声明就永远补不上。
+
+        查目录**遍历顺序无关**（按包名逐个定位，不依赖 glob 顺序）——
+        跨平台顺序问题见 NoneBot2Adapter._installed_versions 的注释。
+        """
+        out: dict[str, str] = {}
+        nm = Path(instance.dir) / "node_modules"
+        if not nm.is_dir():
+            return out
+        if only_declared:
+            names: list[str] = list(self._read_pkg(instance).get("dependencies") or {})
+        else:
+            names = _walk_packages(nm)
+        for name in names:
+            pj = nm / name / "package.json"
+            if not pj.is_file():
+                continue
+            try:
+                meta = json.loads(pj.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(meta, dict) and meta.get("version"):
+                out[name] = str(meta["version"])
+        return out
+
+    def _version_tag(self, instance) -> str | None:
+        """版本基线标签（`npm:<hash>`），与 nonebot2 的 `pip:<hash>` 同形。
+
+        标签相同即代表「依赖快照没变」—— 上游同 tag 即可判为已是最新。
+        """
+        blob = self._installed_versions_blob(instance)
+        if not blob:
+            return None
+        return "npm:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+    def _remove_dep_from_pkgjson(self, instance, name: str) -> None:
+        path = Path(instance.dir) / "package.json"
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            return
+        deps = data.get("dependencies")
+        if not isinstance(deps, dict) or name not in deps:
+            return
+        deps.pop(name)
+        write_atomic(path, json.dumps(data, ensure_ascii=False,
+                                      indent=2).encode("utf-8"))
 
     def _cli(self, instance) -> Path:
         """`node_modules/.bin/koishi` —— Koishi 的 CLI 入口（npm 生成的可执行包装）。
@@ -378,6 +646,86 @@ class KoishiAdapter(BaseAdapter):
         而那个键在不同插件版本里名字不一，猜错会把配置写坏。
         """
         return None
+
+
+# ---------- 包名 / 版本约束的文本处理 ----------
+
+_NPM_RANGE_PREFIX = ("^", "~", ">=", "<=", ">", "<", "=")
+
+
+def _npm_name(spec: str) -> str:
+    """从 npm 规格串取包名：`koishi-plugin-x@^1.0` → `koishi-plugin-x`。
+
+    ⚠️ **scoped 包里的 `@` 不能当版本分隔符**：`@koishijs/plugin-adapter-onebot`
+    开头的 `@` 是scope 标记，不是「@版本」。故只在**非首位**的 `@` 处切。
+    """
+    spec = (spec or "").strip()
+    at = spec.find("@", 1)          # 从第2 个字符起找，避开 scope 的首字符
+    return (spec[:at] if at > 0 else spec).strip()
+
+
+def _spec_version(spec: str) -> str:
+    """取版本约束段（`pkg@^1.0` → `^1.0`；无则空串）。
+
+    ⚠️ **要跳过 `@` 本身**：`@koishijs/pkg@^6.0.0` 的分隔符是**第二个** `@`，
+    直接 `spec[at:]` 会把 `@` 一起带进约束（写成 `^6.0.0` 之外的 `@^6.0.0`，
+    npm 解析不了）。故从 `at + 1` 取。
+    """
+    spec = (spec or "").strip()
+    at = spec.find("@", 1)          # 从第 2 个字符起找，避开 scope 的首字符
+    return spec[at + 1:].strip() if at > 0 else ""
+
+
+def _is_koishi_plugin(name: str) -> bool:
+    """是否为「插件包」而非核心依赖。
+
+    Koishi 生态的命名约定：官方 `@koishijs/plugin-*`、社区 `koishi-plugin-*`。
+    核心依赖（koishi 本体、@satorijs/* 等）不算插件 —— 混进插件列表会
+    让用户以为能卸载 koishi 本体，卸掉实例直接起不来。
+    """
+    return (name.startswith("koishi-plugin-")
+            or name.startswith("@koishijs/plugin-"))
+
+
+def _raise_floor(spec: str, installed: str) -> str:
+    """把版本约束抬到「不低于已装版本」，保留原有的范围类型。
+
+    - `^1.2.3` + 实装 `1.4.0` → `^1.4.0`（仍在同一 major 内，与原意一致）
+    - `~1.2.3` + 实装 `1.2.9` → `~1.2.9`
+    - `1.2.3`（精确）+ 实装 `1.4.0` → `^1.4.0`（精确版本升不动，改范围）
+    - `>=1.0.0` + 实装 `1.4.0` → `>=1.4.0`
+    - `*` / 空 → 不动（无约束可抬）
+
+    ⚠️ 实装版本里带预发布标记（`4.0.0-beta.1`）时原样使用：那才是实际
+    跑着的版本，写成下限才不会「下次装回正式版导致行为突变」。
+    """
+    spec = (spec or "").strip()
+    if not spec or spec == "*" or spec == "latest":
+        return spec
+    for pfx in _NPM_RANGE_PREFIX:
+        if spec.startswith(pfx):
+            return f"{pfx}{installed}"
+    return f"^{installed}"          # 精确版本 → 改成 caret 范围
+
+
+def _walk_packages(nm: Path) -> list[str]:
+    """列出 node_modules 下所有已装包（含 scoped，展开成 `a/b` 形态）。
+
+    `node_modules/@scope/pkg` 是两级目录，故要单独处理 `@` 开头的项。
+    逐项定位而非 glob 整树，结果**与遍历顺序无关**。
+    """
+    out: list[str] = []
+    if not nm.is_dir():
+        return out
+    for p in nm.iterdir():
+        if p.name.startswith("."):
+            continue
+        if p.name.startswith("@") and p.is_dir():
+            out += [f"{p.name}/{q.name}" for q in p.iterdir()
+                    if q.is_dir() and not q.name.startswith(".")]
+        elif p.is_dir():
+            out.append(p.name)
+    return sorted(out)
 
 
 # ---------- koishi.yml 文本级编辑 ----------
