@@ -339,17 +339,24 @@ class NoneBot2Adapter(BaseAdapter):
 
         不能用 `pip list`——那列的是**解释器自己** site-packages 里的包，
         而我们的依赖在 `libs/`，两者毫无关系。故直接扫 `*.dist-info` 目录名。
+
+        ⚠️ 同名前缀的 dist-info 只保留**版本号较大**的那个，不能用「后扫的覆盖
+        先扫的」：`Path.glob` 的顺序在 Linux 与 Windows 上不同，同一份目录在
+        两边会得出相反的版本号。2026-10-05 CI 就是在 Linux 上炸的这个
+        （Windows 本地全绿：扫到 2.7.1，Linux 扫到 2.4.3）。
+        残留重复通常来自 pip 升级中断或手工拷贝，概率低但后果是「基线算错、
+        误判成没升级」，所以这里必须给确定结果。
         """
-        out: dict[str, str] = {}
+        found: dict[str, list[str]] = {}
         libs = self._libs_dir(instance)
         if not libs.is_dir():
-            return out
+            return {}
         for d in libs.glob("*.dist-info"):
             stem = d.name[: -len(".dist-info")]
             name, _, ver = stem.rpartition("-")
             if name and ver:
-                out[name.lower().replace("_", "-")] = ver
-        return out
+                found.setdefault(name.lower().replace("_", "-"), []).append(ver)
+        return {k: max(v) for k, v in found.items()}
 
     def _freeze_baseline(self, instance) -> None:
         """记录已装依赖版本，作为升级通道的比对基线（替代 release tag）。"""
@@ -664,8 +671,12 @@ class NoneBot2Adapter(BaseAdapter):
             if not ver:
                 raise ValueError(f"{name} 不在已装依赖里")
             libs = self._libs_dir(instance)
-            # ① 删包本体：dist-info 记录的 RECORD 列出该包所有文件
-            for dist in libs.glob(f"{_dist_stem(name, ver)}.dist-info"):
+            # ① 删包本体：dist-info 记录的 RECORD 列出该包所有文件。
+            # 用**同名前缀通配**而不是精确版本：pip 升级中断会留下新旧两个
+            # dist-info，只删一个的话另一个还在，下次扫描仍会算进已装依赖
+            # （表现为「卸载了但依赖列表里还在」）。版本号本身已由
+            # _installed_versions 取 max 定了，删的时候不该再挑。
+            for dist in libs.glob(f"{name.replace('-', '_')}-*.dist-info"):
                 rec = dist / "RECORD"
                 if rec.is_file():
                     for rel in rec.read_text("utf-8", errors="replace").splitlines():
@@ -712,15 +723,6 @@ def _spec_version(spec: str) -> str:
         if (at := spec.find(sep)) > 0:
             return spec[at:]
     return ""
-
-
-def _dist_stem(name: str, ver: str) -> str:
-    """dist-info 目录名的包名段：包名里的 `-` 归一为 `_` 后与版本拼。
-
-    归一是必须的：pip 装出来的目录是 `nonebot_plugin_foo-1.0.dist-info`，
-    而前端传来的包名带连字符（PyPI 上的写法）。
-    """
-    return f"{name.replace('-', '_')}-{ver}"
 
 
 def _remove_pyproject_dep(path: Path, name: str) -> None:

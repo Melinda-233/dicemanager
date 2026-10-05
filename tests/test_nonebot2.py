@@ -48,8 +48,9 @@ def _manifest() -> dict:
     """读当前 edition 对应的清单（server / _win 两侧同构，差异只在路径与解释器候选）。"""
     from core.edition import is_desktop
     name = "nonebot2_win.json" if is_desktop() else "nonebot2.json"
-    text = "\n".join(l for l in (ROOT / "manifests" / name).read_text("utf-8").splitlines()
-                     if not l.strip().startswith("//"))
+    text = "\n".join(x for x in
+                     (ROOT / "manifests" / name).read_text("utf-8").splitlines()
+                     if not x.strip().startswith("//"))
     return json.loads(text)
 
 
@@ -187,9 +188,16 @@ def _full_libs(d: Path, **over) -> Path:
     """造一份「清单声明的依赖全齐」的 libs/。
 
     目录名按 pip 实际产出的形态写（连字符归一前的下划线形态），与真实安装一致。
+    ⚠️ `over` 里指定的版本会**先清掉同名旧目录**再写——模拟 pip 升级的真实行为
+    （pip 升级是替换 dist-info，不是并存）。并存会让扫描结果依赖 glob 顺序，
+    在 Linux 与 Windows 上得出相反的版本号（2026-10-05 CI 踩过）。
     """
+    for stem in over:
+        for old in (d / LIBS_DIR).glob(f"{stem.replace('-', '_')}-*.dist-info"):
+            import shutil as _sh
+            _sh.rmtree(old, ignore_errors=True)
     vers = {k.lower().replace("-", "_"): "1.0" for k in MANIFEST["dependencies"]}
-    vers.update(over)
+    vers.update({k.replace("-", "_"): v for k, v in over.items()})
     return _fake_libs(d, vers)
 
 
@@ -208,6 +216,25 @@ def test_installed_versions_reads_dist_info_not_pip_list(tmp_path):
     # 下划线/连字符归一：pip 装出来的目录名用下划线，清单里写连字符
     assert got["nonebot-adapter-onebot"] == "2.6.0"
     assert got["uvicorn"] == "0.30.1"
+
+
+def test_installed_versions_pick_highest_on_duplicate_dist_info(tmp_path):
+    """回归（2026-10-05 CI 在Linux 上炸的）：同名前缀的 dist-info 并存时取**版本号大**的。
+
+    原本是「后扫的覆盖先扫的」，而 `Path.glob` 的返回顺序在 Linux 与 Windows 上
+    不同 —— 同一份目录在 Windows 本地扫到 2.7.1（绿），CI 的Linux 扫到 2.4.3（红）。
+    残留重复来自 pip 升级中断或手工拷贝，概率低但会让「基线算错、误判成没升级」，
+    所以扫描结果必须是确定的。
+
+    `sorted()` 反向构造即模拟「旧的排后面」——若实现退化成覆盖式，
+    这条用例在任何平台都会失败。
+    """
+    d = tmp_path / "nb-dup"
+    d.mkdir()
+    for v in ("2.7.1", "2.4.3"):
+        (d / LIBS_DIR / f"nonebot2-{v}.dist-info").mkdir(parents=True)
+    got = _ad()._installed_versions(_inst(d))
+    assert got["nonebot2"] == "2.7.1", "并存时必须取版本号大的那个"
 
 
 def test_deps_installed_requires_all_declared_packages(tmp_path):
