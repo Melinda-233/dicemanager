@@ -514,6 +514,14 @@ def upgrade_check(inst_id: str, user: Annotated[CurrentUser | None, Depends(curr
                 "up_to_date": False,
                 "message": "该程序为 Python 依赖项目，版本以已装依赖为准；"
                            "点「升级」将执行 pip install -U 升级全部依赖"}
+    if strat == "npm_project":
+        # 同理（Koishi）：上游在 npm registry，没有 release tag 可比对，
+        # 升级动作本身可用（npm install -U）。返回 supported=False 会让前端
+        # 把升级入口一起藏掉，用户就再也升不了了。
+        return {"supported": True, "current": rec.version, "latest": None,
+                "up_to_date": False,
+                "message": "该程序为 Node 依赖项目，版本以已装依赖为准；"
+                           "点「升级」将执行 npm install -U 升级全部依赖"}
     try:
         latest = adapter.latest_tag()
     except Exception as e:

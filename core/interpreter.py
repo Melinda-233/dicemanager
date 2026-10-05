@@ -162,23 +162,122 @@ def python_version(path: str, timeout: int = 30) -> tuple[int, int] | None:
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 
-def find_interpreter(candidates=None, env_var: str = "DM_PYTHON") -> str | None:
+def find_interpreter(candidates=None, env_var: str = "DM_PYTHON",
+                     requires=None) -> str | None:
     """按统一优先级找一个真解释器：环境变量 > 自带 > 候选 > sys.executable。
 
-    `python_requires` 形如 `[(3, 10)]`：给出时按版本下限过滤，找不到合适的
-    返回 None（调用方负责报「需要 Python ≥X.Y」）。
+    `requires` 形如 `[(3, 10)]`（清单的 `python_requires`）：给出时按**版本下限**
+    过滤，每个候选都要 `python_version(...) >= requires` 才算可用。
+    找不到合格的返回 None（调用方负责报「需要 Python ≥X.Y」）。
+
+    ⚠️ 环境变量指定的版本不够时**不再回退**到别的候选：用户显式指定了
+    DM_PYTHON 却悄悄换成另一个解释器，比直接报错更难排查。
     """
+    ok = _meets(requires, lambda p: python_version(p))
     if override := os.environ.get(env_var, "").strip():
-        return override if looks_like_python(override) else None
+        return override if looks_like_python(override) and ok(override) else None
     for cand in bundled_interpreters():
-        if looks_like_python(cand):
+        if looks_like_python(cand) and ok(cand):
             return cand
     for name in (candidates or []):
         from shutil import which
         found = which(name)
-        if found and looks_like_python(found):
+        if found and looks_like_python(found) and ok(found):
             return found
     if sys.executable and not is_frozen_like(sys.executable) \
-            and looks_like_python(sys.executable):
+            and looks_like_python(sys.executable) and ok(sys.executable):
         return sys.executable
+    return None
+
+
+def _meets(requires, getter):
+    """按 `requires` 下限过滤候选；requires 为空则恒真。
+
+    `requires` 形如 `[(3, 10)]`；**取各项的最小值**作为门槛——清单写多项
+    是表达「支持这些版本」，门槛理应是最低的那个。多项之间是「或」关系。
+    """
+    if not requires:
+        return lambda path: True
+    floor = min(tuple(v) for v in requires)
+    return lambda path: (v := getter(path)) is not None and tuple(v) >= floor
+
+
+# ---------- Node.js（npm_project 类程序，如 Koishi）----------
+
+# node 的版本字符串有两种形态，**取决于怎么问**：
+#   `node -v`               → "v20.11.1"   （带 v）
+#   `node -p process.versions.node` → "20.11.1"（不带 v）
+# 正则要同时吃下两种，别只按其中一种写（踩过：只认带 v 的，导致自检永远不过）。
+_NODE_VER_RE = re.compile(r"v?(\d+)\.(\d+)")
+
+
+def looks_like_node(path: str, timeout: int = 30) -> bool:
+    """探测某路径是否是**真 node**（能响应 `-v` 且真能执行代码）。
+
+    与 `looks_like_python` 同思路：不能只看退出码——面板 exe 传任何参数都会
+    启动服务并 rc=0（见模块 docstring 的实测）。故要求版本 banner 形如
+    `v20.11.1`，并再跑一次 `-p` 求值自检。
+    """
+    if is_frozen_like(path):
+        return False
+    import subprocess
+    try:
+        r = subprocess.run([path, "-v"], capture_output=True, text=True,
+                           timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0 or not _NODE_VER_RE.search(f"{r.stdout or ''}{r.stderr or ''}"):
+        return False
+    try:
+        r2 = subprocess.run([path, "-p", "process.versions.node"],
+                            capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r2.returncode == 0 and bool(_NODE_VER_RE.search(r2.stdout or ""))
+
+
+def node_version(path: str, timeout: int = 30) -> tuple[int, int] | None:
+    """取 node 的 (major, minor)；不是 node 或探测失败返回 None。"""
+    import subprocess
+    if is_frozen_like(path):
+        return None
+    try:
+        r = subprocess.run([path, "-v"], capture_output=True, text=True,
+                           timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = _NODE_VER_RE.search(f"{r.stdout or ''}{r.stderr or ''}")
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def find_node(candidates=None, env_var: str = "DM_NODE", requires=None) -> str | None:
+    """找一个真 node：环境变量 > 候选（which）> 面板自身所在目录旁的 node。
+
+    优先级与 `find_interpreter` 对齐。⚠️ 面板是 PyInstaller 单 exe，
+    **不捆绑 Node**（Node 运行时 80MB+，与"便携单机"定位冲突），
+    故没有 `bundled_node()` 一层；用户需自装 Node.js LTS。
+    找不到时由调用方报「需安装 Node.js ≥18」。
+    """
+    ok = _meets(requires, lambda p: node_version(p))
+    if override := os.environ.get(env_var, "").strip():
+        return override if looks_like_node(override) and ok(override) else None
+    for name in (candidates or []):
+        from shutil import which
+        found = which(name)
+        if found and looks_like_node(found) and ok(found):
+            return found
+    return None
+
+
+def node_with_npm(node: str) -> str | None:
+    """从 node 可执行文件推出同目录的 npm 入口（跨平台）。
+
+    Windows 上 npm 是 `npm.cmd`（`npm` 是 shell 脚本，Popen 直接跑会失败），
+    Linux/macOS 上是 `npm`。都找不到时返回 None——宁可不装，也不要跑错文件。
+    """
+    d = Path(node).resolve().parent
+    for name in (("npm.cmd", "npm") if os.name == "nt" else ("npm", "npm.cmd")):
+        p = d / name
+        if p.is_file():
+            return str(p)
     return None

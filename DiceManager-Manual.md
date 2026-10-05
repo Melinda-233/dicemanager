@@ -637,6 +637,39 @@ proc.on_line(cb)      # cb(seq: int, line: str) → 返回一个函数，用于 
 ⚠️ 这类「继承 + 覆写」的前提是**被继承的那份足够稳**。若日后 nonebot2 的
 pip 机制要大改，记得同步评估 AstrBot 是否需要跟着改——它的正确性依赖父类。
 
+**D-3. 依赖型项目的第三个实例：Koishi（`koishi.py`，第 6 种策略 `npm_project`）**
+
+Node.js 项目。与 D/D-2 的**语言栈不同**，所以**不能继承** NoneBot2Adapter
+（解释器探测、依赖目录 `node_modules/`、配置格式 YAML、启动命令、插件命令
+全都不同）。共用的只有「脚手架 + 装依赖」这个流程骨架 —— 强行造一个跨语言
+基类只会把差异藏进 if 分支，不如各自写清。
+
+⚠️ **本类扩展时必看的三处**：
+
+1. **脚手架包名的 `create-` 前缀陷阱**（E2E 真跑才抓到，单测全绿）：
+   清单的 `skeleton.scaffold` 必须存**短名** `koishi`，用 `npm create koishi@latest`
+   ——`npm create` / `npm init` 都会**自己补 `create-` 前缀**，传完整名
+   `create-koishi` 会变成 `create-create-koishi` → npm 404。
+2. **`--yes` 是必须的，且它会跳过依赖安装**：`create-koishi` 用 `prompts`
+   交互（面板无 TTY，不带 `-y` 直接挂死）；而 `-y` 同时跳过它自己的
+   `npm install`（源码 `install()` 里 `if (argv.yes) return`）——
+   这正好让我们把装依赖做成面板上可见的一步。
+3. **OneBot 的协议取值是 `ws-reverse`**（Koishi 特有），**不是** NapCat 那种
+   `protocol: ws` + 单独的 `websocket:` 段 —— 那是「实现端」的写法。
+   字段名逐字取自 `@satorijs/adapter-onebot@6.0.2` 的 schema。
+   ⚠️ `selfId` 是 **required**，留空插件加载不了，故提示里必须告知用户去填。
+
+新增 `npm_project` 策略时连带要改的地方（漏一处就是线上事故）：
+
+| 位置 | 改什么 | 漏了会怎样 |
+|---|---|---|
+| `adapters/__init__.ALLOWED_STRATEGY` | 加入策略名 | `load_registry` 直接抛「download_strategy 非法」 |
+| `base._resolve_release()` | 加分支 | `/upgrade-check` 502；`/upgrade` **先停机 + 先备份**才500 |
+| `base.latest_tag()` | 归入「返回 None」类 | 会去比对不存在的 release tag |
+| `api/rest.py` `/upgrade-check` | 加 `supported: True` 分支 | 前端把**升级入口一起藏掉**，用户再也升不了 |
+| `core/backup.py` 排除规则 | 排除 `node_modules` | 备份包几百 MB，导出/上传必然超时 |
+| 适配器 `verify_required()` | 目录项要额外判空 | 空 `node_modules/` 被判「装好了」，部署假成功 |
+
 **E. 可管理能力（横切机制，2026-10-05 新增）**
 
 「管理应用」不是一个新页面，而是**由适配器声明能力、前端按能力渲染**的机制。

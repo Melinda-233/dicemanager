@@ -239,6 +239,12 @@ class BaseAdapter(ABC):
             raise RuntimeError(
                 "该程序为 Python 依赖项目（pip_project），无可下载的程序包；"
                 "依赖升级请用「管理应用」或 pip install -U")
+        if strat == "npm_project":
+            # 同理：Node 依赖项目（Koishi）在 npm registry 而非 GitHub Release，
+            # 无可下载资产；升级语义是 npm install -U。
+            raise RuntimeError(
+                "该程序为 Node 依赖项目（npm_project），无可下载的程序包；"
+                "依赖升级请用「管理应用」或 npm install -U")
         raise ValueError(f"未知下载策略: {strat}")
 
     def verify_required(self, instance) -> list:
@@ -249,8 +255,8 @@ class BaseAdapter(ABC):
     def latest_tag(self) -> str | None:
         """上游最新版本号；无法判定（直链固定 URL / manual / pip_project）返回 None。"""
         strat = self.m.get("download_strategy", "direct")
-        if strat in ("manual", "direct", "pip_project"):
-            # pip_project 无上游 release 概念，版本基线是「已装依赖快照」
+        if strat in ("manual", "direct", "pip_project", "npm_project"):
+            # pip_project / npm_project 无上游 release 概念，版本基线是「已装依赖快照」
             # （由适配器自己 freeze，见 NoneBot2Adapter._freeze_baseline），
             # 不走 release tag 比对，升级语义是 pip install -U 而非换包。
             return None

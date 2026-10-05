@@ -1,0 +1,62 @@
+// manifests/koishi.json
+// Koishi：Node.js 项目（npm 依赖 + koishi.yml），走 npm_project 策略
+// 上游在 GitHub 有 tag 但**零 release 资产** → 没有可下载的程序包；
+// 官方做法是 `npm init koishi@latest` 拉官方模板（等价于本清单的脚手架步骤）。
+//
+// 模板来源已核实（2026-10-05 查 npm registry + 解包 create-koishi@6.4.0）：
+// - 脚手架 create-koishi 支持 `-y/--yes` 跳过全部交互（面板无 TTY，必须带）
+// - 模板包 @koishijs/boilerplate 含 40 个依赖、scripts.start = "koishi start"
+// - ⚠️ 默认模板**不含 OneBot 适配器**（给的是 qq/discord/telegram 等），
+//   故依赖表里必须显式加 @koishijs/plugin-adapter-onebot，否则连不上登录端
+{
+  "name": "koishi", "arch": "standalone", "multi_account": false,
+  "exe": "package.json",
+  "install_root": "/opt",
+
+  "login_type": "external",
+  "compatible_login": ["napcat", "llbot", "snowluma", "lagrange"],
+  "protocol": "ob11",
+
+  "delete_keeps_save": true,
+  // Koishi 的状态全在项目目录里：koishi.yml 配置、data/（sqlite 库，
+  // 模板 database-sqlite.path = data/koishi.db）、plugins/ 本地插件。
+  // ⚠️ node_modules 不进备份：几百 MB 且 `npm install` 就能重建，
+  // 打进包必然传不动/ 上传超时（core/backup.py 里有同名目录排除）。
+  "save_keep_dir": ["koishi.yml", "data", "plugins"],
+  "data_paths": ["koishi.yml", "data", "plugins"],
+
+  "download_strategy": "npm_project",
+  "prerequisite": "需 Node.js ≥18（管理器会自行探测；找不到时请安装 Node.js LTS 或设置 DM_NODE 环境变量）",
+
+  // 脚手架：npm create koishi 从 registry 拉 @koishijs/boilerplate 解压到实例目录。
+  // ⚠️ scaffold 存的是**短名** `koishi`：`npm create` 自己会补 `create-` 前缀，
+  // 写完整名`create-koishi` 会变成 `create-create-koishi` → 404（E2E 真跑踩过）。
+  // 不用 GitHub Release —— 上游 release 无资产（2026-10-05 核实）。
+  "skeleton": {
+    "registry": "https://registry.npmjs.org",
+    "scaffold": "koishi",
+    "template": "@koishijs/boilerplate"
+  },
+  // 清单只声明**必须保证**的依赖，其余由模板自带的 package.json 提供。
+  // ⚠️ @koishijs/plugin-adapter-onebot 不在默认模板里（模板给的是
+  // qq/discord/telegram/kook/satori），缺它就没有 OneBot 通道。
+  // peerDeps 要求 koishi ^4.14.6，故 koishi 必须一起钉住。
+  "dependencies": {
+    "koishi": ">=4.18.0",
+    "@koishijs/plugin-adapter-onebot": ">=6.0.0"
+  },
+  "config_path": "koishi.yml",
+  // OneBot 反向 WS 服务端（与 AstrBot 同向）：`ws://<host>:5140/onebot`
+  // ⚠️ `protocol: ws-reverse` 是 Koishi 特有取值（不是 NapCat 那种
+  // `ws` + `websocket:` 段），字段名逐字取自 @satorijs/adapter-onebot@6.0.2
+  "ob11_reverse_path": "/onebot",
+  "webui_default_port": 5140,
+
+  // Node 探测候选：先 LTS 常见名，再版本化名字，最后 nvm
+  "node_candidates": ["node", "nodejs", "node22", "node20", "node18"],
+  "node_requires": [[18, 0]],
+
+  // node_modules 必须在校验里：缺它实例一起来就 "Cannot find module 'koishi'"
+  "required_files": ["package.json", "node_modules", "koishi.yml"],
+  "approx_memory_mb": 200
+}

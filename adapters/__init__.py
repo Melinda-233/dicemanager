@@ -6,6 +6,7 @@ from pathlib import Path
 from adapters import (
     astrbot,
     dicenext,
+    koishi,
     lagrange,
     lagrange_milky,
     llbot,
@@ -30,7 +31,7 @@ ALLOWED_ARCH = ("standalone", "allinone")
 # pip_project：上游是 PyPI 包而非可执行程序包（nonebot2），需 pip install --target
 #   到<实例>/libs 再由入口脚本 sys.path.insert 引入
 ALLOWED_STRATEGY = ("direct", "resolve_latest_via_api", "olivos_bundle_or_opk",
-                    "manual", "pip_project")
+                    "manual", "pip_project", "npm_project")
 
 classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "napcat": napcat.NapCatAdapter, "shiki": shiki.ShikiAdapter,
@@ -41,7 +42,8 @@ classes = {"sealdice": sealdice.SealDiceAdapter, "llbot": llbot.LLBotAdapter,
            "lagrange_milky": lagrange_milky.LagrangeMilkyAdapter,
            "yogurt": yogurt.YogurtAdapter,
            "nonebot2": nonebot2.NoneBot2Adapter,
-           "astrbot": astrbot.AstrBotAdapter}
+           "astrbot": astrbot.AstrBotAdapter,
+           "koishi": koishi.KoishiAdapter}
 
 def load_registry(manifest_dir) -> dict[str, tuple[dict, type]]:
     out: dict[str, tuple[dict, type]] = {}

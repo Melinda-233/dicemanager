@@ -148,6 +148,17 @@ def restore_into(archive: Path, dest: Path) -> dict:
 
 # ---------- 导出（与导入对称；两种口径严格区分） ----------
 
+# 备份时始终跳过的目录名（**任何 program**）。
+#
+# 为什么需要：依赖目录能到几百 MB 且**可完全重建**（`npm install` / `pip install
+# --target` 几分钟就能拿回来），打进备份只会让包臃肿到传不动、上传超时。
+# 历史教训：Koishi 的 node_modules 单实例可超 500MB，不排除的话「导出整目录
+# 备份」必然失败或传半天。
+#⚠️ 排除的是**目录名**（任意层级同名都跳），不是路径 —— 所以用户自己建的
+# 叫 node_modules 的数据目录也会被跳，这是可接受的取舍（那本就不该手放）。
+_ALWAYS_SKIP_DIRS = frozenset({"node_modules", ".git"})
+
+
 def export_dir(src: Path, out: Path, scope: str = "full",
                data_paths: list[str] | None = None) -> dict:
     """把实例目录打包为 tar.gz，返回 {"scope", "files", "bytes"}。
@@ -195,7 +206,10 @@ def export_dir(src: Path, out: Path, scope: str = "full",
                     count += 1
                     continue
                 for dirpath, dirnames, filenames in os.walk(root):
-                    dirnames.sort(); filenames.sort()
+                    # 先剔除再 sort：os.walk 靠就地改 dirnames 实现剪枝
+                    dirnames[:] = sorted(d for d in dirnames
+                                         if d not in _ALWAYS_SKIP_DIRS)
+                    filenames.sort()
                     for fn in filenames:
                         f = Path(dirpath) / fn
                         if f.is_symlink():
