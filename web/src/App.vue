@@ -25,7 +25,7 @@ import Wizard from './pages/Wizard.vue'
 import Login from './pages/Login.vue'
 import Password from './pages/Password.vue'
 import Accounts from './pages/Accounts.vue'
-import { getToken, getUser, logout, needsSetup, setToken } from './api'
+import { getToken, getUser, logout, needsSetup, setToken, whoami } from './api'
 
 const token = ref(getToken())
 const user = ref(getUser())
@@ -46,6 +46,7 @@ onMounted(async () => {
       if (!location.hash.startsWith('#/login')) location.hash = '#/login'
     }
   } catch { /* 探测失败不阻断渲染：登录页自身还会再探一次并给出可见提示 */ }
+  await backfillRole()
 })
 onUnmounted(() => {
   removeEventListener('hashchange', onHash)
@@ -58,12 +59,24 @@ const admin = computed(() => !!user.value && user.value.role === 'admin')
 const MENUS = [
   { hash: '#/overview', label: '总览' },
   { hash: '#/logs',     label: '日志中心' },
-  { hash: '#/wizard',   label: '新建骰子' },
+  { hash: '#/wizard',   label: '创建' },
   { hash: '#/accounts', label: '账号管理', adminOnly: true },
 ]
 const visibleMenus = computed(() =>
   MENUS.filter(m => !m.adminOnly || admin.value))
 const onMenu = m => hash.value.startsWith(m.hash)
+
+// 升级兼容：老版本的 localStorage 里只有 {username}，没有 role —— 那样 admin 恒为
+// false，「账号管理」菜单对管理员也不显示，且没有任何提示（页面其余部分都正常，
+// 看起来像"这版没这个功能"）。这里用 /me 回填一次身份，只补缺失的 role，不覆盖
+// 已有值（避免拿旧缓存盖掉服务端刚改的角色）。
+const backfillRole = async () => {
+  if (!token.value || user.value?.role) return
+  try {
+    const me = await whoami()
+    if (me?.role) setToken(getToken(), { ...user.value, ...me })
+  } catch { /* 探测失败不阻断渲染：401 会由 api 层统一登出 */ }
+}
 
 // 路由守卫：之前只判 token 非空，普通用户手敲 #/accounts 也能进（后端会 403 但页面空白）
 const ROUTES = {

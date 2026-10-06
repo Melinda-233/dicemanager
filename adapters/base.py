@@ -397,6 +397,29 @@ class BaseAdapter(ABC):
     # ---------- 登录与互联 ----------
     @abstractmethod
     def configure_login(self, instance, credentials: dict) -> dict: ...
+
+    # ---------- 登录方式（能力声明，不写程序名分支）----------
+    # 覆写本方法即视为支持密码登录，前端据此在登录区给出「扫码 / 账号密码」二选一。
+    # 默认只支持扫码——**密码登录必须逐个程序确认过配置字段后再开**，不能因为
+    # 「QQ 协议端一般都能账密登录」就一律放开：字段写错时程序会静默忽略并退回扫码，
+    # 用户以为设了密码其实每次都在扫码（而扫码的滑块/风控成本远高于账密登录）。
+    def login_modes(self) -> list[str]:
+        return ["qrcode"]
+
+    def save_login_credentials(self, instance, credentials: dict) -> dict:
+        """把账号密码写入程序自己的配置，使其以后能免扫码快速登录。
+
+        ⚠️ **密码明文落盘**（QQ 协议端的既定事实：Lagrange 的 Account.Password、
+        NapCat 的 account.password 都是明文，管理器无法代为加密——程序自己读不出来）。
+        因此实现方**只写程序配置文件，不落在管理器状态库**，备份/导出也就不会把密码
+        带出去；对应的代价是服务器上能读该目录的人就拿到了密码，前端必须明示风险。
+
+        返回 {"restart": bool, "manual": str, "path": str|None}：
+          · restart=True → 凭据在启动时读取，需要重启进程才生效（向导据此提示）
+          · manual非空 → 该程序无法由面板代劳，文字说明交由用户手动完成
+        默认不支持（login_modes 未含 account 时不会被调用）。
+        """
+        return {"restart": False, "manual": "该程序不支持由面板写入账号密码"}
     @abstractmethod
     def write_conn_config(self, instance, mode: str, direction: str,
                           addr: str, token: str,

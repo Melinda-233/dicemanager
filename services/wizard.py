@@ -190,7 +190,16 @@ class Wizard:
                     except ValueError:
                         pass
                     return {"result": "ok", "needs_login": False, "skipped": True}
-                r = adapter.configure_login(inst, payload.get("credentials", {}))
+                creds = payload.get("credentials", {}) or {}
+                # 密码登录：先写凭据再configure_login。两步都要——前者落盘账号密码
+                # （程序启动时读），后者是适配器自己的登录前配置（LLBot 的 AUTH TOKEN 等）
+                if payload.get("login_mode") == "account" or (
+                        payload.get("qq") and creds.get("password")):
+                    saved = adapter.save_login_credentials(inst, creds)
+                    if not saved.get("path") and not saved.get("manual"):
+                        return {"result": "error",
+                                "message": saved.get("message") or "账号密码写入失败"}
+                r = adapter.configure_login(inst, creds)
                 if r.get("conflict"):
                     return {"result": "conflict", "message": r["conflict"]}
                 if payload.get("qq"):

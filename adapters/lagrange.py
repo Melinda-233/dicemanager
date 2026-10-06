@@ -11,13 +11,18 @@
 - **缺 appsettings.json 时程序会 Console.ReadKey(true) 等按键**（Program.cs 原话
   "Please Edit the appsettings.json ... and press any key to continue"）——无头部署必然
   卡死或抛异常。故部署阶段就预置配置，不依赖 Step5 的 prepare_start。
-- 登录：上游只支持扫码（密码登录标红不支持）。二维码以 Unicode 方块字符画打到 stdout
+- 登录：扫码（上游主路径）+ 账号密码（feature table 的 UnusalDevice Password）。
+  二维码以 Unicode 方块字符画打到 stdout
   （ConsoleCompatibilityMode=false 用 ▄▀█，true 用 .^@），**不打印 data URL**，
   同时落盘 `qr-{Account:Uin}.png`（Uin 默认 0 → qr-0.png）。
   所以二维码取自磁盘 png，基类那条「日志里找 data:image… 」的正则抓不到。
+  密码登录：`Account.Password` 非空即走账密（为空才是扫码），官方文档的说法是
+  "After QRCode Login, write password and uin back to appsettings.json" ——
+  即首次扫码后把账密回写，之后启动免扫码。
 - 自更新默认关闭（UpdaterConfig.EnableAutoUpdate=false），无需干预。
 """
 import copy
+from pathlib import Path
 
 from adapters.base import WriteResult
 from adapters.lagrange_base import LagrangeBase
@@ -53,6 +58,53 @@ class LagrangeAdapter(LagrangeBase):
     def configure_login(self, instance, credentials) -> dict:
         # 二维码经 /ws/login 推送（来自磁盘 qr-*.png）；qq 登录后由 keystore 回读
         return {"ok": True}
+
+    # ---------- 登录方式 ----------
+    def login_modes(self) -> list[str]:
+        """扫码 + 账号密码二选一（上游 feature table 的 UnusalDevice Password）。
+
+        上游 appsettings.json 的 Account 段即为此设计：`{"Uin": 0, "Password": ""}`，
+        官方文档明确 "After QRCode Login, write password and uin back to appsettings.json"
+        —— Password 为空才走扫码。写了就免扫码快速登录。
+        """
+        return ["qrcode", "account"]
+
+    # Account.Protocol 的可选值（上游 appsettings.json 的 Protocol 字段）
+    LOGIN_PROTOCOLS = [{"id": "Windows", "label": "Windows（兼容性最好）"},
+                       {"id": "Linux", "label": "Linux"},
+                       {"id": "macOS", "label": "macOS"}]
+
+    def save_login_credentials(self, instance, credentials) -> dict:
+        """写 Account.Uin / Password / Protocol，使其以后免扫码启动即登录。
+
+        **密码明文落盘**：这是上游格式本身的要求（程序直接读明文），不是管理器的
+        偷懒——加密就没法让程序自己登录了。因此只写程序配置文件，不进管理器状态库
+        （备份/导出不会把密码带走）。
+        """
+        uin = str(credentials.get("qq") or "").strip()
+        pwd = str(credentials.get("password") or "")
+        if not uin or not pwd:
+            return {"restart": False, "manual": "账号与密码均不能为空"}
+        protocol = str(credentials.get("protocol") or "Linux")
+        path = self._config(instance)
+        atomic_write_json(path, lambda cfg: {
+            **cfg,
+            "Account": {**(cfg.get("Account") or {}),
+                        "Uin": int(uin), "Password": pwd,
+                        "Protocol": protocol, "AutoReconnect": True},
+        })
+        # 换号时必须清 keystore.json：里面存的是上一个账号的登录态，与新账号混用
+        # 会直接触发 QQ 的「已在别处登录」把号踢下线。删失败不阻断——账密登录不
+        # 依赖它（那是扫码登录的产物），只是残留状态。
+        try:
+            before = (self.read_json(path).get("Account") or {}).get("Uin")
+            if before and int(before) != int(uin):
+                ks = Path(instance.dir) / "keystore.json"
+                if ks.exists():
+                    ks.unlink()
+        except (OSError, ValueError, TypeError):
+            pass
+        return {"restart": True, "manual": "", "path": str(path)}
 
     def list_accounts(self, instance) -> list[dict]:
         """回读 Lagrange 已登录账号（一个实例通常一个 Account.Uin）。

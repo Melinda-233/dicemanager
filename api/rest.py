@@ -922,13 +922,28 @@ def list_manifests():
 
     白名单只放前端真正消费的字段：multi_account / recommended_protocols 曾在此透出
     但前端从不读取（手册 §6.2 记为「文档性字段」），透出只会误导后来者以为有用。
+
+    login_modes 由**适配器方法**给出而非清单字段：能不能写密码是程序自身能力
+    （写错字段时程序会静默忽略并退回扫码，用户以为设了密码其实每次都在扫码），
+    属于代码事实，不该由清单声明。方法缺失/异常一律降级为 ["qrcode"]。
     """
-    return {n: {k: m.get(k) for k in ("arch", "login_type",
-                                      "compatible_login", "bot_modes",
-                                      "webui_default_port", "ob11_default_port",
-                                      "approx_memory_mb", "auth_token_conditional",
-                                      "prerequisite", "delete_keeps_save")}
-            for n, (m, _) in ctx.adapters.items()}
+    out = {}
+    for n, (m, _cls) in ctx.adapters.items():
+        try:
+            adapter = ctx.get_adapter(n)
+            modes = [x for x in (adapter.login_modes() or []) if x in ("qrcode", "account")]
+        except Exception:
+            adapter, modes = None, []
+        out[n] = {k: m.get(k) for k in ("arch", "login_type",
+                                        "compatible_login", "bot_modes",
+                                        "webui_default_port", "ob11_default_port",
+                                        "approx_memory_mb", "auth_token_conditional",
+                                        "prerequisite", "delete_keeps_save")}
+        out[n]["login_modes"] = modes or ["qrcode"]
+        protos = getattr(adapter, "LOGIN_PROTOCOLS", None) if adapter else None
+        if protos:
+            out[n]["login_protocols"] = protos
+    return out
 
 # ---------- 程序包管理：上传/列表/删除（部署时优先解压本地包，免在线下载） ----------
 

@@ -29,13 +29,13 @@
     </div>
     <p v-if="!nodes.length && !connected" class="hint">正在连接服务端…</p>
     <p v-else-if="!nodes.length" class="hint">
-      还没有骰子实例 —— 点上方「新建骰子」开始，或直接访问 <code>#/wizard</code>。
+      还没有实例 —— 点上方「创建」选择应用端或登录端开始，或直接访问 <code>#/wizard</code>。
     </p>
     <div class="layout">
       <div class="topo-wrap">
     <svg :viewBox="'0 0 ' + vbW + ' 420'" class="topo">
       <text :x="colX.login" y="24" class="col-title" text-anchor="middle">登录端</text>
-      <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端（骰子）</text>
+      <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
       <text v-if="!loginNodes.length" :x="colX.login" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
       <text v-if="!diceNodes.length" :x="colX.dice" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
       <line v-for="e in edges" :key="e.src+e.dst"
@@ -250,10 +250,10 @@
       <!-- ===== 连接管理：支持多连一 / 一连多，按账号分发 ===== -->
       <div class="conn-mgmt">
         <p class="hint" v-if="!isLoginSel">
-          关联登录端：每个关联生成一条「骰子端 ↔ 登录端」连接；可绑定登录端的某个 QQ 账号，
-          或选「默认账号」由其自动分配（支持一个骰子端连多个登录端）。
+          关联登录端：每个关联生成一条「应用端 ↔ 登录端」连接；可绑定登录端的某个 QQ 账号，
+          或选「默认账号」由其自动分配（支持一个应用端连多个登录端）。
         </p>
-        <!-- 骰子端：当前关联列表 -->
+        <!-- 应用端：当前关联列表 -->
         <div v-if="!isLoginSel">
           <div v-for="row in linkRows" :key="row.key" class="link-row">
             <div class="link-main">
@@ -299,7 +299,7 @@
           </div>
           <p v-else class="hint">暂无可关联的登录端实例。</p>
         </div>
-        <!-- 登录端：展示已登录账号 + 被哪些骰子端关联 -->
+        <!-- 登录端：展示已登录账号 + 被哪些应用端关联 -->
         <div v-else>
           <p class="hint">已登录账号：</p>
           <div v-for="a in (selLive.accounts || [])" :key="a.qq" class="link-row">
@@ -310,7 +310,7 @@
             </div>
           </div>
           <p v-if="!(selLive.accounts || []).length" class="hint">暂无已登录账号（可能尚未登录）。</p>
-          <p class="hint" style="margin-top:8px">被以下骰子端关联：</p>
+          <p class="hint" style="margin-top:8px">被以下应用端关联：</p>
           <div v-for="d in linkedBy" :key="d.id" class="link-row">
             <div class="link-main">{{ d.dice }} · {{ d.id }}
               <span v-for="l in (d.links || []).filter(x => x.login_ref === sel.id)"
@@ -318,7 +318,7 @@
                 · 账号 {{ l.account_qq || '默认' }}</span>
             </div>
           </div>
-          <p v-if="!linkedBy.length" class="hint">暂无骰子端关联此登录端。</p>
+          <p v-if="!linkedBy.length" class="hint">暂无应用端关联此登录端。</p>
         </div>
         <div class="ops" v-if="!isLoginSel && linkRows.length">
           <button @click="reconn">重写互联配置</button>
@@ -383,7 +383,7 @@ const loadExports = () => listExports().then(e => (expRows.value = e || [])).cat
 const refreshCache = () => { loadPackages(); loadExports() }
 loadPackages(); loadExports()           // 已登录的整页刷新场景直接拉；未登录由 WS onOpen 兜底
 // ---------- 两栏布局：登录端在左、应用端在右 ----------
-// 登录端程序 = 在任意骰子端 manifest 的 compatible_login 里出现过的程序
+// 登录端程序 = 在任意应用端 manifest 的 compatible_login 里出现过的程序
 // （纯清单驱动，与 Wizard 配对模式同口径，不写程序名分支）
 const loginSet = computed(() => {
   const s = new Set()
@@ -458,7 +458,7 @@ const goLogs = () => { location.hash = `#/logs?instance=${sel.value.id}` }
 const del = () => {
   // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码
   const keeps = !!manifests.value[sel.value.dice]?.delete_keeps_save
-  // 该实例作为登录端被哪些骰子端引用：删除会级联解除它们的关联，提前告知
+  // 该实例作为登录端被哪些应用端引用：删除会级联解除它们的关联，提前告知
   const linkedBy = nodes.value.filter(n => n.login_ref === sel.value.id && n.id !== sel.value.id)
   const linkWarn = linkedBy.length
     ? `\n\n⚠ 它正被 ${linkedBy.length} 个实例关联（${linkedBy.map(n => n.dice).join('、')}），删除后将自动解除这些关联。`
@@ -482,7 +482,7 @@ const guard = async fn => {              // 面板操作统一报错出口，失
 // ---------- 面板自管理：整体重启 ----------
 const panelRestarting = ref(false)
 const restartPanelNow = async () => {
-  if (!confirm('整体重启管理面板？\n\n所有骰子实例将随面板退出，重启完成后处于运行状态的实例自动拉回（约 5-10 秒）。')) return
+  if (!confirm('整体重启管理面板？\n\n所有实例将随面板退出，重启完成后处于运行状态的实例自动拉回（约 5-10 秒）。')) return
   panelRestarting.value = true
   try {
     await restartPanel()
@@ -672,7 +672,7 @@ const copyToken = () => {
 const newLoginRef = ref(''), newAccountQq = ref('')
 // 当前选中实例：是否登录端（展示账号视角而非关联管理视角）
 const isLoginSel = computed(() => !!selLive.value && loginSet.value.has(selLive.value.dice))
-// 骰子端：当前关联列表（解析出对端节点、账号清单与连线状态），供面板逐条管理
+// 应用端：当前关联列表（解析出对端节点、账号清单与连线状态），供面板逐条管理
 const linkRows = computed(() => {
   if (!selLive.value || isLoginSel.value) return []
   const sid = sel.value?.id
@@ -691,7 +691,7 @@ const newLoginAccounts = computed(() => {
   const li = nodes.value.find(n => n.id === newLoginRef.value)
   return li?.accounts || []
 })
-// 登录端：被哪些骰子端关联（用于展示「谁在用我」）
+// 登录端：被哪些应用端关联（用于展示「谁在用我」）
 const linkedBy = computed(() => {
   if (!isLoginSel.value) return []
   return nodes.value.filter(n => (n.links || []).some(l => l.login_ref === sel.value.id))
@@ -710,7 +710,7 @@ const addLink = () => guard(async () => {
   newLoginRef.value = ''; newAccountQq.value = ''
 })
 const removeLink = (lr, qq) => guard(async () => {
-  if (!confirm('解除该关联？（不删除任何实例，骰子端对应连接将失效）')) return
+  if (!confirm('解除该关联？（不删除任何实例，应用端对应连接将失效）')) return
   const links = (selLive.value.links || []).filter(
     l => !(l.login_ref === lr && (l.account_qq || '') === (qq || '')))
   await linkInstance(sel.value.id, links)
