@@ -122,6 +122,7 @@
         <button @click="op('start')">启动</button>
         <button @click="op('stop')">停止</button>
         <button @click="op('restart')">重启</button>
+        <button v-if="!isServer" @click="openFolder" title="在文件管理器中打开实例目录">打开文件夹</button>
         <button @click="toggleManage">管理应用</button>
         <button @click="toggleMetrics">{{ showMetrics ? '收起资源曲线' : '资源曲线' }}</button>
         <button @click="goLogs">查看日志</button>
@@ -353,7 +354,8 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
-         listExports, deleteExport, pruneExports, restartPanel, getEdition } from '../api'
+         listExports, deleteExport, pruneExports, restartPanel, getEdition,
+         revealInstance } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -454,6 +456,15 @@ const op = o => guard(async () => {
   connMsg.value = r?.webui_note || ''
 })
 // 模板里不能直接用 location（会编译成 _ctx.location），一律包成方法
+// 在文件管理器里打开实例目录：仅 desktop 有这个概念，server 是无人值守服务器，
+// 按钮与后端端点**两处都要挡**（后端见 rest.py reveal_instance）——只挡一处会
+// 出现「按钮在但点了 404」，用户只会以为面板坏了。
+const openFolder = () => guard(async () => {
+  connMsg.value = ''
+  await revealInstance(sel.value.id)
+  connMsg.value = `已在文件管理器中打开 ${selLive.value.dir || '实例目录'}`
+})
+
 const goLogs = () => { location.hash = `#/logs?instance=${sel.value.id}` }
 const del = () => {
   // 是否建议保留存档目录由 manifest 声明（delete_keeps_save），不再按程序名硬编码

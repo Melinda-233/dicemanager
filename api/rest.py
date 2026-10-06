@@ -732,6 +732,38 @@ async def instance_plugin_sync(inst_id: str, user: Annotated[CurrentUser | None,
 
 # 必须注册在所有具体的 POST 子路由（/backup、/webui、/metrics…）之后：否则 {op} 会按
 # 注册顺序抢先匹配到 backup 等字面路径（同源坑见 /packages/unused、/exports/prune）。
+# ---------- 在文件管理器中打开实例目录（分化 C6，仅 desktop）----------
+# server 版是无人值守的服务器，没有「文件管理器」这个概念；给按钮挂一个必然
+# 失败的操作只会让用户以为面板坏了。因此该端点在 server 上直接 404，前端也据
+# /edition 不渲染按钮——两处都要挡，缺一处就会出现「点了没反应」。
+
+@router.post("/instances/{inst_id}/reveal")
+def reveal_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """在系统文件管理器里打开实例目录（Windows 资源管理器 / macOS Finder）。
+
+    ⚠️ **目录必须来自注册表**，不接受前端传路径：这是唯一能把任意路径交给
+    shell 打开的端点，参数一旦可控就等于允许在任意目录弹出窗口（且能被诱导
+    打开 UNC 路径发起网络认证请求，泄露 NTLM 哈希）。所以只接受实例 ID。
+    """
+    if is_server():
+        raise HTTPException(404, "仅桌面版提供「打开文件夹」")
+    inst = _inst_or_404(inst_id, user)
+    d = Path(inst.dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"实例目录不存在：{d}")
+    if os.name == "nt":
+        # 直接起explorer：ShellExecute 的语义（与在地址栏敲路径等价），
+        # 且不受 CreateProcess 对 explorer.exe 的 quirky 行为影响
+        subprocess.Popen(["explorer", str(d)])
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(d)])
+    else:
+        # desktop 版理论上不会走到（构建目标是 Windows），但源码仍要能在
+        # Linux 上跑测试，故给 xdg-open 兜底而不是抛平台异常
+        subprocess.Popen(["xdg-open", str(d)])
+    return {"ok": True, "dir": str(d)}
+
+
 @router.post("/instances/{inst_id}/{op}")
 def instance_op(inst_id: str, op: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     user = _u(user)
@@ -906,38 +938,6 @@ def kill_orphan_proc(req: KillReq):
     p.kill()
     p.wait(timeout=10)
     return {"ok": True, "pid": req.pid}
-
-
-# ---------- 在文件管理器中打开实例目录（分化 C6，仅 desktop）----------
-# server 版是无人值守的服务器，没有「文件管理器」这个概念；给按钮挂一个必然
-# 失败的操作只会让用户以为面板坏了。因此该端点在 server 上直接 404，前端也据
-# /edition 不渲染按钮——两处都要挡，缺一处就会出现「点了没反应」。
-
-@router.post("/instances/{inst_id}/reveal")
-def reveal_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
-    """在系统文件管理器里打开实例目录（Windows 资源管理器 / macOS Finder）。
-
-    ⚠️ **目录必须来自注册表**，不接受前端传路径：这是唯一能把任意路径交给
-    shell 打开的端点，参数一旦可控就等于允许在任意目录弹出窗口（且能被诱导
-    打开 UNC 路径发起网络认证请求，泄露 NTLM 哈希）。所以只接受实例 ID。
-    """
-    if is_server():
-        raise HTTPException(404, "仅桌面版提供「打开文件夹」")
-    inst = _inst_or_404(inst_id, user)
-    d = Path(inst.dir)
-    if not d.is_dir():
-        raise HTTPException(404, f"实例目录不存在：{d}")
-    if os.name == "nt":
-        # 直接起explorer：ShellExecute 的语义（与在地址栏敲路径等价），
-        # 且不受 CreateProcess 对 explorer.exe 的 quirky 行为影响
-        subprocess.Popen(["explorer", str(d)])
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(d)])
-    else:
-        # desktop 版理论上不会走到（构建目标是 Windows），但源码仍要能在
-        # Linux 上跑测试，故给 xdg-open 兜底而不是抛平台异常
-        subprocess.Popen(["xdg-open", str(d)])
-    return {"ok": True, "dir": str(d)}
 
 
 @router.get("/deploy-progress/{inst_id}")
