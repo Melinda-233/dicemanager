@@ -231,6 +231,8 @@ export async function exportBackup(id, scope) {
 
 // ---------- 互联诊断（拓展2） ----------
 export const diagnoseInstance = id => api(`/instances/${id}/diagnose`)
+// 在文件管理器里打开实例目录（分化 C6，仅 desktop；server 上返 404）
+export const revealInstance = id => api(`/instances/${id}/reveal`, { method: 'POST' })
 
 // ---------- 定时任务（拓展7） ----------
 export const listSchedules = () => api('/schedules')

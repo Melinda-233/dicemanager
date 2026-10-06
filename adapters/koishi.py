@@ -202,8 +202,12 @@ class KoishiAdapter(BaseAdapter):
                "--fetch-retries=4", "--fetch-retry-maxtimeout=120000",
                "--fetch-timeout=300000"]
         try:
+            # stdin=DEVNULL：npm 遇到 ERESOLVE 等冲突时会进交互式提问
+            #（「要不要 --force」）。面板无 TTY，不关会挂到超时 ——
+            # 这正是脚手架栽过的坑（见 _scaffold docstring），同源。
             r = subprocess.run(cmd, cwd=str(instance.dir), capture_output=True,
-                               text=True, timeout=NPM_TIMEOUT,
+                               text=True, stdin=subprocess.DEVNULL,
+                               timeout=NPM_TIMEOUT,
                                env=self._clean_env())
         except subprocess.TimeoutExpired as e:
             #裸的 TimeoutExpired 对用户毫无意义，给一句能行动的
@@ -517,8 +521,12 @@ class KoishiAdapter(BaseAdapter):
                "--fetch-retries=4", "--fetch-retry-maxtimeout=120000",
                "--fetch-timeout=300000"]
         try:
+            # stdin=DEVNULL：npm 遇到 ERESOLVE 等冲突时会进交互式提问
+            #（「要不要 --force」）。面板无 TTY，不关会挂到超时 ——
+            # 这正是脚手架栽过的坑（见 _scaffold docstring），同源。
             r = subprocess.run(cmd, cwd=str(instance.dir), capture_output=True,
-                               text=True, timeout=NPM_TIMEOUT,
+                               text=True, stdin=subprocess.DEVNULL,
+                               timeout=NPM_TIMEOUT,
                                env=self._clean_env())
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(

@@ -517,6 +517,12 @@ def test_pip_install_uses_target_and_clears_pythonpath(tmp_path, monkeypatch):
     def fake_run(cmd, **kw):
         seen["cmd"] = cmd
         seen["env"] = kw.get("env") or {}
+        # 造出依赖元数据（真实 pip 会做），否则新加的产物检查会误判失败
+        for n in MANIFEST["dependencies"]:
+            meta = d / LIBS_DIR / f"{n}-9.9.9.dist-info"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "METADATA").write_text(
+                f"Name: {n}\nVersion: 9.9.9\n", encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -877,3 +883,45 @@ def test_dep_name_normalizes_extras_and_case():
 def test_pip_timeout_is_generous():
     """nonebot2 本体实测45s；超时给慢网留余量，但必须有上限（不能无限等）。"""
     assert 300 <= PIP_TIMEOUT <= 1800
+
+
+# ---------- pip 调用加固（回归：2026-10-07 审计） ----------
+
+def test_pip_install_closes_stdin(tmp_path, monkeypatch):
+    """pip 在依赖冲突时会问「要不要 --force」—— 不关 stdin 会挂到超时。"""
+    d = _ready_dir(tmp_path / "nb-pipstdin")
+    ad = _ad()
+    monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        for n in MANIFEST["dependencies"]:
+            meta = d / LIBS_DIR / f"{n}-9.9.9.dist-info"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "METADATA").write_text(
+                f"Name: {n}\nVersion: 9.9.9\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ad._pip_install(_inst(d), "nonebot2>=2.4.0")
+    assert seen.get("stdin") == subprocess.DEVNULL, \
+        "没关 stdin → 依赖冲突时挂在 pip 的提问上"
+
+
+def test_pip_install_detects_zero_exit_but_missing_deps(tmp_path, monkeypatch):
+    """⚠️ pip 退出码 0不代表依赖真的装上了（rc=0 但包名拼错 / 平台不匹配）。
+
+    只信退出码会得到「部署成功但一启动就 ModuleNotFoundError」的实例。
+    """
+    d = _ready_dir(tmp_path / "nb-piprc0", with_deps=False)
+    ad = _ad()
+    monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
+    # 返回 0 但什么都不装
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: SimpleNamespace(
+        returncode=0, stdout="Successfully installed nothing", stderr=""))
+    with pytest.raises(RuntimeError) as e:
+        ad._pip_install(_inst(d), "nonebot2>=2.4.0")
+    msg = str(e.value)
+    assert "退出码是 0" in msg, "要解释为什么退出码没能反映失败"
+    assert "nonebot2" in msg, "要点出缺哪个依赖"

@@ -270,12 +270,25 @@ class NoneBot2Adapter(BaseAdapter):
             cmd += ["--index-url", DEFAULT_PIP_INDEX]
         cmd += list(targets)
         self._progress(instance, "pip", 0, len(targets))
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+        # stdin=DEVNULL：pip 在依赖冲突时会问「要不要 --force」（实测 AstrBot /
+        # Koishi 的 CLI 都有这毛病）。面板无 TTY，stdin 开着会挂到超时。
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=timeout,
                            env=self._clean_env())
+        # ⚠️ 退出码之外还要验产物：`pip install` 在部分失败情形下仍返回 0
+        # （例如只有 wheel 平台不匹配而降级为源码编译成功、或包名拼错被当成
+        # 新包名而"成功"装了个空壳）。故检查声明的依赖是否都真的进了 libs/。
         if r.returncode != 0:
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
             raise RuntimeError(
                 f"依赖安装失败（rc={r.returncode}）：\n" + "\n".join(tail))
+        missing = self._deps_missing(instance)
+        if missing:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
+            raise RuntimeError(
+                "依赖安装未完成：pip 退出码是 0，但以下依赖没装上——"
+                + "、".join(missing) + "。\n命令输出：\n"
+                + ("\n".join(tail) or "(空)"))
         self._progress(instance, "pip", len(targets), len(targets))
 
     def _clean_env(self) -> dict:
