@@ -175,6 +175,7 @@ python tests/smoke_local.py           # Windows 可跑的本地冒烟（fcntl �
 |---|---|---|
 | [使用手册](docs/使用手册.md) | 使用者 | 安装启动、登录、向导五步、日常操作、备份升级、排障（两版通用） |
 | [DiceManager-Manual.md](DiceManager-Manual.md) | 贡献者 | 架构分层、数据模型、接口契约、适配器编写、新增程序流程 |
+| [**服务器部署与更新 SOP**](docs/dev-notes/服务器部署与更新SOP.md) | 运维者 | systemd 部署、nginx 反代、免 git 的更新流程、备份与回滚、排障（实测踩坑清单） |
 | [windows/README.md](windows/README.md) | Windows 版用户 | 平台差异、快速开始、路径布局 |
 
 ## License
