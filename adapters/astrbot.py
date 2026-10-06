@@ -118,16 +118,38 @@ class AstrBotAdapter(NoneBot2Adapter):
         只在缺 `.astrbot` 时跑：upstream 的 init 是 `initialize_astrbot()`，
         会建目录并写一份默认 `cmd_config.json`（含初始面板密码）。
         重复跑会**重置用户的配置**，故必须先判 `_needs_init`。
+
+        ⚠️ 三处都在2026-10-06 服务器真跑时踩到（E2E 之前只验过"参数含 init"）：
+        1. **stdin 必须关**：CLI 基于 typer/click，交互时会等输入。实测开着
+           stdin 能挂到超时，关掉 0.23 秒返回。
+        2. **不能只看 returncode**：AstrBot 的 CLI 参数错误时打印 usage 却
+           **返回 0**（实测 `run.py 不存在的子命令` → RC=0）。故失败判据要
+           **加上产物检查**，不能只信退出码。
+        3. `--yes` 是必要的：init 里有「是否创建默认配置」这类提问。
         """
         root = Path(instance.dir)
         root.mkdir(parents=True, exist_ok=True)
         r = subprocess.run(
             [str(self._instance_python(instance)), "run.py", "init", "--yes"],
             cwd=str(root), capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,          # 防挂死（见上文 1）
             timeout=180, env=self._clean_env())
         if r.returncode != 0:
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
-            raise RuntimeError("AstrBot 初始化失败（ astrbot init）：\n" + "\n".join(tail))
+            raise RuntimeError("AstrBot 初始化失败（astrbot init）：\n" + "\n".join(tail))
+        # ⚠️ 退出码不可信（见上文 2），**必须验产物**。init 会建 .astrbot 标记
+        # 与 data/{config,plugins,temp}；缺任何一个都算初始化没成功。
+        missing = [n for n in (".astrbot", "data/config", "data/plugins", "data/temp")
+                   if not (root / n).exists()]
+        if missing:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
+            raise RuntimeError(
+                "AstrBot 初始化未完成： astrbot init 没产出 "
+                + "、".join(missing)
+                + "。\n它可能失败了但退出码仍是 0（AstrBot CLI 的已知行为）。"
+                + "\n命令输出：\n" + ("\n".join(tail) or "(空)")
+                + "\n可先手动跑一次排查："
+                + f"cd {root} && python run.py init --yes")
 
     def prepare_start(self, instance, runner=None) -> bool:
         """首启前补齐：依赖（PythonDepsMixin 语义）+ `astrbot init` 骨架。"""

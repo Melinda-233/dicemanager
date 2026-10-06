@@ -416,3 +416,73 @@ def test_ensure_webui_binding_tolerates_missing_or_broken(tmp_path):
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("{ broken", encoding="utf-8")
     ad._ensure_webui_binding(_inst(d))                   # noqa: SLF001
+
+
+# ---------- init 的两个坑（回归：2026-10-06 服务器真跑抓到的） ----------
+
+def test_init_closes_stdin_to_avoid_hanging(tmp_path, monkeypatch):
+    """stdin 必须接 DEVNULL —— AstrBot CLI 基于 typer/click，交互时等输入。
+
+    实测：stdin 开着能挂到超时，关掉 0.23 秒返回。
+    """
+    d = tmp_path / "ab-stdin"
+    d.mkdir()
+    ad = _ad()
+    ad._require_interpreter = lambda i: "python"          # noqa: SLF001
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        # 模拟成功：把产物造出来
+        (d / ".astrbot").write_text("", encoding="utf-8")
+        for sub in ("config", "plugins", "temp"):
+            (d / "data" / sub).mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ad._init_project(_inst(d))                             # noqa: SLF001
+    import subprocess
+    assert seen.get("stdin") == subprocess.DEVNULL, \
+        "没关 stdin → 挂在 CLI 的交互提问上（实测挂到超时）"
+
+
+def test_init_detects_failure_despite_zero_exitcode(tmp_path, monkeypatch):
+    """⚠️ AstrBot CLI **参数错误时也返回 0**，故失败判据不能只看 returncode。
+
+    实测 `python run.py 不存在的子命令` → 打印 usage 但 RC=0。
+    只信退出码的话，初始化失败会被当成成功，用户得到一个「部署完成但起不来」
+    的实例。故必须额外验产物。
+    """
+    d = tmp_path / "ab-rc0"
+    d.mkdir()
+    ad = _ad()
+    ad._require_interpreter = lambda i: "python"          # noqa: SLF001
+    # 返回 0 但**什么产物都没造** —— 模拟「失败却返回 0」
+    monkeypatch.setattr("subprocess.run", lambda cmd, **kw: SimpleNamespace(
+        returncode=0,
+        stdout="Usage: run.py [OPTIONS] COMMAND [ARGS]...",
+        stderr="Error: No such command 'x'"))
+    with pytest.raises(RuntimeError) as e:
+        ad._init_project(_inst(d))                         # noqa: SLF001
+    msg = str(e.value)
+    assert "初始化未完成" in msg
+    assert ".astrbot" in msg, "要说清缺什么"
+    assert "退出码仍是 0" in msg, "要解释为什么退出码没能反映失败"
+    assert "run.py init --yes" in msg, "要给可操作的手动排查命令"
+
+
+def test_init_passes_on_real_products(tmp_path, monkeypatch):
+    """产物齐全时不该报错（别把校验写成过敏的哨兵）。"""
+    d = tmp_path / "ab-ok"
+    d.mkdir()
+    ad = _ad()
+    ad._require_interpreter = lambda i: "python"          # noqa: SLF001
+
+    def fake_run(cmd, **kw):
+        (d / ".astrbot").write_text("", encoding="utf-8")
+        for sub in ("config", "plugins", "temp"):
+            (d / "data" / sub).mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(returncode=0, stdout="Done!", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ad._init_project(_inst(d))                             # noqa: SLF001   不抛异常即通过
