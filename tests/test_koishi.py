@@ -251,14 +251,43 @@ def test_scaffold_passes_yes_flag_and_template(tmp_path, monkeypatch):
     ad._scaffold(_inst(d))
     assert calls, "应发起过脚手架"
     cmd = calls[0]
-    assert "--yes" in cmd or "-y" in cmd, f"缺 -y 会挂在 prompts 上：{cmd}"
     assert "@koishijs/boilerplate" in " ".join(cmd)
     # ⚠️ 必须用 `npm create`（按原样解析包名），不能用 `npm init`
-    #（会给 `create-koishi` 再补一层 `create-` 前缀 → create-create-koishi → 404）。
-    # 这个 bug 是端到端真跑抓出来的，单测原先只验了"含 --yes"故漏过。
+    #（会给 `create-koishi` 再补一层 `create-` 前缀 → create-create-koishi → 404）
     assert cmd[1] == "create", f"应用 npm create 而非 npm init：{cmd}"
     assert "create-create-koishi" not in " ".join(cmd), "包名前缀重复了"
     assert cmd[2].startswith("koishi@"), cmd[2]
+    # ⚠️ 位置参数必须是 `.`（服务器实测：给实例名会多建一层同名子目录）
+    assert "." in cmd[3:], f"位置参数应为 `.`（=当前目录），实际 {cmd[3:]}"
+    assert not any(a == "koishi-app" for a in cmd), \
+        "位置参数给了实例名 → 产物落在 <实例>/koishi-app/ 而不是实例目录"
+
+
+def test_scaffold_closes_stdin_to_avoid_hanging(tmp_path, monkeypatch):
+    """⚠️ **stdin 必须接 DEVNULL** —— 这才是挂死的真正原因（服务器实测）。
+
+    create-koishi 最后一问（`? Install and start it now?`）**不受 --yes 影响**
+    （npm 把自己那个 --yes 吃掉了，不转发给脚手架脚本）。
+    实测对比：stdin 开着 → 永久挂住直到超时；stdin 接 DEVNULL → 1.7 秒返回，
+    拿到的模板完全正确。我们本来就要自己装依赖，它问不问无所谓。
+    """
+    d = tmp_path / "kb-stdin"
+    d.mkdir()
+    ad = _ad()
+    ad._require_node = lambda i: NODE                           # noqa: SLF001
+    ad._npm = lambda node: "npm"                                # noqa: SLF001
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(kw)
+        (d / "package.json").write_text("{}", encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ad._scaffold(_inst(d))                                      # noqa: SLF001
+    import subprocess
+    assert seen.get("stdin") == subprocess.DEVNULL, \
+        "没关 stdin → 挂在脚手架的交互提问上（实测永久挂住）"
 
 
 def test_scaffold_is_idempotent(tmp_path, monkeypatch):
@@ -741,6 +770,47 @@ def test_npm_failure_gives_actionable_error(tmp_path, monkeypatch):
     assert "ERESOLVE" in str(e.value)
     assert "l0" in str(e.value), "尾部输出要保留（真实原因就在最后几行）"
     assert len(str(e.value)) < 400, "报错要短，整段 stderr 塞进去反而看不清重点"
+
+
+def test_registry_prefers_env_over_manifest(tmp_path, monkeypatch):
+    """回归（2026-10-06 服务器 E2E 抓到）：用户设的镜像源必须优先于清单。
+
+    实测：服务器上 `npm create` 走清单硬编码的官方源 **600 秒超时**，
+    而用户早就设了 `npm_config_registry=npmmirror`。清单的 registry
+    只能是兜底。
+    """
+    ad = _ad()
+    inst = _inst(tmp_path / "kb-reg")
+    # 没有任何用户意图→ 用清单兜底
+    monkeypatch.delenv("npm_config_registry", raising=False)
+    monkeypatch.delenv("DM_NPM_REGISTRY", raising=False)
+    assert ad._registry(inst) == MANIFEST["skeleton"]["registry"]  # noqa: SLF001
+    # npm_config_registry 优先
+    monkeypatch.setenv("npm_config_registry", "https://registry.npmmirror.com")
+    assert ad._registry(inst) == "https://registry.npmmirror.com"  # noqa: SLF001
+    # DM_NPM_REGISTRY 次之（面板自己的旋钮）
+    monkeypatch.delenv("npm_config_registry", raising=False)
+    monkeypatch.setenv("DM_NPM_REGISTRY", "https://r.example.com")
+    assert ad._registry(inst) == "https://r.example.com"  # noqa: SLF001
+    # 两个都设时 npm_config_registry 赢（它更接近用户的直接意图）
+    monkeypatch.setenv("npm_config_registry", "https://a.example.com")
+    assert ad._registry(inst) == "https://a.example.com"  # noqa: SLF001
+
+
+def test_clean_env_keeps_registry_drops_prefix(tmp_path, monkeypatch):
+    """**不能**剔掉 `npm_config_registry`（用户的镜像源），要剔 prefix/globalconfig。"""
+    ad = _ad()
+    monkeypatch.setenv("npm_config_registry", "https://registry.npmmirror.com")
+    monkeypatch.setenv("npm_config_prefix", "/home/me/.npm-global")
+    monkeypatch.setenv("NODE_OPTIONS", "--inspect")
+    env = ad._clean_env()                                # noqa: SLF001
+    # ⚠️ Windows 上 os.environ 把键规范化成大写，故断言必须大小写不敏感
+    lower = {k.lower(): v for k, v in env.items()}
+    assert lower.get("npm_config_registry") == "https://registry.npmmirror.com", \
+        "剔了它 = 无视用户设的镜像源（实测会卡到超时）"
+    assert "npm_config_prefix" not in lower, \
+        "prefix 会改变全局安装位置，不该让面板行为随「谁在跑」变化"
+    assert "node_options" not in lower, "用户全局调试参数会打进我们的子进程"
 
 
 # ---------- 能力声明 ----------

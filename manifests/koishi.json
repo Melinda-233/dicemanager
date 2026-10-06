@@ -33,6 +33,10 @@
   // 写完整名`create-koishi` 会变成 `create-create-koishi` → 404（E2E 真跑踩过）。
   // 不用 GitHub Release —— 上游 release 无资产（2026-10-05 核实）。
   "skeleton": {
+    // ⚠️ 这里的 registry 只是**兜底**：用户在服务器/国内机器上设的
+    // `npm_config_registry`（或 DM_NPM_REGISTRY）优先 —— 适配器 `_registry()`
+    // 就是这么定的优先级。写死官方源会无视用户意图，实测会卡到超时
+    //（2026-10-06 在服务器上 create-koishi 走官方源 600s 超时）。
     "registry": "https://registry.npmjs.org",
     "scaffold": "koishi",
     "template": "@koishijs/boilerplate"

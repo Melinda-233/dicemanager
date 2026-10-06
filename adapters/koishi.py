@@ -84,24 +84,74 @@ class KoishiAdapter(BaseAdapter):
         return npm
 
     def _clean_env(self) -> dict:
-        """子进程环境：剔除可能干扰的 npm/node 变量。
+        """子进程环境：剔掉「本机怎么装」的变量，保留「这个仓库怎么装」的。
 
-        剔 `NODE_OPTIONS`（用户全局的调试参数会打进我们的进程），
-        并把 `npm_config_prefix` 之类清掉——面板不该被用户的 npm 全局配置
-        牵着走（那是「我本机怎么装」的事，不是「实例怎么装」的事）。
+        **保留 `npm_config_registry`**（用户设的国内镜像源）—— 这是最不该
+        剔的一个：服务器/国内机器走官方源会卡到超时（2026-10-06 实测：
+        create-koishi 走官方源 600 秒超时，用户明明设了 npmmirror）。
+        用户主动设的 registry 是「他要这批包从哪来」，必须尊重。
+
+        剔掉的是「装到哪」这类与实例无关的本机配置：
+        - `NODE_OPTIONS`：用户全局的调试参数会打进我们的子进程
+        - `npm_config_prefix` / `globalconfig`：会改变 npm 的全局安装位置，
+          让面板的安装行为随「谁在跑」变化
         """
-        drop = {"NODE_OPTIONS", "npm_config_prefix", "npm_config_globalconfig",
-                "npm_config_userconfig", "npm_config_cache"}
-        return {k: v for k, v in os.environ.items() if k not in drop}
+        # ⚠️ 键比较必须**大小写不敏感**：Windows 上 os.environ 会把键规范化成
+        # 大写（设npm_config_registry 实际存成 NPM_CONFIG_REGISTRY），
+        # 区分大小写比较会「剔不掉 prefix、也拦不住大写的 NODE_OPTIONS」。
+        drop = {x.upper() for x in
+                ("NODE_OPTIONS", "npm_config_prefix", "npm_config_globalconfig")}
+        return {k: v for k, v in os.environ.items() if k.upper() not in drop}
+
+    def _registry(self, instance) -> str | None:
+        """本次npm 用的registry：**用户的优先，清单的兜底**。
+
+        优先级：环境变量 `npm_config_registry` > `DM_NPM_REGISTRY` >
+        清单 `skeleton.registry`。
+
+        ⚠️ 清单里写死官方源是**陷阱**（2026-10-06 实测踩到）：服务器上
+        `npm create` 走官方源 600 秒超时，而用户早就设了国内镜像。
+        故清单的 registry 只在没有用户意图时兜底。
+        """
+        # 注意：ruff SIM112 会建议改成大写 NPM_CONFIG_REGISTRY，但 **npm 只认
+        # 小写**（Windows 上大小写皆可），改大写在 Linux 上读不到——故保留小写。
+        env = os.environ.get("npm_config_registry", "").strip()  # noqa: SIM112
+        if not env:
+            env = os.environ.get("DM_NPM_REGISTRY", "").strip()
+        if env:
+            return env
+        return (self.m.get("skeleton") or {}).get("registry")
 
     # ---------- 部署 ----------
 
     def _scaffold(self, instance) -> None:
         """跑 create-koishi 把官方模板铺到实例目录（幂等：已有 package.json 则跳过）。
 
-        ⚠️ 必须带 `-y`：脚手架用 `prompts` 交互，面板无 TTY，不带会直接挂死。
-        ⚠️ `-y` 也会跳过它自己的依赖安装（源码 install() 里 if (argv.yes) return），
-        所以装依赖是我们自己的下一步——这反而更好：进度能落到面板上。
+        ⚠️ **必须给「位置参数」项目名**（`npm create koishi@latest <name>`）——
+        这是无 TTY 环境能否跑通的关键。读create-koishi 源码的 getName()：
+
+            if (argv._[0]) return argv._[0];        // ← 给了位置参数就不问
+            else await prompts({message: 'Project name:'})// 否则交互提问
+
+        而 `--yes` **管不到这里**（它只让 install() 跳过"是否装依赖"）。
+        漏掉位置参数的表现（2026-10-06 服务器实测）：脚手架打印
+        `? Project name: › koishi-app` 然后**永久挂住**直到超时——
+        网络完全正常（curl 同一 URL 0.1s），所以只看"超时"会误判成网络问题。
+
+        ⚠️ **位置参数要传 `.` 而不是实例名**（2026-10-06 服务器实测）：
+        脚手架把它当**项目目录名**，`getName()` 之后是
+        `path.resolve(cwd, project)` —— 传 `koishi-app` 会在实例目录下
+        再建一层 `koishi-app/`，而我们要的是直接铺在实例目录。传 `.`
+        即 cwd（实测产物正确落在当前目录）。
+
+        ⚠️ **stdin 必须关掉**（`DEVNULL`）—— 这是挂死的**真正原因**，
+        比 `--yes` 缺失更关键。create-koichi 的最后一问
+        （`? Install and start it now?`）**不受 `--yes` 影响**：npm 把自己
+        那个 `--yes` 吃掉了，不会转发给脚手架脚本（服务器实测：
+        带与不带 `--yes` 都会问同一个问题）。
+        实测对比：stdin 开着 → 永久挂住直到超时；
+        stdin 接 DEVNULL → **1.7 秒返回**，拿到的模板完全正确。
+        我们本来就要自己装依赖（进度要落到面板上），所以它问不问都无所谓。
         """
         root = Path(instance.dir)
         if (root / "package.json").exists():
@@ -113,13 +163,16 @@ class KoishiAdapter(BaseAdapter):
         # 前缀（等价 npm create），传完整包名 `create-koishi` 会变成
         # `create-create-koishi` → npm 报 404。`npm create` 则按原样解析。
         # （这个坑是端到端真跑抓出来的：单测只验"参数含 --yes"，看不出包名重复。）
-        cmd = [npm, "create", sk.get("scaffold", "koishi") + "@latest", "--yes"]
+        # 位置参数 `.` = 铺在当前目录（实例目录），见 docstring
+        cmd = [npm, "create", sk.get("scaffold", "koishi") + "@latest", "."]
         if tpl := sk.get("template"):
             cmd += ["--template", tpl]
-        if reg := sk.get("registry"):
+        if reg := self._registry(instance):
             cmd += ["--registry", reg]
         cmd += ["--forced"]
+        # stdin=DEVNULL 是**关键**：不给它会挂在脚手架最后一问上（见 docstring）
         r = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL,
                            timeout=SCAFFOLD_TIMEOUT, env=self._clean_env())
         if r.returncode != 0 or not (root / "package.json").exists():
             tail = (r.stderr or r.stdout or "").strip().splitlines()[-8:]
