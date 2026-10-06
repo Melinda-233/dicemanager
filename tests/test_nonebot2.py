@@ -76,9 +76,15 @@ def test_manifest_declares_pip_project():
     assert MANIFEST["login_type"] == "external"
     assert MANIFEST["download_strategy"] == "pip_project"
     assert MANIFEST["config_path"] == ".env"
-    assert MANIFEST["skeleton"]["repo"] == "nonebot/nonebot2-template"
     assert "pyproject.toml" in MANIFEST["skeleton"]["files"]
     assert MANIFEST["python_candidates"]
+    # ⚠️ 清单**不该**再填 repo/ref（回归，2026-10-06 服务器部署卡住）：
+    # `nonebot/nonebot2-template` 这个仓库根本不存在（GitHub 返404），
+    # 而 NoneBot2 官方没有独立的模板仓库（模板在 nb-cli 内部且是 Jinja2）。
+    # 适配器改为自生成骨架，故不需要 repo —— 留着会让人误以为它有效。
+    assert "repo" not in MANIFEST["skeleton"], \
+        "别再填 skeleton.repo：那个仓库不存在，会让部署必然失败"
+    assert "ref" not in MANIFEST["skeleton"]
 
 
 def test_manifest_lists_fastapi_stack_explicitly():
@@ -780,6 +786,80 @@ def test_bump_replaces_only_listed_versions():
 def test_bump_is_noop_when_versions_match():
     assert bump_pyproject_versions(_TOML_MULTI, {"nonebot2": ">=2.4.0"}) == _TOML_MULTI
     assert bump_pyproject_versions(_TOML_MULTI, {"不存在": ">=1"}) == _TOML_MULTI
+
+
+# ---------- 骨架自生成（回归：2026-10-06 服务器部署卡住） ----------
+
+def test_skeleton_generated_without_network(tmp_path, monkeypatch):
+    """⚠️ 骨架生成**不得有任何网络请求**（回归用例）。
+
+    起因：清单原来写 `skeleton.repo = nonebot/nonebot2-template`，但
+    **该仓库不存在**（GitHub 返 404）。服务器上的表现是「部署卡住」——
+    面板反复轮询部署进度、最后报「下载骨架文件 pyproject.toml 失败：
+    The read operation timed out」，用户只看到一直转圈。
+    实际等了近 30 秒才拿到那个 404。
+
+    故改为自生成骨架。这里把 `urlopen` 打成炸弹：一旦有人重新引入网络
+    下载，测试会立刻炸掉，而不是等到用户在服务器上再踩一次。
+    """
+    d = tmp_path / "nb-skel"
+    d.mkdir()
+
+    def bomb(*a, **kw):
+        raise AssertionError("骨架生成不该访问网络！")
+
+    monkeypatch.setattr("urllib.request.urlopen", bomb)
+    monkeypatch.setattr("urllib.request.Request", bomb, raising=False)
+    _ad()._fetch_skeleton(_inst(d))                     # noqa: SLF001
+    pj = d / "pyproject.toml"
+    assert pj.is_file(), "骨架没生成"
+    assert pj.stat().st_size > 0
+
+
+def test_generated_pyproject_is_valid_and_has_nonebot_section(tmp_path):
+    """生成的 pyproject.toml 必须是合法 TOML，且含 `[tool.nonebot]` 段。
+
+    `[tool.nonebot]` 是承重墙：`nb run` 依 `plugin_dirs` 找插件目录，
+    缺了插件加载不到（表现为「启动了但没有任何命令」）。
+    """
+    import tomllib
+    d = tmp_path / "nb-pj"
+    d.mkdir()
+    _ad()._fetch_skeleton(_inst(d))                     # noqa: SLF001
+    data = tomllib.loads((d / "pyproject.toml").read_text("utf-8"))
+    assert data["project"]["name"]
+    assert data["project"]["requires-python"]
+    assert "dependencies" in data["project"], \
+        "要有 dependencies 段 —— _write_pyproject_deps 要往里写"
+    assert data["tool"]["nonebot"]["plugin_dirs"] == ["plugins"]
+
+
+def test_existing_pyproject_not_overwritten(tmp_path):
+    """用户手工放的 pyproject.toml **不能被覆盖**（断点续跑也靠这条）。"""
+    d = tmp_path / "nb-keep"
+    d.mkdir()
+    mine = "# 我自己写的\n"
+    (d / "pyproject.toml").write_text(mine, encoding="utf-8")
+    _ad()._fetch_skeleton(_inst(d))                     # noqa: SLF001
+    assert (d / "pyproject.toml").read_text("utf-8") == mine
+
+
+def test_unknown_skeleton_file_fails_loudly(tmp_path):
+    """清单声明了适配器不会生成的文件 → 明确报错，不静默跳过。
+
+    静默跳过会得到一个「部署成功但起不来」的实例，最难排查。
+    """
+    d = tmp_path / "nb-unknown"
+    d.mkdir()
+    ad = _ad()
+    m = dict(MANIFEST)
+    m["skeleton"] = {"files": ["poetry.lock"]}
+    from adapters.nonebot2 import NoneBot2Adapter
+    bad = NoneBot2Adapter(m)
+    with pytest.raises(RuntimeError) as e:
+        bad._fetch_skeleton(_inst(d))                  # noqa: SLF001
+    assert "poetry.lock" in str(e.value)
+    assert "离线程序包" in str(e.value), "要告诉用户可行的替代方案"
 
 
 def test_bump_works_on_single_line_array():

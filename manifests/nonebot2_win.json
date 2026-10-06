@@ -18,8 +18,11 @@
   "prerequisite": "需 Python ≥3.10（管理器会自行探测；找不到时请安装 Python 并勾选 Add to PATH，或设置 DM_PYTHON 指向 python.exe）",
 
   "skeleton": {
-    "repo": "nonebot/nonebot2-template",
-    "ref": "main",
+    // ⚠️ **不要填 repo/ref**：NoneBot2 官方没有独立的模板仓库，
+    // `nonebot/nonebot2-template` 并不存在（GitHub 返 404，2026-10-06 核实）。
+    // 适配器改为**自生成** pyproject.toml（见 adapters/nonebot2.py 的
+    // _SKELETON_PYPROJECT），故部署阶段不需要联网拉骨架。
+    // 只列 files——适配器知道怎么生成这些文件。
     "files": ["pyproject.toml"]
   },
   // fastapi/uvicorn/websockets 是 DRIVER=~fastapi+~websockets 的必需项：

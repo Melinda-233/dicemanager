@@ -53,7 +53,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult, mirror_url
+from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult
 from core.atomicio import atomic_write_dotenv, write_atomic
 from core.locks import program_dir_lock
 
@@ -66,6 +66,39 @@ DEFAULT_PIP_INDEX = os.environ.get(
     "DM_PIP_INDEX", "https://pypi.tuna.tsinghua.edu.cn/simple").strip()
 # 解释器探测结果记忆：{实例目录: 解释器路径}，见 _instance_python 的注释
 _INTERP_CACHE: dict[str, Path] = {}
+
+
+# 自生成的 pyproject.toml 骨架。
+#
+# **形态参照 nb-cli 的 simple 模板渲染后的结果**
+# （`nb_cli/template/project/simple/{{cookiecutter.computed.project_slug}}/pyproject.toml`，
+#  2026-10-06 实际读取核对过），但**不能直接抄原模板**：原模板整份是 Jinja2
+#  动态生成（`{% set %}` / `{{ cookiecutter... }}` 拼 dependencies 与 adapters 段），
+#  要用得先实现一遍 cookiecutter 的变量渲染 —— 脆，且会随上游变动失效。
+#
+# 保留 `[tool.nonebot]` 两行的原因：`nb run` 依它找插件目录；缺了插件加载不到。
+_SKELETON_PYPROJECT = """\
+[project]
+name = "dicebot"
+version = "0.1.0"
+description = "NoneBot2 instance managed by DiceManager"
+readme = "README.md"
+requires-python = ">=3.10, <4.0"
+# 空数组占位，实际依赖由 DiceManager 依清单声明写入（见 _write_pyproject_deps）。
+# **必须留这个空数组**：merge_pyproject_deps 是文本级编辑，依赖找到
+# `dependencies` 这个键；没有它会抛「dependencies 段落无法识别」。
+# 但不能在这里写死版本 —— 那会让用户装的插件被这里降回去。
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[tool.nonebot]
+plugin_dirs = ["plugins"]
+builtin_plugins = []
+
+[tool.nonebot.adapters]
+"""
 
 
 class NoneBot2Adapter(BaseAdapter):
@@ -266,32 +299,39 @@ class NoneBot2Adapter(BaseAdapter):
         return Path(instance.dir) / self.m.get("requirements_file", "requirements.txt")
 
     def _fetch_skeleton(self, instance) -> None:
-        """取骨架文件：本地程序包优先；否则从 skeleton.repo 逐个文件拉。
+        """准备骨架文件：**自生成** pyproject.toml（必要时才联网）。
 
-        与 base 的 zip 下载不同——nonebot2 骨架是**少量文本文件**，逐个 raw 拉取
-        比打包 zip 更直接，也免去解压后顶层目录上移那类问题。
+        ⚠️ **不再从上游仓库拉**（2026-10-06 修正）：此前清单写的是
+        `nonebot/nonebot2-template`，但**该仓库根本不存在**（GitHub 返404），
+        部署 nonebot2 必然失败。NoneBot2 官方**没有**独立的模板仓库——
+        模板在 `nonebot/nb-cli` 内部的 `nb_cli/template/project/simple/`，
+        是 **cookiecutter 模板**：目录名带 `{{cookiecutter.computed.project_slug}}`
+        占位符、内容是 Jinja2 表达式，**不能直接当骨架用**（要重新实现一遍
+        cookiecutter 的变量渲染，脆且会随上游变动而失效）。
+
+        改为自生成的理由：
+        1. pyproject.toml 的内容**我们完全知道该长什么样**（见 _SKELETON_PYPROJECT）
+        2. 不受上游仓库改名 / 删除 / 改分支影响
+        3. 部署阶段不需要为骨架联网，只有 pip 装依赖要网 —— 少一个失败点
+        4. 用户手工放进去的 pyproject.toml / 离线程序包**优先**，不覆盖
         """
-        import urllib.request
-
-        sk = self.m["skeleton"]
-        files = sk["files"]
-        base = mirror_url(f"https://raw.githubusercontent.com/"
-                          f"{sk['repo']}/{sk.get('ref', 'main')}/")
+        files = (self.m.get("skeleton") or {}).get("files") or []
         for rel in files:
             dest = Path(instance.dir) / rel
             if dest.exists():
-                continue                              # 已存在（断点续跑）不覆盖
+                continue                # 已存在（用户放的 / 断点续跑）不覆盖
             dest.parent.mkdir(parents=True, exist_ok=True)
-            req = urllib.request.Request(base + rel,
-                                         headers={"User-Agent": "DiceManager"})
-            try:
-                data = urllib.request.urlopen(mirror_url(req.full_url), timeout=60).read()
-            except OSError as e:
+            if rel == "pyproject.toml":
+                dest.write_text(_SKELETON_PYPROJECT.strip() + "\n",
+                                encoding="utf-8")
+            else:
+                # 清单声明了别的骨架文件但我们不会生成 → 明确报出来，
+                # 而不是安静地跳过（跳过会得到一个"部署成功但起不来"的实例）
                 raise RuntimeError(
-                    f"下载骨架文件 {rel} 失败：{e}。"
-                    f"请检查网络，或在 WebUI「离线程序包」上传完整的 NoneBot2 项目包。"
-                ) from e
-            dest.write_bytes(data)
+                    f"清单 skeleton.files 声明了 {rel!r}，但适配器不会生成它。"
+                    f"当前只自生成 pyproject.toml；请在 WebUI「离线程序包」里"
+                    f"上传包含该文件的完整 NoneBot2 项目包。"
+                )
 
     def _write_pyproject_deps(self, instance, deps: dict[str, str]) -> None:
         """把依赖同步进 pyproject.toml 的 project.dependencies。

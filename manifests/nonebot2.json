@@ -20,8 +20,11 @@
 
   // 骨架来源：NoneBot2 官方模板。逐文件 raw 拉取，免打包 zip 与解压后目录上移的麻烦
   "skeleton": {
-    "repo": "nonebot/nonebot2-template",
-    "ref": "main",
+    // ⚠️ **不要填 repo/ref**：NoneBot2 官方没有独立的模板仓库，
+    // `nonebot/nonebot2-template` 并不存在（GitHub 返 404，2026-10-06 核实）。
+    // 适配器改为**自生成** pyproject.toml（见 adapters/nonebot2.py 的
+    // _SKELETON_PYPROJECT），故部署阶段不需要联网拉骨架。
+    // 只列 files——适配器知道怎么生成这些文件。
     "files": ["pyproject.toml"]
   },
   // 骨架 pyproject 里可能未列全，这里显式声明要装的运行时依赖（版本下限随实测校准）
