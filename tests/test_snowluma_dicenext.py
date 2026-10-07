@@ -45,9 +45,12 @@ SNOWLUMA_MANIFEST = {
     "name": "snowluma", "exe": "launcher.sh",
     "required_files": ["launcher.sh"],
 }
+# 上游 Dice-Next 3.x 的真实形态（2026-10-08 真机核对）：
+# 顶层 DiceNext-beta/ 里是 start.sh（exec dice-next-server 并设 LD_LIBRARY_PATH），
+# **没有**名为 DiceNext 的可执行文件。
 DICENEXT_MANIFEST = {
-    "name": "dicenext", "exe": "DiceNext",
-    "config_path": "config/adapters.json", "required_files": ["DiceNext"],
+    "name": "dicenext", "exe": "start.sh",
+    "config_path": "config/adapters.json", "required_files": ["start.sh"],
 }
 
 
@@ -214,13 +217,43 @@ def test_dicenext_verify_required_tolerates_renamed_binary(tmp_path):
     assert ad.verify_required(inst) == []
 
 
+def test_dicenext_verify_required_accepts_real_3x_layout(tmp_path):
+    """回归（Dice-Next 3.x 真实包形态）：start.sh 在根目录时必须判就绪。
+
+    旧实现只做「根目录里有名字以 dicenext 开头的文件」的前缀匹配，
+    而 3.x 的二进制叫 `dice-next-server`（**有连字符**）→ 匹配不上，
+    于是**无条件报缺失**——哪怕清单登记的 start.sh 就躺在那儿。
+    这条就是当时部署失败的直接原因。
+    """
+    (tmp_path / "start.sh").write_text("#!/bin/bash\nexec dice-next-server")
+    (tmp_path / "dice-next-server").write_text("ELF")
+    (tmp_path / "lib").mkdir()
+    ad = DiceNextAdapter(DICENEXT_MANIFEST)
+    inst = SimpleNamespace(dir=str(tmp_path), allocated_ports={}, actual_port=None)
+    assert ad.verify_required(inst) == [], "start.sh 存在就不该报缺件"
+
+
+def test_dicenext_verify_required_hyphenated_binary_still_tolerated(tmp_path):
+    """兜底匹配要认连字符/下划线变体：上游改名可能是 dice_next / dice-next。
+
+    判定只看**根目录**（exe 路径 = dir/<exe>），所以文件必须放在根下。
+    """
+    ad = DiceNextAdapter(DICENEXT_MANIFEST)       # required=start.sh，下面不放它
+    for name in ("dice-next-server", "dicenext-linux-amd64", "dice_next"):
+        d = tmp_path / name.replace("/", "_")
+        d.mkdir()
+        (d / name).write_text("ELF")              # 根目录下，不是子目录里
+        inst = SimpleNamespace(dir=str(d), allocated_ports={}, actual_port=None)
+        assert ad.verify_required(inst) == [], f"{name} 应被兜底匹配认作就绪"
+
+
 def test_dicenext_verify_required_rejects_source_tarball(tmp_path):
     """误传源码包（没有可执行文件）必须判缺件——此前 required_files 为空会静默 ok。"""
     (tmp_path / "README.md").write_text("source")
     (tmp_path / "src").mkdir()
     ad = DiceNextAdapter(DICENEXT_MANIFEST)
     inst = SimpleNamespace(dir=str(tmp_path), allocated_ports={}, actual_port=None)
-    assert ad.verify_required(inst) == ["DiceNext"]
+    assert ad.verify_required(inst) == ["start.sh"]
 
 
 # ---------- 解压降级路径（Python < 3.10.12 无 tarfile filter=） ----------

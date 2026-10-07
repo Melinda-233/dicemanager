@@ -19,17 +19,29 @@ class DiceNextAdapter(BaseAdapter):
     HEALTH_PORT_KEYS = ["webui"]
 
     def verify_required(self, instance) -> list:
-        """二进制名随版本变（DiceNext / dicenext-linux-amd64…），与 build_start_cmd
-        用同一套兜底判定，而不是写死单一文件名——否则上游改个名字就全实例误报缺件。
+        """先按清单逐个检查，再对「上游改过二进制名」做兜底。
 
-        非空校验不能省：本地缓存包优先于在线下载，此前 required_files 为空 →
-        误传的源码 tar 也被判「部署成功」，启动才炸在找不到可执行文件上。
+        原来的实现只做兜底匹配（根目录里有名字以 `dicenext` 开头的文件就算就绪），
+        匹配不到就**无条件报缺失** —— 于是清单登记的文件明明躺在那儿也会被判缺件
+        （2026-10-08 实测：包里 start.sh 存在，校验却报「缺 start.sh」）。
+        根因是 Dice-Next 3.x 的二进制叫 `dice-next-server`（**有连字符**），
+        `.startswith("dicenext")` 匹配不上。
+
+        顺序不能反：清单是唯一可靠来源（能挡住误传的源码包），前缀匹配只是
+        兼容上游改名的补充，且它的判定本就宽松（认名字像就行，不保证能跑）。
         """
         d = Path(instance.dir)
-        if d.exists() and any(f.is_file() and f.name.lower().startswith("dicenext")
-                              for f in d.iterdir()):
+        missing = [f for f in self.m["required_files"] if not (d / f).exists()]
+        if not missing:
             return []
-        return list(self.m["required_files"])   # 缺失时报清单登记名，提示更具体
+        # 兜底：根目录里已有「名字像启动体」的文件 → 视为就绪（上游改名后的兼容）
+        if d.exists() and any(
+                f.is_file()
+                # 连字符/下划线都算：`dicenext` / `dice-next` / `dice_next` 都命中
+                and f.name.lower().replace("-", "").replace("_", "").startswith("dicenext")
+                for f in d.iterdir()):
+            return []
+        return missing   # 缺失时报清单登记名，提示更具体
 
     def build_start_cmd(self, instance) -> list[str]:
         d = Path(instance.dir)
