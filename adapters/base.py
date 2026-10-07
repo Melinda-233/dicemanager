@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from core import ghdl
 from core import packages as pkgstore
 from core.atomicio import atomic_write_json
 from core.locks import program_dir_lock
@@ -64,14 +65,21 @@ def _safe_tar_members(tf, target: Path):
         kept.append(m)
     return kept
 
-# 国内服务器直连 github.com 常超时/被墙：设 DM_GITHUB_MIRROR 后自动走镜像前缀。
-# 例：DM_GITHUB_MIRROR=https://ghfast.top/     → https://ghfast.top/https://github.com/...
-# 也可指向自建反代；留空则直连。
-GITHUB_MIRROR = os.environ.get("DM_GITHUB_MIRROR", "").strip().rstrip("/")
-
 def mirror_url(url: str) -> str:
-    """需要访问 GitHub 时统一走这里，便于在国内服务器切换到镜像/代理。"""
-    return f"{GITHUB_MIRROR}/{url}" if GITHUB_MIRROR else url
+    """需要访问 GitHub 时统一走这里：**按 host 探测连通性，失败才切镜像**。
+
+    ⚠️ 旧实现是静态开关（`DM_GITHUB_MIRROR` 设了就全走镜像），两个问题：
+    - 一律走镜像时，**镜像本身可能挂**（实测 `raw.gitmirror.com` 连不上、
+      `mirror.ghproxy.com` 超时 25 秒）—— 镜像不可用比直连更糟
+    - 一律走官方时，国内某些路径会卡 30 秒才404，用户只看到「下载失败」
+
+    现在按 host 缓存探测结果：官方通就用官方，不通才按候选列表试镜像。
+    详见 core/ghdl.py（含各环境变量语义）。
+
+    手动设 `DM_GITHUB_MIRROR` 仍是最高优先级，且**跳过探测** ——
+    用户显式指定时不该被自动探测推翻。
+    """
+    return ghdl.url_for(url)
 
 @dataclass
 class WriteResult:
@@ -216,6 +224,9 @@ class BaseAdapter(ABC):
             req = urllib.request.Request(
                 api,
                 headers={"Accept": "application/vnd.github+json", "User-Agent": "DiceManager"})
+            # GitHub API 同样受国内网络影响，走 mirror_url（官方不通则加镜像前缀）。
+            # ⚠️ 保持传 **Request 对象**而非字符串：测试要 mock 它的 .full_url，
+            #    传字符串会让 mock 拿不到该属性（2026-10-07 踩过）。
             mreq = urllib.request.Request(mirror_url(req.full_url), headers=req.headers)
             release = json.load(urllib.request.urlopen(mreq, timeout=30))
             tag = release.get("tag_name") or tag

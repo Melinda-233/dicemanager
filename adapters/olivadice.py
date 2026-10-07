@@ -2,7 +2,7 @@
 import urllib.request
 from pathlib import Path
 
-from adapters.base import BaseAdapter, WriteResult
+from adapters.base import BaseAdapter, WriteResult, mirror_url
 
 
 class OlivaDiceAdapter(BaseAdapter):
@@ -17,7 +17,9 @@ class OlivaDiceAdapter(BaseAdapter):
                 dest = app / f"{mod}.opk"
                 if not dest.exists():
                     url = self.m["download_opk_pattern"].format(mod=mod)
-                    dest.write_bytes(urllib.request.urlopen(url, timeout=300).read())
+                    #走 mirror_url：GitHub 下载失败时按探测结果切镜像
+                    dest.write_bytes(
+                        urllib.request.urlopen(mirror_url(url), timeout=300).read())
             missing = self.verify_required(instance)
             if any("OlivaDiceCore" in f for f in missing):
                 raise RuntimeError("OlivaDiceCore.opk 缺失，阻断启动")   # 缺核阻断

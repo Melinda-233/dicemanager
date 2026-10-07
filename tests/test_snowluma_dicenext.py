@@ -110,6 +110,9 @@ def test_resolve_download_picks_pattern_asset(monkeypatch):
 
     def _fake_urlopen(req, *a, **k):
         # 校验确实请求了 latest release API
+        # ⚠️ 2026-10-07：URL 现在会经mirror_url 处理（按探测结果可能加镜像前缀），
+        # 故断言**包含** releases/latest 而非全等 —— 镜像是部署期的事，
+        # 这里只关心"打的是 latest release 这个端点"。
         assert "releases/latest" in req.full_url
         return Resp()
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
