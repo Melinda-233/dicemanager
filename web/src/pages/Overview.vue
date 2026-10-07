@@ -41,8 +41,8 @@
       还没有实例 —— 点上方「创建」选择应用端或登录端开始，或直接访问 <code>#/wizard</code>。
     </p>
     <div class="layout">
-      <div class="topo-wrap">
-    <svg :viewBox="'0 0 ' + vbW + ' 440'" class="topo">
+      <div class="topo-wrap" ref="topoWrap">
+    <svg :viewBox="'0 0 ' + vbW + ' 440'" class="topo" :style="topoStyle">
       <text :x="colX.login" y="24" class="col-title" text-anchor="middle">登录端</text>
       <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
       <text v-if="!loginNodes.length" :x="colX.login" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
@@ -58,7 +58,10 @@
         stateText(e.state) }}<tspan v-if="e.account_qq"> · QQ {{ e.account_qq }}</tspan></text>
       <g v-for="n in nodes" :key="n.id"
          :transform="`translate(${pos(n.id).x},${pos(n.id).y})`" @click="sel = n">
-        <rect x="-70" y="-26" width="140" height="52" rx="8"
+        <!-- class 写全：node-box 恒在，dead 按状态加。
+             用 :class 动态绑定的写法在编译后可能不带 class 属性，
+             那时 style.css 的 rect:not([class]) 兜底也能命中，两条都不失效。 -->
+        <rect x="-70" y="-26" width="140" height="52" rx="8" class="node-box"
               :class="{dead: !n.process_alive}"/>
         <text y="-6">{{ n.dice }}{{ n.arch === 'allinone' ? '（整合包）' : '' }}</text>
         <text y="14" class="sub">{{ n.state }} : {{ n.port || '-' }}{{ n.mem_mb ? ' · ' + n.mem_mb + 'MB' : '' }}</text>
@@ -69,37 +72,43 @@
              放到方框边上后，「选谁」和「对它做什么」在同一处。
              stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点，
              点了「停」却顺带切换选中对象，与用户预期不符。 -->
+        <!-- 高频操作内联到节点上：启停/重启在方框正下方，管理应用在方框右侧。
+             这四个动作占侧栏按钮的一大半，却藏在要滚动才看得到的地方。
+
+             ⚠️ 图标一律用**内联 fill/stroke 呈现属性**，不走 class：
+             CSS 类在这套 scoped+SVG 的组合下反复失效（SVG 原生元素不被打
+             scope id；`.topo rect` 又会把图标 rect 一起染色）。
+             呈现属性只被 `!important` 的 CSS 覆盖 —— 而这里没有。
+             颜色用 currentColor，方块 hover/禁用态改 fill 即可自动跟随。
+
+             ⚠️ SVG 没有「子元素相对父 rect 定位」：所有坐标都是节点级绝对坐标。
+             方块中心 x = -26 / 0 / 26，y = 34，图标坐标必须带这个偏移。
+             stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点。 -->
         <g class="node-ops" @click.stop>
-          <!-- ⚠️ SVG 没有「子元素相对父 rect 定位」这回事：所有图标的坐标都是
-               **节点级绝对坐标**。方块在 y=24（中心 34），图标就必须带这个偏移，
-               写成 M-4.5 -5.5 会画到节点中心（方框里）去 —— 表现为「方块是空的」。
-               偏移量：方块中心 x = -26 / 0 / 26，y = 34。 -->
           <rect :x="-36" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'start')"
                 :class="{off: n.state === 'RUNNING'}">
-            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" class="qico"/>
+            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" fill="currentColor"/>
             <title>启动 {{ n.dice }}</title></rect>
           <rect x="-10" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'stop')"
                 :class="{off: n.state !== 'RUNNING'}">
-            <rect x="-4.5" y="29.5" width="9" height="9" class="qico"/>
+            <rect x="-4.5" y="29.5" width="9" height="9" fill="currentColor"/>
             <title>停止 {{ n.dice }}</title></rect>
-          <!-- 重启：圆弧圆心与方块中心 (26,34) 重合（半径 5），缺口开在右侧，
-         箭头贴在圆弧右上端点。图标不必追求几何精确居中 —— 描边图标本身
-         有视觉补偿，1~2px 偏差肉眼不可见，别为它反复重算坐标。 -->
+          <!-- 重启：圆弧圆心与方块中心 (26,34) 重合，缺口开在右侧，箭头贴在右上端点 -->
           <rect x="16" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'restart')">
-            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" class="qico qico-stroke"/>
-            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" class="qico"/>
+            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" fill="none" stroke="currentColor"
+                  stroke-width="1.8" stroke-linecap="round"/>
+            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" fill="currentColor"/>
             <title>重启 {{ n.dice }}</title></rect>
         </g>
-        <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置。
-             用方形而非圆形，与下方的启停组保持同一视觉语言；
-             描边式齿轮在方块里比实心齿轮更清晰（方块面积小，实心会糊成一团）。 -->
+        <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置 -->
         <rect x="77" y="-10" width="20" height="20" rx="4" class="qbtn qbtn-side"
               @click.stop="quickManage(n)">
-          <circle cx="87" cy="0" r="2.6" class="qico-stroke"/>
-          <circle cx="87" cy="0" r="6.6" class="qico-stroke qico-dashed"/>
+          <circle cx="87" cy="0" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
+          <circle cx="87" cy="0" r="6.2" fill="none" stroke="currentColor" stroke-width="1.7"
+                  stroke-dasharray="2.5 2.1"/>
           <title>管理应用（{{ n.dice }}）</title></rect>
       </g>
     </svg>
@@ -491,16 +500,43 @@ const diceNodes = computed(() => nodes.value.filter(n => !isLogin(n)))
 // 侧栏已改为常驻（宽度固定 340px），若这里还按 selected 切两套坐标，
 // 选中/取消时节点会横向抖动一下 —— 看着像页面跳变，且用户会以为点空了。
 // 窄容器下靠 CSS 缩放（.topo 的 width:100%）而不是改坐标。
-const vbW = 800
-const colX = { login: 170, dice: 630 }
+// 画布按容器宽度**收窄**，而不是把 SVG 等比缩小。
+// 区别很大：`.topo { width:100%; height:auto }` 会让整个 SVG 缩放，
+// 节点里的 13px 文字跟着缩成 10px（窄屏下更糟）—— 用户要的是「收窄」：
+// 画布变窄、两列靠拢，但**文字与方框保持原尺寸**。
+// 实现：measure 用 ResizeObserver 量容器宽度，只切换 vbW 与列距；
+// 节点文字不缩放，所以窄屏也不会糊。
+const topoWrap = ref(null)
+const wrapW = ref(900)
+let _ro = null
+onMounted(() => {
+  if (!topoWrap.value || typeof ResizeObserver === 'undefined') return
+  _ro = new ResizeObserver(es => {
+    for (const e of es) wrapW.value = e.contentRect.width
+  })
+  _ro.observe(topoWrap.value)
+})
+onUnmounted(() => _ro?.disconnect())
+// 两档：宽裕（列距 460）/ 紧张（列距 300）。方框半宽 70 + 右侧符号到 97，
+// 列距 300 时两列符号之间仍留 106px 间隙，不会撞。
+// 高度按 viewBox 比例算：viewBox 宽 vbW、高 440，故高 = 实际宽 * 440/vbW。
+// 这样 SVG 不做等比缩放（width:100% + height:auto 会缩），1:1 呈现 →
+// **收窄时字号不变**。收窄档 vbW=560 → 同样的容器宽度下画布内容更大、列更靠拢。
+const topoStyle = computed(() => {
+  const w = wrapW.value || 800
+  return { height: Math.round(w * 440 / vbW.value) + 'px' }
+})
+const narrow = computed(() => wrapW.value < 720)
+const vbW = computed(() => narrow.value ? 560 : 800)
+const colX = computed(() => narrow.value ? { login: 130, dice: 430 } : { login: 170, dice: 630 })
 const pos = id => {
   const node = nodes.value.find(n => n.id === id)
-  if (!node) return { x: (colX.login + colX.dice) / 2, y: 215 }
+  if (!node) return { x: (colX.value.login + colX.value.dice) / 2, y: 215 }
   const col = isLogin(node) ? loginNodes.value : diceNodes.value
   const j = col.findIndex(n => n.id === id)
   const n = col.length
   const y = n <= 1 ? 215 : 60 + j * (310 / (n - 1))
-  return { x: isLogin(node) ? colX.login : colX.dice, y }
+  return { x: isLogin(node) ? colX.value.login : colX.value.dice, y }
 }
 // 分化 C3：面板重启按钮只在 server 版渲染（后端 /panel/restart 对 desktop 返 404）
 const isServer = ref(false)

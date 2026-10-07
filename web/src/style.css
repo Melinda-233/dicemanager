@@ -121,11 +121,20 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
 /* ---------- 拓扑画布 ---------- */
 .topo {
   display: block; width: 100%; height: auto;
+  /* 收窄而非缩小：SVG 按 viewBox 等比缩放会把节点里的 13px 文字一起缩小，
+     窄屏下更糊。这里让高度由 JS 按当前 vbW/viewBox 比例算好写进 style，
+     文字始终是 13px —— 画布变窄、两列靠拢，但字号不变。 */
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.topo rect { fill: var(--panel); stroke: var(--border); stroke-width: 1; transition: stroke .15s; }
-.topo rect:hover { stroke: var(--brand); }
+/* 只给**没有 class 的**方框上底色（即实例框）。
+   ⚠️ 不能写 `.topo rect` —— 那会一并命中图标里的 <rect>（停止图标就是 rect），
+   用白色 fill 把它盖掉，图标于是「看不见」。
+   呈现属性（fill="currentColor"）优先级**低于** CSS 规则，所以必须靠选择器规避。 */
+.topo .node-box, .topo rect:not([class]) {
+  fill: var(--panel); stroke: var(--border); stroke-width: 1; transition: stroke .15s;
+}
+.topo .node-box:hover, .topo rect:not([class]):hover { stroke: var(--brand); }
 .topo text { font-size: 13px; font-weight: 600; text-anchor: middle; fill: var(--text); }
 .topo text.sub { font-size: 11px; font-weight: 400; fill: var(--muted); }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
@@ -220,32 +229,19 @@ button.lnk {
 
 /* ---------- 日志终端 ---------- */
 .term { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-
-/* ---------- 拓扑图节点旁的方形符号按钮（全局，不能放组件 scoped） ----------
-   ⚠️ 踩过的坑：这些规则最初写在 Overview.vue 的 <style scoped> 里，
-   编译后变成 `.qico[data-v-b84bdbf4]{...}`。而 **SVG 原生元素
-   （<path>/<circle>/<rect>）在模板里静态写死时不会被 Vue 打上 scope id**，
-   于是选择器永远匹配不上 —— 按钮渲染出来了（.qbtn 那些规则在全局能找到），
-   图标却是空的。
-   判据：SVG 内的样式一律放全局；组件 scoped 只用于 HTML 元素。
-   前缀 .topo 是为了不与别处的 .qbtn/.qico 撞名。 */
-/* 节点旁的方形符号按钮。刻意用矢量图形而不是文字符号（▶■↻⚙）：
-   文字符号靠字体渲染，不同系统/字体下形状与位置都不一样（有的方框里
-   根本对不齐），而 <path>/<rect> 是我们自己画的，任何机器上完全一致。
-   图标尺寸按 20px 方块设计：留 5px 内边距，图形本体 10px。 */
-.topo .qbtn { fill: var(--panel); stroke: var(--border); stroke-width: 1; cursor: pointer; }
-.topo .qbtn:hover { fill: var(--brand); stroke: var(--brand); }
-/* 实心图标（播放/停止/箭头头） */
-.topo .qico { fill: var(--text); pointer-events: none; }
-/* 描边图标（重启箭头、齿轮）——方块小，实心会糊成一团 */
-.topo .qico-stroke { fill: none; stroke: var(--text); stroke-width: 1.8;
-               stroke-linecap: round; pointer-events: none; }
-.topo .qbtn:hover .topo .qico { fill: #fff; }
-.topo .topo .qbtn:hover .topo .qico-stroke { stroke: #fff; }
-.topo .qbtn.off { opacity: .35; cursor: default; }
-.topo .qbtn.off:hover { fill: var(--panel); stroke: var(--border); }
-.topo .qbtn.off:hover .topo .qico { fill: var(--text); }
-.topo .qbtn.off:hover .topo .qico-stroke { stroke: var(--text); }
-/* 管理应用：与启停同一视觉语言（方块），只是底色略深以示「功能入口」而非「进程开关」 */
+/* ---------- 拓扑图节点旁的方形符号按钮（全局） ----------
+   ⚠️ 图标本身用**内联 fill/stroke="currentColor"**，不再用 CSS 类：
+   scoped + SVG 这组合让类选择器反复失效（SVG 原生元素不被打 scope id；
+   `.topo rect` 又会把图标 rect 一起染色）。呈现属性只被 !important 覆盖，
+   而这里没有 —— 一劳永逸。
+   本段只管**方块本身**的底色/边框，并用 color 驱动图标的 currentColor：
+   hover/禁用时方块与图标一起变，无需分别给图标写规则。 */
+.topo .qbtn {
+  fill: var(--panel); stroke: var(--border); stroke-width: 1;
+  color: var(--text); cursor: pointer;      /* color → 图标的 currentColor */
+}
+.topo .qbtn:hover { fill: var(--brand); stroke: var(--brand); color: #fff; }
+.topo .qbtn.off { opacity: .38; cursor: default; }
+.topo .qbtn.off:hover { fill: var(--panel); stroke: var(--border); color: var(--text); }
+/* 管理应用：与启停同一视觉语言（方块），底色略深以示「功能入口」而非「进程开关」 */
 .topo .qbtn-side { fill: var(--code-bg); }
-.topo .qico-dashed { stroke-dasharray: 2.6 2.2; }
