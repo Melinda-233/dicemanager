@@ -61,18 +61,30 @@
              stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点，
              点了「停」却顺带切换选中对象，与用户预期不符。 -->
         <g class="node-ops" @click.stop>
-          <circle cx="-24" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'start')"
-                  :class="{off: n.state === 'RUNNING'}"><text y="4">▶</text>
-            <title>启动 {{ n.dice }}</title></circle>
-          <circle cx="0" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'stop')"
-                  :class="{off: n.state !== 'RUNNING'}"><text y="4">■</text>
-            <title>停止 {{ n.dice }}</title></circle>
-          <circle cx="24" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'restart')">
-            <text y="4">↻</text><title>重启 {{ n.dice }}</title></circle>
+          <rect :x="-36" y="24" width="20" height="20" rx="4" class="qbtn"
+                @click="quickOp(n.id, 'start')"
+                :class="{off: n.state === 'RUNNING'}">
+            <path d="M-4.5 -5.5 L5 0 L-4.5 5.5 Z" class="qico"/>
+            <title>启动 {{ n.dice }}</title></rect>
+          <rect x="-10" y="24" width="20" height="20" rx="4" class="qbtn"
+                @click="quickOp(n.id, 'stop')"
+                :class="{off: n.state !== 'RUNNING'}">
+            <rect x="-4.5" y="-4.5" width="9" height="9" class="qico"/>
+            <title>停止 {{ n.dice }}</title></rect>
+          <rect x="16" y="24" width="20" height="20" rx="4" class="qbtn"
+                @click="quickOp(n.id, 'restart')">
+            <path d="M5.2 -2.6 A5.2 5.2 0 1 0 5.2 2.6" class="qico qico-stroke"/>
+            <path d="M5.2 -5.6 L5.2 -2.4 L2.2 -2.4 Z" class="qico"/>
+            <title>重启 {{ n.dice }}</title></rect>
         </g>
-        <!-- 管理应用放右侧：与启停分开，避免「四个圆点里哪个是管理」要认位置 -->
-        <circle :cx="88" cy="0" r="11" class="qbtn qbtn-side" @click.stop="quickManage(n)">
-          <text y="4">⚙</text><title>管理应用（{{ n.dice }}）</title></circle>
+        <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置。
+             用方形而非圆形，与下方的启停组保持同一视觉语言；
+             描边式齿轮在方块里比实心齿轮更清晰（方块面积小，实心会糊成一团）。 -->
+        <rect x="77" y="-10" width="20" height="20" rx="4" class="qbtn qbtn-side"
+              @click.stop="quickManage(n)">
+          <circle cx="87" cy="0" r="2.6" class="qico-stroke"/>
+          <circle cx="87" cy="0" r="6.6" class="qico-stroke qico-dashed"/>
+          <title>管理应用（{{ n.dice }}）</title></rect>
       </g>
     </svg>
     <div class="legend">
@@ -936,15 +948,26 @@ text.warn { fill: #d97706; font-size: 10px; }
 /* 节点旁的符号按钮：靠 hover/禁用态区分可点性（图形没有文字标签，
    靠 <title> 兜 tooltip）。off = 该操作当前不适用（如已在运行还点「启动」）。
    选择器不带 .node-ops 前缀：管理应用那颗在 <g class="node-ops"> 之外。 */
+/* 节点旁的方形符号按钮。刻意用矢量图形而不是文字符号（▶■↻⚙）：
+   文字符号靠字体渲染，不同系统/字体下形状与位置都不一样（有的方框里
+   根本对不齐），而 <path>/<rect> 是我们自己画的，任何机器上完全一致。
+   图标尺寸按 20px 方块设计：留 5px 内边距，图形本体 10px。 */
 .qbtn { fill: var(--panel); stroke: var(--border); stroke-width: 1; cursor: pointer; }
 .qbtn:hover { fill: var(--brand); stroke: var(--brand); }
-.qbtn:hover text { fill: #fff; }
-.qbtn text { fill: var(--text); font-size: 11px; text-anchor: middle; pointer-events: none; }
+/* 实心图标（播放/停止/箭头头） */
+.qico { fill: var(--text); pointer-events: none; }
+/* 描边图标（重启箭头、齿轮）——方块小，实心会糊成一团 */
+.qico-stroke { fill: none; stroke: var(--text); stroke-width: 1.8;
+               stroke-linecap: round; pointer-events: none; }
+.qbtn:hover .qico { fill: #fff; }
+.qbtn:hover .qico-stroke { stroke: #fff; }
 .qbtn.off { opacity: .35; cursor: default; }
 .qbtn.off:hover { fill: var(--panel); stroke: var(--border); }
-.qbtn.off:hover text { fill: var(--text); }
-/* 管理应用：挂在方框右侧，视觉上不属于「进程开关」那一组 */
+.qbtn.off:hover .qico { fill: var(--text); }
+.qbtn.off:hover .qico-stroke { stroke: var(--text); }
+/* 管理应用：与启停同一视觉语言（方块），只是底色略深以示「功能入口」而非「进程开关」 */
 .qbtn-side { fill: var(--code-bg); }
+.qico-dashed { stroke-dasharray: 2.6 2.2; }   /* 虚线圆环 = 齿轮的「齿」 */
 .qbtn-side:hover { fill: var(--brand); }
 .crash-warn { color: #e5484d; font-weight: 600; }
 text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
