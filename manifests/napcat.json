@@ -1,4 +1,10 @@
 // manifests/napcat.json
+// ⚠️ known_issue：上游 NapCatQQ 自 v4.17.55 起（连续核对 v4.17.55~v4.18.33 共 8 个版本）
+// NapCat.Shell.zip 里**全是 Windows 文件**（NapCatWinBootMain.exe / launcher*.bat），
+// 没有任何 .sh —— 尽管资产名没带 "Windows"。即上游已停发 Linux 版可运行包。
+// 该包能正常下载（29.5MB）但装完无法启动，故在「选程序」那一步就提前告知，
+// 免得用户部署跑完才看到「缺必备文件: ['NapCat.sh']」而不知所以然。
+// 恢复条件：上游重新发布含 NapCat.sh 的包；在此之前 Linux server 上不可用。
 {
   "name": "napcat", "arch": "standalone", "multi_account": false,
   "exe": "NapCat.sh", "install_root": "/opt",
@@ -7,6 +13,7 @@
   "ob11_default_port": 3001,
   "data_paths": ["config"],
   "prerequisite": "linuxqq-deb",
+  "known_issue": "上游已停发 Linux 版运行包（下载到的其实是 Windows 版内容），Linux 服务器上暂时无法部署",
   "release_page": "https://github.com/NapNeko/NapCatQQ/releases",
   "download": "https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.zip",
   // 非空校验不能省：本地缓存包优先于在线下载，空值时误传的源码包也会被判「部署成功」

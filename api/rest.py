@@ -994,7 +994,10 @@ def list_manifests():
                                         "prerequisite", "delete_keeps_save",
                                         # 下载失败时前端要给出「去项目页下载」这条出路，
                                         # 没有链接用户就只能干等（上游改名/限流时尤其）。
-                                        "release_page")}
+                                        "release_page",
+                                        # 上游侧已知问题（如 napcat 停发 Linux 包）：
+                                        # 让「选程序」那一步就能看到，而不是部署跑完才报缺件
+                                        "known_issue")}
         out[n]["login_modes"] = modes or ["qrcode"]
         protos = getattr(adapter, "LOGIN_PROTOCOLS", None) if adapter else None
         if protos:

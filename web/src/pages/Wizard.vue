@@ -130,6 +130,13 @@
       </div>
 
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
+      <!-- 上游侧已知问题：提前告知，而不是让人部署跑完才看到「缺必备文件」。
+           典型如 napcat——上游已停发 Linux 包，包能下但里面全是 Windows 文件。 -->
+      <p v-if="manifest.known_issue" class="known-issue">
+        ⚠ 已知问题：{{ manifest.known_issue }}
+        <a v-if="manifest.release_page" :href="manifest.release_page"
+           target="_blank" rel="noreferrer">查看项目页</a>
+      </p>
       <div class="ops">
         <button class="primary" :disabled="!canCreate || busy" @click="create">
           下一步：{{ createLabel }}</button>
@@ -1160,6 +1167,14 @@ onUnmounted(() => { sock.value?.close(); logSock.value?.close(); stopDeployPoll(
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }
+/* 上游侧已知问题：要比 hint 更显眼，又不能像报错（用户还没做错什么） */
+.known-issue {
+  padding: 7px 10px; border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  color: var(--text); font-size: 13px;
+}
+.known-issue a { color: var(--brand); }
 /* 下载前探测：把「将要下什么」摆出来，别让用户点了才知道下错 */
 .pkgprobe {
   padding: 8px 10px; margin-bottom: 6px;
