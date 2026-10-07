@@ -10,7 +10,6 @@
 import json
 from pathlib import Path
 
-from conftest import exe_name
 from core.edition import is_desktop
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -104,10 +103,20 @@ def test_error_keywords_is_wired_to_log_channel():
 def test_napcat_and_dicenext_guard_their_executable():
     """本次修复的定点回归：这两个包的必备文件就是各自的启动体。
 
-    NapCat.sh 只存在于 CI 构建产物里（仓库源码没有），DiceNext 是发行包里的二进制，
-    都能把误传的源码包挡在 deploy 阶段。
+    NapCat.sh 只存在于 CI 构建产物里（仓库源码没有），dicenext 的 start.sh
+    是发行包里的入口脚本（它 exec dice-next-server 并设置 LD_LIBRARY_PATH），
+    都能把误传的源码包 / 对应平台搞错的包挡在 deploy 阶段。
+
+    2026-10-08 更正：原先断言 `exe_name("DiceNext")` 是**错的**——
+    上游 Dice-Next 3.x 的包里根本没有名为 DiceNext 的可执行文件，
+    Linux 入口是 start.sh、Windows 是 dice-next.exe。断言照抄清单里的旧错值，
+    等于把错误一起钉住，改对了反而红。
     """
     # 必备文件名同样分平台：Linux 是 NapCat.sh，Windows 是 NapCat.bat
     napcat_req = "NapCat.bat" if is_desktop() else "NapCat.sh"
     assert napcat_req in ALL["napcat"]["required_files"]
-    assert exe_name("DiceNext") in ALL["dicenext"]["required_files"]
+    # Dice-Next 3.x：真实入口随平台而变，且与 exe 字段一致（自洽性检查）
+    dn_req = "dice-next.exe" if is_desktop() else "start.sh"
+    assert dn_req in ALL["dicenext"]["required_files"]
+    assert ALL["dicenext"]["exe"] == dn_req, \
+        "exe 与 required_files 必须指向同一个文件，否则部署成功但启动不了"

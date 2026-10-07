@@ -1,7 +1,11 @@
 // manifests/dicenext.json
+// exe 是 start.sh 而非 DiceNext：包内**没有**名为 DiceNext 的可执行文件，
+// 顶层目录 DiceNext-beta/ 下真正的入口是 start.sh（它 exec dice-next-server，
+// 并负责设置 LD_LIBRARY_PATH 指向包内 lib/）。README 也明确要求 `./start.sh`。
+// 2026-10-08 真机验证发现：清单原写 exe=DiceNext → 部署必然报「缺失必备文件」。
 {
   "name": "dicenext", "arch": "standalone", "multi_account": false,
-  "exe": "DiceNext", "install_root": "/opt",
+  "exe": "start.sh", "install_root": "/opt",
   "webui_default_port": 18088, "ob11_default_port": 6700,
   "login_type": "external",
   "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
@@ -10,6 +14,6 @@
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",
   "download_strategy": "resolve_latest_via_api",
   "asset_name_pattern": "DiceNext-.*-linux-amd64-.*\\.tar\\.gz",
-  "required_files": ["DiceNext"],
+  "required_files": ["start.sh"],
   "approx_memory_mb": 150
 }

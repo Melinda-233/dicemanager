@@ -1,8 +1,11 @@
 // manifests/dicenext_win.json — Windows 版
-// exe DiceNext→DiceNext.exe；asset_name_pattern linux-amd64→win-amd64
+// 两处与 server 版同源的错误（2026-10-08 真机验证发现）：
+//  ① exe 不是 DiceNext.exe 而是 dice-next.exe（大小写与命名都不同）
+//  ② asset_name_pattern 写的是 win-amd64，上游实际叫 **windows-amd64**
+//     → 正则匹配不到任何资产，会回退到后缀匹配而选中 arm64 包
 {
   "name": "dicenext", "arch": "standalone", "multi_account": false,
-  "exe": "DiceNext.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
+  "exe": "dice-next.exe", "install_root": "%LOCALAPPDATA%\\dicemanager\\programs",
   "platform": ["win32"],
   "webui_default_port": 18088, "ob11_default_port": 6700,
   "login_type": "external",
@@ -11,7 +14,7 @@
   "data_paths": ["config"],
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",
   "download_strategy": "resolve_latest_via_api",
-  "asset_name_pattern": "DiceNext-.*-win-amd64.*\\.zip",
-  "required_files": ["DiceNext.exe"],
+  "asset_name_pattern": "DiceNext-.*-windows-amd64-.*\\.zip",
+  "required_files": ["dice-next.exe"],
   "approx_memory_mb": 150
 }
