@@ -198,5 +198,25 @@ button.lnk {
 @keyframes pkgpulse { 50% { opacity: .45; } }
 .pkgup .hint { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
 
+/* ---------- 下载进度（在线拉程序包，step2 轮询 /deploy-progress） ----------
+   刻意复用 .pkgup-bar 的视觉语言：上传/下载是同一件事的两个方向，
+   用户不该需要学两套进度条。差异只在不确定态的触发条件（上传是
+   total 未知的上传中，下载是拿不到 Content-Length）。 */
+.dlprog { margin-top: 4px; }
+.dlprog-bar { height: 8px; overflow: hidden; background: var(--code-bg); border-radius: 999px; }
+.dlprog-bar > i {
+  display: block; height: 100%; border-radius: 999px;
+  background: var(--brand); transition: width .3s ease-out;
+}
+/* 无 Content-Length：条纹滚动，不给假百分比（同 .pkgup-bar.is-indet） */
+.dlprog-bar.is-indet > i {
+  width: 100%; background: var(--brand);
+  background-image: linear-gradient(115deg,
+    rgba(255,255,255,.4) 25%, transparent 25% 50%,
+    rgba(255,255,255,.4) 50% 75%, transparent 75%);
+  background-size: 22px 22px; animation: pkgslide .7s linear infinite;
+}
+.dlprog .hint { margin: 6px 0 0; font-variant-numeric: tabular-nums; }
+
 /* ---------- 日志终端 ---------- */
 .term { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

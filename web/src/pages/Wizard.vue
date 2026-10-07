@@ -106,8 +106,17 @@
 
     <!-- ============ 步骤二：下载 / 解压部署 ============ -->
     <div v-else-if="step === 2" class="wz-body">
-      <p v-if="busy">{{ deployMsg || (pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
-                          : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…') }}</p>
+      <!-- 下载进度条：done/total 来自后端 /deploy-progress 轮询（每 1s）。
+           总量未知（无 Content-Length / 假响应）时退化为不确定态动画。
+           文字与进度条同时给：条给「到哪了」，字给「正在干什么」。 -->
+      <div v-if="busy" class="dlprog">
+        <div class="dlprog-bar" :class="{ 'is-indet': !dlPercent }">
+          <i :style="{ width: (dlPercent || 100) + '%' }"></i>
+        </div>
+        <p class="hint">{{ deployMsg || (pkgInfo ? '正在解压本地程序包部署 ' + dice + '，请稍候…'
+                                 : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…') }}</p>
+        <p v-if="dlSpeed" class="hint">{{ dlSpeed }} · 已用 {{ dlElapsed }}</p>
+      </div>
       <p v-else class="hint">部署中，请勿关闭页面…</p>
       <!-- 部署失败（下载超时/断网等）：就地给出「重试下载」与「上传压缩包」两条出路，
            不必退回第一步重新创建实例 -->
@@ -784,21 +793,61 @@ const onLoggedIn = () => {
 
 // ---------- 部署进度轮询：step2 同步部署期间 1s 拉一次，大包下载不再「假死」 ----------
 const deployMsg = ref('')
+// 下载进度：done/total 来自后端；total 为 0（无 Content-Length）时 dlPercent 为 null → 走不确定态
+const dlDone = ref(0), dlTotal = ref(0), dlStartAt = ref(0)
+// 速度/耗时每秒重算：进度条本身看不出「快还是卡住」，这两个数字才看得出
+const dlSpeed = ref(''), dlElapsed = ref('')
+const dlPercent = computed(() => {
+  const t = dlTotal.value
+  if (!t) return null
+  return Math.min(100, Math.round((dlDone.value / t) * 100))
+})
+const fmtDur = s => (s < 60 ? `${Math.round(s)} 秒` : `${Math.floor(s / 60)} 分 ${Math.round(s % 60)} 秒`)
+const fmtSpeed = bps => (bps >= 1 << 20 ? `${(bps / (1 << 20)).toFixed(1)} MB/s`
+                                 : `${Math.max(1, Math.round(bps / 1024))} KB/s`)
+
 let deployTimer = null
 let deployTarget = null
 const stopDeployPoll = () => { if (deployTimer) { clearInterval(deployTimer); deployTimer = null } }
+const resetDlProgress = () => {
+  dlDone.value = 0; dlTotal.value = 0; dlSpeed.value = ''; dlElapsed.value = ''
+  // 进入下载阶段才起算耗时：prepare/extract 阶段计时没有意义
+  dlStartAt.value = Date.now()
+}
 const startDeployPoll = (target) => {
   stopDeployPoll()
   deployTarget = target || instanceId
   const id = deployTarget
+  let lastDone = 0, lastAt = Date.now()
+  resetDlProgress()
   deployTimer = setInterval(async () => {
     try {
       const p = await deployProgress(id)
-      if (p.stage === 'download')
+      if (p.stage === 'download') {
+        // 每次进入 download 阶段都重置计时起点：本地包命中直接跳到 extract 时不该显示下载耗时
+        if (dlDone.value === 0) { dlStartAt.value = Date.now(); lastDone = 0; lastAt = Date.now() }
+        dlDone.value = p.done || 0
+        dlTotal.value = p.total || 0
         deployMsg.value = `正在下载程序包 ${fmtMB(p.done)}${p.total ? ' / ' + fmtMB(p.total) + ' MB' : ' MB'}…`
-      else if (p.stage === 'extract') deployMsg.value = '下载完成，正在解压部署…'
-      else if (p.stage === 'prepare') deployMsg.value = '正在准备部署…'
-    } catch { /* 轮询失败不打扰主流程 */ }
+        const now = Date.now()
+        const dt = (now - lastAt) / 1000
+        // 速度用「本次轮询区间」算，比全程平均更贴近当下真实速率（刚起速时平均值会被拉偏）
+        if (dt > 0 && p.done > lastDone) dlSpeed.value = `↓ ${fmtSpeed((p.done - lastDone) / dt)}`
+        else if (p.done === lastDone) dlSpeed.value = '↓ 0 KB/s（可能已卡住，请耐心等待或稍后重试）'
+        lastDone = p.done; lastAt = now
+        dlElapsed.value = dlStartAt.value ? fmtDur((now - dlStartAt.value) / 1000) : ''
+      } else if (p.stage === 'extract') {
+        deployMsg.value = '下载完成，正在解压部署…'
+        dlSpeed.value = ''; dlElapsed.value = ''
+      } else if (p.stage === 'prepare') {
+        deployMsg.value = '正在准备部署…'
+        dlSpeed.value = ''; dlElapsed.value = ''
+      } else if (p.stage === 'error') {
+        // 后端下载异常时把原因带回来：否则用户只看到进度条停住，不知道该重试还是换网络
+        deployFail.value = p.error || '下载失败，请重试或改为上传压缩包'
+        stopDeployPoll()
+      }
+    } catch { /* 轮询失败不打扰主流程（真正失败由 doStep 的 catch 统一接管） */ }
   }, 1000)
 }
 

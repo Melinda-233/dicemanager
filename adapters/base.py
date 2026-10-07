@@ -45,7 +45,56 @@ def deploy_version_of(inst_id: str) -> str | None:
 
 
 def deploy_progress_of(inst_id: str) -> dict:
-    return DEPLOY_PROGRESS.get(inst_id) or {"stage": "idle"}
+    """取部署进度供前端轮询。**读取即消费 error 态**。
+
+    error 态是一次性的通知（「这次下载为什么失败」），不是要长期保留的状态：
+    留在 DEPLOY_PROGRESS 里会内存泄漏（每次失败部署留一条），且下次同实例
+    重新部署时若还没重置，前端会先读到上次的旧错误。读走即清最省事。
+    """
+    p = DEPLOY_PROGRESS.get(inst_id)
+    if p and p.get("stage") == "error":
+        DEPLOY_PROGRESS.pop(inst_id, None)
+        return p
+    return p or {"stage": "idle"}
+
+
+def _download_error_hint(e: Exception) -> str:
+    """把下载/部署的原始异常翻成用户能据此行动的提示。
+
+    urllib 的报错（URLError/socket.timeout/HTTPError）对普通用户是天书：
+    只说「<urlopen error timed out>」既不知道是哪一步坏，也不知道该重试还是换网络。
+    这里按异常类型给出下一步动作，原始信息仍保留在末尾（排查要用）。
+    """
+    raw = str(e) or e.__class__.__name__
+    low = raw.lower()
+    if isinstance(e, urllib.error.HTTPError):
+        hint = {403: "下载源拒绝访问（403），通常是 GitHub 限流或该资产已删除",
+                404: "下载地址已失效（404），程序可能已发新版本或改了资产名",
+                429: "下载被限流（429），请稍后重试"}.get(
+                    e.code, f"下载返回 HTTP {e.code}")
+    elif "timed out" in low or "timeout" in low:
+        hint = "下载超时，网络不通或 GitHub 直连被阻断（可稍后重试，或改用镜像 / 上传压缩包）"
+    elif "urlopen error" in low and ("name or service not known" in low
+                                     or "nodename nor servname" in low
+                                     or "temporary failure" in low):
+        hint = "域名解析失败，服务器网络不通或 DNS 异常"
+    elif "urlopen error" in low and "connection" in low:
+        hint = "连接被拒绝/重置，可能是网络策略拦截或下载源已不可用"
+    elif "certificate" in low or "ssl" in low:
+        hint = "HTTPS 证书校验失败，可能是系统时间不准或证书链有问题"
+    elif "sha256" in low:
+        hint = "下载包校验不通过（可能被中途篡改或代理改写），请重试或上传正确的压缩包"
+    elif "not a valid zip" in low or "压缩包" in low:
+        hint = "下载内容不是有效的压缩包（可能下到了 HTML 错误页），请重试或上传压缩包"
+    elif "磁盘" in raw or "no space" in low:
+        hint = "磁盘空间不足，请清理后重试"
+    elif "rc=-9" in low or "rc=-15" in raw or "killed" in low or "memoryerror" in low:
+        # 服务器上真实发生过：2G 小内存机 pip 装依赖时被 systemd OOM kill，
+        # 表现为子进程 rc=-15（SIGTERM）。用户看到「rc=-15」完全无从判断。
+        hint = "内存不足，进程被系统终止（本机内存较小，请先停止其他实例再重试）"
+    else:
+        hint = "部署过程中断"
+    return f"{hint}（{raw[:200]}）" if raw and raw not in hint else hint
 
 
 def _safe_tar_members(tf, target: Path):
@@ -100,14 +149,18 @@ class BaseAdapter(ABC):
     # ---------- 部署 ----------
     def deploy(self, instance) -> str:
         with program_dir_lock(self.m["name"]):
+            # 进度键取 instance.id；测试桩常用无 id 的 SimpleNamespace，跳过进度跟踪
+            key = getattr(instance, "id", None)
+            # 无论走哪条分支都先重置：上一轮残留的 error 态（内存里没被读走的那种）
+            # 会让这次部署一进来就显示旧错误，用户以为还没点就失败了。
+            if key:
+                DEPLOY_PROGRESS[key] = {"stage": "prepare", "done": 0, "total": 0}
             p = Path(instance.dir)
             if p.exists():
                 missing = self.verify_required(instance)
+                if key:
+                    DEPLOY_PROGRESS.pop(key, None)   # 冲突/已就绪：无进度可言，别留 prepare 态
                 return "ok" if not missing else "conflict"    # 冲突 → 前端弹窗
-            # 进度键取 instance.id；测试桩常用无 id 的 SimpleNamespace，跳过进度跟踪
-            key = getattr(instance, "id", None)
-            if key:
-                DEPLOY_PROGRESS[key] = {"stage": "prepare", "done": 0, "total": 0}
             try:
                 archive = self._acquire_archive(instance)  # 本地包优先，没有才在线下载
                 if expected := self.m.get("sha256"):
@@ -119,8 +172,17 @@ class BaseAdapter(ABC):
                     raise RuntimeError(f"部署后缺失必备文件: {missing}")
                 if key and (tag := self._last_tag):
                     DEPLOY_VERSION[key] = tag     # 升级通道的比对基线
-            finally:
+            except Exception as e:
+                # 失败原因留一小会儿给轮询读到：前端轮询的异常分支要能显示「为什么失败」
+                # （断网/超时/校验不过），否则用户只看到进度条停在半路，无从判断该重试还是换网络。
+                # doStep 的 HTTP 响应也会带回同一消息，两条路径不冲突（轮询只是更早到）。
                 if key:
+                    DEPLOY_PROGRESS[key] = {"stage": "error", "done": 0, "total": 0,
+                                            "error": _download_error_hint(e)}
+                raise
+            finally:
+                # error 态不立刻清：留给在途的那次轮询读走；成功态立即清（前端已进下一步）
+                if key and DEPLOY_PROGRESS.get(key, {}).get("stage") != "error":
                     DEPLOY_PROGRESS.pop(key, None)
         return "ok"
 
