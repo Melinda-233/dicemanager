@@ -8,6 +8,13 @@ WebUI 令牌：启动日志形如
   [info] [NapCat] [WebUi] WebUi User Panel Url: http://127.0.0.1:6099/webui?token=xxxxx
   （旧版本另有 [WebUi] Login Token is xxxx / WebUI Local Panel Url 两种写法）
 端口占用时 NapCat 自行 +1（上限 100 次），真实端口只能从日志回读。
+
+**为何不开账号密码登录**（2026-10-07 核实上游 main 分支源码）：旧版文档
+（NapCatReforged）确有 `account.uin/password/noQuickLogin` 的 YAML，但**当前版本
+已改由 WebUI 驱动登录**（`QQSetQuickLoginHandler` / `onQuickLoginRequested`，
+快速登录走 QQ 客户端本地会话），源码里已搜不到 noQuickLogin，配置文件只剩
+`onebot11_<qq>.json` / `webui.json` 这类 OneBot 与面板配置——**没有账号密码字段**。
+故 login_modes 保持默认的 ["qrcode"]。
 """
 import json
 import re

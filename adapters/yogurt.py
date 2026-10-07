@@ -9,6 +9,9 @@
 - 登录：二维码（Yogurt 支持当前状态/快速登录/二维码三种）。原生模式下 QR 的具体落盘形式
   上游文档未明确，extract_qrcode 做尽力而为（data: URL / http 链接 / 常见图片文件名），
   真机部署时若未自动弹出，可在 PMHQ 侧扫码。
+- **为何不开账号密码登录**（2026-10-07 核实上游 main 分支）：全仓 grep `password`
+  零命中——登录凭据由 PMHQ 侧持有，config.json 里没有账号密码字段。
+  故 login_modes 保持默认的 ["qrcode"]。
 """
 import copy
 import re

@@ -219,15 +219,40 @@ def main():
         r = adapter.save_login_credentials(
             inst, {"qq": "10086", "password": "S3cret!", "protocol": "Windows"})
         cfg = adapter.read_json(adapter._config(inst))
-        acc = cfg.get("Account") or cfg.get("account") or {}
-        check(f"[{P}] 账号写入程序配置", str(acc.get("Uin") or acc.get("uin")) == "10086", acc)
+
+        # ⚠️ **字段路径因程序而异**，不能只查 Account 段：Lagrange.OneBot 是
+        # `Account.Uin/Password`，Lagrange.Milky 是 `Lagrange.Login.Uin/Password`。
+        # 写错段 = 写了不生效且毫无报错（用户以为设了密码，其实每次都在扫码），
+        # 故这里同时把两条路径都查出来再断言。
+        acc = (cfg.get("Account") or cfg.get("account")
+               or (cfg.get("Lagrange") or {}).get("Login") or {})
+        check(f"[{P}] 账号写入程序配置", str(acc.get("Uin") or acc.get("uin")) == "10086",
+              {"命中段": [k for k in ("Account", "account", "Lagrange")
+                          if k in cfg], "值": acc})
         check(f"[{P}] ★ 密码写入程序配置（明文，程序自读）",
-              (acc.get("Password") or acc.get("password")) == "S3cret!")
+              (acc.get("Password") or acc.get("password")) == "S3cret!",
+              "已写入" if (acc.get("Password") or acc.get("password")) else "未写入")
+        check(f"[{P}] 协议写入程序配置",
+              (acc.get("Protocol") or acc.get("protocol")) == "Windows")
         check(f"[{P}] 声明需重启（凭据启动时读）", r.get("restart") is True, r)
+
+        # ★ 真解析器回读：配置类改动的核心风险是「结构对但程序读不出来」。
+        # 断言用 json 读回来只能证明"文件里有这个键"，不能证明程序能解析——
+        # 嵌套缩进 / 类型（字符串 vs 数字）/ 段名笔误都只在真解析时才暴露。
+        cfg_txt = (d / (man.get("config_path", "appsettings.json"))).read_text("utf-8")
+        parsed = json.loads(cfg_txt)          # 文件必然是合法 JSON（写的就是JSON）
+        seg = parsed.get("Account") or parsed.get("Lagrange", {}).get("Login") or {}
+        check(f"[{P}] ★ 真解析回读：Uin 为数字（程序按数字读，字符串会解析失败）",
+              isinstance(seg.get("Uin"), int) and seg["Uin"] == 10086,
+              f"{seg.get('Uin')!r} ({type(seg.get('Uin')).__name__})")
+        check(f"[{P}] ★ 真解析回读：Password 为非空字符串",
+              isinstance(seg.get("Password"), str) and seg["Password"] != "")
+
         # 空密码不得覆盖已有凭据
         adapter.save_login_credentials(inst, {"qq": "10087", "password": ""})
         cfg2 = adapter.read_json(adapter._config(inst))
-        acc2 = cfg2.get("Account") or cfg2.get("account") or {}
+        acc2 = (cfg2.get("Account") or cfg2.get("account")
+                or (cfg2.get("Lagrange") or {}).get("Login") or {})
         check(f"[{P}] 空密码被拒（不覆盖已有凭据）",
               (acc2.get("Password") or acc2.get("password")) == "S3cret!",
               acc2.get("Password") or acc2.get("password"))

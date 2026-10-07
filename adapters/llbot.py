@@ -8,6 +8,12 @@ CLI 参数（官方 README）：--qq= 快速登录、--update 检查并执行更
   satori:{ enable, host, port, token }                # 5600
 端口只能靠改配置文件（CLI 无端口参数），所以分配到的端口必须在首启前写回，
 否则多开时第二个实例仍会去抢默认端口。配置热更新：写完 1s 内 LLBot 自动重载。
+
+**为何不开账号密码登录**（2026-10-07 核实上游 main 分支源码）：登录由 WebUI /
+`--qq=` 快速登录驱动，配置文件（default_config.json / bin/llbot/data/config_*.json）
+里**没有账号密码字段**；源码里的 `tempPassword` 是扫码登录的临时票据（TLV 0x106），
+不是用户密码。故 login_modes 保持默认的 ["qrcode"] —— 强行给前端开二选一会让
+用户填完密码却仍每次扫码（写了不生效比不给选项更糟）。
 """
 import base64
 import re

@@ -8,11 +8,13 @@
     Milky.Api.Http.Enabled        —— HTTP API（默认开）
 - 协议栈在 Lagrange 段：Lagrange.Protocol.Signer.Token 必填（Lagrange V2 Sign API），
   否则程序起不来（故经登录凭据注入，缺失时启动日志会明确报错）。
-- 登录：二维码。Lagrange.Core 的 QrCode 行为同 OneBot 版——把方块字符画打到 stdout，
-  同时落盘 qr-{Uin}.png（Uin 默认 0 → qr-0.png）。所以二维码取自磁盘 png。
+- 登录：二维码（二维码取自磁盘 qr-{Uin}.png，同 OneBot 版）。**也支持账密**：
+  `Lagrange.Login.Uin` / `Password`（见本文件 DEFAULT_CONFIG，与上游默认一致），
+  Password 非空即走账密、为空才是扫码。
 - 自更新默认关，无需干预。
 """
 import copy
+from pathlib import Path
 
 from adapters.base import WriteResult
 from adapters.lagrange_base import LagrangeBase
@@ -65,6 +67,52 @@ class LagrangeMilkyAdapter(LagrangeBase):
         if tok:
             self._set_signer_token(instance, tok)
         return {"ok": True}
+
+    # ---------- 登录方式 ----------
+    def login_modes(self) -> list[str]:
+        """扫码 + 账号密码二选一（字段见本文件 DEFAULT_CONFIG 的 Lagrange.Login段）。
+
+        Milky 版与 OneBot 版**字段路径不同**（这里是 Lagrange.Login.Uin/Password，
+        OneBot 版是 Account.Uin/Password）——所以不能把账密实现写进 LagrangeBase，
+        否则两边会写错段。
+        """
+        return ["qrcode", "account"]
+
+    # Lagrange.Login.Protocol 的可选值（同上游默认结构）
+    LOGIN_PROTOCOLS = [{"id": "Windows", "label": "Windows（兼容性最好）"},
+                       {"id": "Linux", "label": "Linux"},
+                       {"id": "macOS", "label": "macOS"}]
+
+    def save_login_credentials(self, instance, credentials) -> dict:
+        """写 Lagrange.Login.Uin / Password / Protocol，使其以后免扫码启动即登录。
+
+        **密码明文落盘**：上游格式本身如此（程序直接读明文），不是管理器偷懒。
+        只写程序配置文件，不进管理器状态库 → 备份/导出不会把密码带走。
+        """
+        uin = str(credentials.get("qq") or "").strip()
+        pwd = str(credentials.get("password") or "")
+        if not uin or not pwd:
+            return {"restart": False, "manual": "账号与密码均不能为空"}
+        protocol = str(credentials.get("protocol") or "Linux")
+        path = self._config(instance)
+
+        def _m(cfg: dict) -> dict:
+            cfg = self._fill_defaults(cfg)
+            login = cfg["Lagrange"].setdefault("Login", {})
+            login["Uin"] = int(uin)
+            login["Password"] = pwd
+            login["Protocol"] = protocol
+            login["AutoReLogin"] = True
+            return cfg
+        atomic_write_json(path, _m)
+        # 换号要清残留登录态（qr-{Uin}.png / device.json）——QQ 单点登录会踢号
+        try:
+            for pat in (f"qr-{uin}.png", "device.json", "keystore.json"):
+                for f in Path(instance.dir).glob(pat):
+                    f.unlink()
+        except OSError:
+            pass
+        return {"restart": True, "manual": "", "path": str(path)}
 
     def _set_signer_token(self, instance, tok: str) -> None:
         p = self._config(instance)
