@@ -87,6 +87,12 @@
         </div>
         <p v-else class="hint">未上传：部署时将从 GitHub 在线下载（国内可能很慢）。</p>
         <p class="hint">上传 zip / tar.gz / tar.xz 等压缩包后，部署将直接解压本地包，不再联网下载；也可用同样的包供多实例复用。</p>
+        <p class="hint" v-if="manifest.release_page && !pkgInfo">
+          没有现成包？可到
+          <a :href="manifest.release_page" target="_blank" rel="noreferrer">上游项目页</a>
+          下载对应平台的压缩包后上传。
+          <span v-if="manifest.prerequisite">（本程序还需先备好：{{ manifest.prerequisite }}）</span>
+        </p>
         <input type="file" accept=".zip,.gz,.tgz,.xz,.bz2,.tar" :disabled="pkgBusy" @change="uploadPkg"/>
         <button v-if="pkgUp" class="danger" @click="cancelPkg">取消上传</button>
         <div v-if="pkgUp" class="pkgup">
@@ -97,6 +103,32 @@
         </div>
         <p v-if="pkgMsg" class="hint">{{ pkgMsg }}</p>
       </div>
+      <!-- 下载前探测：把「将要下什么、多大、哪个版本」摆到点下载之前。
+           上游改资产名会让部署直接 404（llbot v8.3.0 实测），而用户此前只能
+           看到「部署失败」，分不清是包改名、网络问题，还是本来就要下 90MB。 -->
+      <div class="field" v-if="dice && !pkgInfo">
+        <label>将下载的程序包</label>
+        <div class="pkgprobe" v-if="probing">
+          <span class="hint">正在查询上游最新包…</span>
+        </div>
+        <div class="pkgprobe" v-else-if="pkgProbe">
+          <p class="pkg-ok" v-if="pkgProbe.ok">
+            {{ pkgProbe.asset }}<span v-if="pkgProbe.size"> · 约 {{ fmtMB(pkgProbe.size) }} MB</span>
+            <span v-if="pkgProbe.tag"> · {{ pkgProbe.tag }}</span>
+          </p>
+          <p class="hint err" v-else>{{ pkgProbe.error }}</p>
+          <p class="hint">启动文件：<code>{{ pkgProbe.executable }}</code>
+            <span v-if="!pkgProbe.size">（大小未知，源站未提供 Content-Length）</span></p>
+        </div>
+        <p class="hint" v-else>—</p>
+        <div class="ops">
+          <button :disabled="probing" @click="loadProbe(true)">重新查询</button>
+          <span class="hint" v-if="pkgProbe && !pkgProbe.ok">
+            若提示找不到资产，通常是上游改了发布包名，可改为「上传离线程序包」部署。
+          </span>
+        </div>
+      </div>
+
       <p v-if="manifest.prerequisite" class="hint">前置依赖：{{ manifest.prerequisite }}</p>
       <div class="ops">
         <button class="primary" :disabled="!canCreate || busy" @click="create">
@@ -118,11 +150,19 @@
         <p v-if="dlSpeed" class="hint">{{ dlSpeed }} · 已用 {{ dlElapsed }}</p>
       </div>
       <p v-else class="hint">部署中，请勿关闭页面…</p>
-      <!-- 部署失败（下载超时/断网等）：就地给出「重试下载」与「上传压缩包」两条出路，
-           不必退回第一步重新创建实例 -->
+      <!-- 部署失败（下载超时/断网/上游改名等）：就地给出出路，不必退回第一步。
+           「去项目页下载」是第三条路：在线下载失败时用户最需要的就是
+           「我自己去 release 页把包下下来，再上传」——没有链接就只能干等或放弃。 -->
       <div v-if="deployFail" class="dialog deploy-fail">
         <p class="fail-msg">部署失败：{{ deployFail }}</p>
-        <p class="hint">在线下载失败多为网络问题（国内直连 GitHub 常超时）。你可以：</p>
+        <p class="hint">在线下载失败多为网络问题（国内直连 GitHub 常超时），
+          也可能是上游改了发布包名。你可以：</p>
+        <div class="ops">
+          <a class="btn" v-if="manifest.release_page" :href="manifest.release_page"
+             target="_blank" rel="noreferrer">去项目页下载</a>
+          <span class="hint" v-if="manifest.release_page">
+            打开后找对应平台的压缩包，下载完回到第一步「上传离线程序包」即可部署。</span>
+        </div>
         <div class="ops">
           <button class="primary" :disabled="busy" @click="retryDeploy">重试下载</button>
           <label class="upload-btn" :class="{ disabled: pkgBusy || busy }">
@@ -403,7 +443,7 @@
 import { ref, computed, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
-         deletePackage, linkInstance,
+         deletePackage, linkInstance, probeManifestPackage,
          createInstance, wizardStep, delInstance, deployProgress, instanceWebui } from '../api'
 
 const ROLES = [
@@ -426,6 +466,35 @@ const loggedIn = ref(false)      // 第三步：登录环节已完成（可进�
 const webuiInfo = ref(null)
 const pkgs = ref({})             // {dice: {exists,size_mb,source,updated_at}}
 const pkgBusy = ref(false), pkgMsg = ref('')
+
+// ---------- 下载前探测（将要下哪个包 / 多大 / 什么版本）----------
+// 为什么要它：上游改资产名会让部署直接 404（llbot v8.3.0 把 LLBot-CLI-linux-x64.zip
+// 改成 LuckyLillia-CLI-linux-x64.zip），滚动 tag 的资产名还每次都变
+// （Dice-Next 带日期后缀）。此前用户只能看到「部署失败」，分不清是包改名、
+// 网络问题，还是本来就要下 90MB —— 「点了才发现下错」太晚。
+const pkgProbe = ref(null), probing = ref(false)
+// 用 watch 而不是改 6 处 dice 赋值点：那些点分散在选端/选程序/配对/回退等分支，
+// 逐个加必然漏一处（漏了就是「换个入口进来不探测」的行为不一致）。
+watch(dice, () => loadProbe(), { immediate: false })
+// 换程序要清掉上一次的探测结果，否则会显示上一个程序的包（很容易误读）
+const loadProbe = async (force) => {
+  const d = dice.value
+  if (!d) { pkgProbe.value = null; return }
+  // 本地已有包 → 部署走解压不下载，没什么可探的
+  if (pkgs.value[d] && !force) { pkgProbe.value = null; return }
+  probing.value = true
+  pkgProbe.value = null
+  try {
+    const r = await probeManifestPackage(d)
+    // 竞态：查询期间用户可能已经换程序了，丢弃过期结果
+    if (dice.value !== d) return
+    pkgProbe.value = { ...r, ok: !r.error }
+  } catch (e) {
+    if (dice.value === d) pkgProbe.value = { ok: false, error: e.message || String(e) }
+  } finally {
+    if (dice.value === d) probing.value = false
+  }
+}
 // 登录端第三步：勾选要关联的已有应用端 + 每个应用端绑定的账号
 const pickedApps = ref([])
 const pickAcct = reactive({})
@@ -1091,6 +1160,15 @@ onUnmounted(() => { sock.value?.close(); logSock.value?.close(); stopDeployPoll(
 .pending { margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warn); border-radius: 8px; }
 .pkg { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
 .pkg-ok { color: var(--ok); }
+/* 下载前探测：把「将要下什么」摆出来，别让用户点了才知道下错 */
+.pkgprobe {
+  padding: 8px 10px; margin-bottom: 6px;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.pkgprobe p { margin: 0 0 4px; font-size: 13px; }
+.pkgprobe p:last-child { margin-bottom: 0; }
+.pkgprobe code { word-break: break-all; }   /* 资产名可能很长，别撑破布局 */
+.pkgprobe .ops { margin-top: 6px; }
 .adv-box { max-width: 480px; margin-bottom: 14px; }
 .adv-box summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .adv-box[open] summary { margin-bottom: 10px; }

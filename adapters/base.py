@@ -370,6 +370,55 @@ class BaseAdapter(ABC):
     def _resolve_download(self) -> str:
         return self._resolve_release()[0]
 
+    def probe_package(self) -> dict:
+        """下载**之前**探明将要拿到的包：资产名 / 大小 / 版本 / 本地是否已有。
+
+        为什么必须有这一步（2026-10-08 实际踩到）：
+        - 上游会改资产名。llbot v8.3.0 把 `LLBot-CLI-linux-x64.zip` 改成
+          `LuckyLillia-CLI-linux-x64.zip`，清单里的硬编码 URL 直接 404，
+          而用户看到的是「部署失败」，完全不知道是「包改名了」。
+        - 滚动 tag 的资产名每次都变（Dice-Next 的
+          `DiceNext-beta-3.0.0-927-linux-amd64-2026-10-06-2`），光看清单里的
+          固定 URL 判断不了「今天会下到哪个包」。
+        - 大包动辄几十 MB，「到底要下多少」不先说清楚，用户不敢点。
+
+        所以把「解析 URL + 问大小」提前到部署之前，让用户在点下载前就看到
+        确定的包名与体积。这里复用 _resolve_download()（同一套解析逻辑，
+        绝不另写一份 —— 两处解析必然漂移，那正是 llbot 问题的成因之一）。
+        只做 HEAD 探测，不下载正文。
+        """
+        out: dict = {"dice": self.m["name"], "executable": self.m.get("exe"),
+                     "required_files": self.m.get("required_files") or [],
+                     # 上游项目页：下载失败（改名/限流/网络）时让用户能自己去
+                     # release 页找包、下了走「上传压缩包」部署，不必猜该去哪找。
+                     "release_page": self.m.get("release_page")}
+        if pkgstore.find_archive(self.m["name"]):
+            out["cached"] = True           # 已有本地包 → 部署不会走下载
+            return out
+        out["cached"] = False
+        try:
+            url, tag = self._resolve_release()
+        except Exception as e:
+            # 探测失败不阻断：真正的部署会再报一次错，这里只是提前告知
+            out["error"] = _download_error_hint(e)
+            return out
+        out["url"] = url
+        out["tag"] = tag
+        out["asset"] = url.rsplit("/", 1)[-1]
+        out["size"] = self._remote_size(url)
+        return out
+
+    @staticmethod
+    def _remote_size(url: str) -> int | None:
+        """问 Content-Length；拿不到返回 None（前端显示「未知」而不是编一个数）。"""
+        try:
+            req = urllib.request.Request(url, method="HEAD",
+                                         headers={"User-Agent": "DiceManager"})
+            with urllib.request.urlopen(mirror_url(req.full_url), timeout=20) as r:
+                return int(r.headers.get("Content-Length") or 0) or None
+        except Exception:
+            return None                     # 405/超时/镜像不支持 HEAD 都属正常
+
     def _resolve_release(self) -> tuple[str, str | None]:
         """解析下载地址；返回 (url, release_tag|None)。tag 供升级通道记录版本基线。"""
         strat = self.m.get("download_strategy", "direct")

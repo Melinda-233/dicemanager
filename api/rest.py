@@ -948,8 +948,29 @@ def deploy_progress(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
     _inst_or_404(inst_id, user)
     return deploy_progress_of(inst_id)
 
+# ---------- 下载前探测：将要拿到哪个包、多大 ----------
+# 注册在 /instances/{id}/{op} 之外（那是另一组路径），但**必须在任何
+# /packages/{dice} 之类的字面量路由之后**——「manifests」若被当成 dice 会误匹配。
+
+@router.get("/manifests/{dice}/package")
+def probe_manifest_package(dice: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """部署前探明「将要下载的程序包」：资产名 / 大小 / 版本 / 本地是否已有缓存。
+
+    存在的理由是真实故障：上游改资产名会让硬编码 URL 直接 404（llbot v8.3.0 把
+    LLBot-CLI-linux-x64.zip 改成 LuckyLillia-CLI-linux-x64.zip），而滚动 tag 的
+    资产名每次都变（Dice-Next 带日期后缀）。用户在这之前只能看到「部署失败」，
+    无从知道是包改名了、还是自己网络的问题、还是本来就要下 90MB。
+    """
+    _u(user)
+    if dice not in ctx.adapters:
+        raise HTTPException(404, f"未知程序: {dice}")
+    manifest, cls = ctx.adapters[dice]
+    return cls(manifest).probe_package()
+
+
 @router.get("/manifests")
 def list_manifests():
+
     """Step1 组合选项与兼容矩阵。
 
     白名单只放前端真正消费的字段：multi_account / recommended_protocols 曾在此透出
@@ -970,7 +991,10 @@ def list_manifests():
                                         "compatible_login", "bot_modes",
                                         "webui_default_port", "ob11_default_port",
                                         "approx_memory_mb", "auth_token_conditional",
-                                        "prerequisite", "delete_keeps_save")}
+                                        "prerequisite", "delete_keeps_save",
+                                        # 下载失败时前端要给出「去项目页下载」这条出路，
+                                        # 没有链接用户就只能干等（上游改名/限流时尤其）。
+                                        "release_page")}
         out[n]["login_modes"] = modes or ["qrcode"]
         protos = getattr(adapter, "LOGIN_PROTOCOLS", None) if adapter else None
         if protos:

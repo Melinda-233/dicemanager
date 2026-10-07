@@ -11,7 +11,9 @@
   "config_path": "bin/llbot/default_config.json",
   "data_paths": ["bin/llbot/data"],
   "release_page": "https://github.com/LLOneBot/LuckyLilliaBot/releases",
-  "download": "https://github.com/LLOneBot/LuckyLilliaBot/releases/latest/download/LLBot-CLI-win-x64.zip",
-  "download_strategy": "direct",
+  // 同 server 版：上游 v8.3.0 改了资产名前缀（LLBot-CLI-* → LuckyLillia-CLI-*），
+  // 硬编码 URL 会 404。改用 API + 正则（CLI 完整包，非 Desktop/Docker/arm64）。
+  "download_strategy": "resolve_latest_via_api",
+  "asset_name_pattern": "CLI-win-x64\\.zip$",
   "post_start_action": "--update", "required_files": ["llbot.exe", "bin/llbot/default_config.json"]
 }

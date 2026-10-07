@@ -105,6 +105,9 @@ export const revokeAccount = name =>
 export const listInstances = () => api('/instances')
 export const listPending = () => api('/pending')
 export const listManifests = () => api('/manifests')
+// 下载前探测：将要拿到哪个包、多大、什么版本、本地是否已有缓存。
+// 部署失败时最常见的成因是「上游改了资产名」，先探一下能当场说清。
+export const probeManifestPackage = dice => api(`/manifests/${dice}/package`)
 export const createInstance = b => api('/instances', { method: 'POST', body: b })
 export const wizardStep = (id, step, payload) =>
   api(`/instances/${id}/wizard`, { method: 'POST', body: { step, payload } })
