@@ -1,13 +1,17 @@
 """Edition 开关：server（Linux 服务器）与 desktop（Windows 单机本地）的分化边界。
 
 两版共享同一套内核（core/ api/ adapters/ services/ web/src），差异只允许长在
-边缘的五个点上：
+边缘的六个点上：
 
   C1 鉴权模型    server 多用户+配额；desktop 单用户 + 首启 WebUI 设密码
   C2 首启端点    desktop 有 /needs-setup、/setup
   C3 服务化      server 有 /panel/restart（systemd 拉起）
   C4 网络暴露    server 放通防火墙端口；desktop 只听 127.0.0.1（no-op）
   C5 路径策略    server 走 /var/lib 等固定部署位；desktop 走项目根 data/
+  C6 桌面集成    desktop 有 /instances/{id}/reveal（在文件管理器里打开目录）
+
+⚠️ **C6 必须前后端两处都挡**：后端 is_server() 返404 + 前端按 /edition 不渲染
+按钮。只挡一处会出现「按钮在但点了 404」，用户只会以为面板坏了。
 
 差异化代码必须可 grep，方便审计两版究竟差在哪：
 
