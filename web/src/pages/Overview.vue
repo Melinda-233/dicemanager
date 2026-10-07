@@ -149,11 +149,22 @@
       <p v-if="expMsg" class="hint">{{ expMsg }}</p>
     </details>
       </div>
-      <aside v-if="sel" class="panel">
+      <!-- 侧栏常驻：以前 v-if="sel" 让它整个消失，于是
+           「点拓扑图方框右侧的⚙」在未选中时毫无反馈（面板块随之一起消失）。
+           现在常驻显示；未选中实例时给一句「点方框选实例」，
+           拓扑图也相应留出固定宽度（见 .topo-wrap 的说明）。 -->
+      <aside class="panel">
         <div class="panel-top">
           <b>实例操作</b>
-          <button class="x" title="关闭" @click="sel = null">×</button>
+          <button v-if="sel" class="x" title="取消选择" @click="sel = null">×</button>
         </div>
+        <template v-if="!sel">
+          <p class="hint sel-empty">
+            点左侧拓扑图里的实例方框（或方框下方的 ▶ 启动）来选择实例。<br/>
+            选好后这里会出现该实例的操作按钮。
+          </p>
+        </template>
+        <template v-else>
         <div class="sel-info">
         <b>{{ sel.dice }}</b> · {{ live.state }} · 端口 {{ live.port || '-' }}
         <span v-if="live.qq"> · QQ {{ live.qq }}</span>
@@ -337,68 +348,71 @@
         </div>
       </div>
       <p v-if="connMsg" class="hint">{{ connMsg }}</p>
-      <!-- 分化 C3：面板重启仅 server 有意义（systemd 拉起）；desktop 是托盘常驻，无此入口 -->
+        </template>
+        <!-- 分化 C3：面板重启仅 server 有意义（systemd 拉起）；desktop 是托盘常驻，无此入口。
+             刻意放在 v-else 之外：它是**面板级**操作，与选不选实例无关，
+             空状态下也该可用（实例卡死时往往正是要重启面板的时候）。 -->
       <div class="panel-ops" v-if="isServer">
         <button class="danger" :disabled="panelRestarting" @click="restartPanelNow">重启面板</button>
         <span class="hint">整体重启管理面板，运行中的实例会自动拉回</span>
       </div>
-      <div v-if="manageOpen" class="mask" @click.self="manageOpen = false">
-        <div class="box manage-box" @click.stop>
-          <div class="manage-head">
-            <b>管理应用 · {{ sel.dice }}</b>
-            <button @click="manageOpen = false">关闭</button>
-          </div>
-        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
-        <template v-else-if="manage.capabilities && manage.capabilities.length">
-          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
-            <b>{{ c.label }}</b>
-            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
-            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
-            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
-            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
-            <template v-else-if="c.kind === 'python_deps'">
-              <p v-if="c.missing && c.missing.length" class="hint warn">
-                缺少依赖：{{ c.missing.join('、') }}
-              </p>
-              <div class="manage-row">
-                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
-                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
-                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
-                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
-                <button :disabled="manageBusy" @click="doSyncPyproject"
-                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
-                  同步依赖声明</button>
-              </div>
-              <p v-if="sel.state === 'running'" class="hint warn">
-                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
-              </p>
-              <div v-if="depsData" class="pkg-list">
-                <p class="hint">
-                  已装插件（{{ (depsData.packages || []).length }}）：
-                  <button class="lnk" @click="loadManage">刷新</button>
-                </p>
-                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
-                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
-                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
-                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
-                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
-                </div>
-                <p v-if="(depsData.dir_plugins || []).length" class="hint">
-                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
-                </p>
-                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
-                  <code>{{ dp.name }}</code>
-                </div>
-                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
-              </div>
-            </template>
-          </div>
-        </template>
-        <p v-else class="hint">该程序未提供可管理的能力。</p>
-        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
-      </div>
-      </div>
       </aside>
+    </div>
+    <div v-if="manageOpen" class="mask" @click.self="manageOpen = false">
+      <div class="box manage-box" @click.stop>
+        <div class="manage-head">
+          <b>管理应用 · {{ sel.dice }}</b>
+          <button @click="manageOpen = false">关闭</button>
+        </div>
+      <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
+      <template v-else-if="manage.capabilities && manage.capabilities.length">
+        <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
+          <b>{{ c.label }}</b>
+          <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
+          <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
+          <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
+          <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
+          <template v-else-if="c.kind === 'python_deps'">
+            <p v-if="c.missing && c.missing.length" class="hint warn">
+              缺少依赖：{{ c.missing.join('、') }}
+            </p>
+            <div class="manage-row">
+              <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
+                     @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
+              <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
+                      @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
+              <button :disabled="manageBusy" @click="doSyncPyproject"
+                      title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
+                同步依赖声明</button>
+            </div>
+            <p v-if="sel.state === 'running'" class="hint warn">
+              实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
+            </p>
+            <div v-if="depsData" class="pkg-list">
+              <p class="hint">
+                已装插件（{{ (depsData.packages || []).length }}）：
+                <button class="lnk" @click="loadManage">刷新</button>
+              </p>
+              <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
+                 class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
+              <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
+                <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
+                <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
+              </div>
+              <p v-if="(depsData.dir_plugins || []).length" class="hint">
+                目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
+              </p>
+              <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
+                <code>{{ dp.name }}</code>
+              </div>
+              <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
+            </div>
+          </template>
+        </div>
+      </template>
+      <p v-else class="hint">该程序未提供可管理的能力。</p>
+      <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
+    </div>
     </div>
     <div v-if="panelRestarting" class="restart-overlay">
       <div class="restart-card">
@@ -473,17 +487,20 @@ const loginNodes = computed(() => nodes.value.filter(isLogin))
 const diceNodes = computed(() => nodes.value.filter(n => !isLogin(n)))
 // 侧栏打开时收窄画布（列距拉近、viewBox 变窄），节点/文字保持原大——
 // 而不是让 SVG 随容器等比缩小（那样节点和字都会变小）
-const compact = computed(() => !!sel.value)
-const vbW = computed(() => compact.value ? 560 : 800)
-const colX = computed(() => compact.value ? { login: 120, dice: 440 } : { login: 170, dice: 630 })
+// 画布尺寸**恒定**，不随选中状态变化。
+// 侧栏已改为常驻（宽度固定 340px），若这里还按 selected 切两套坐标，
+// 选中/取消时节点会横向抖动一下 —— 看着像页面跳变，且用户会以为点空了。
+// 窄容器下靠 CSS 缩放（.topo 的 width:100%）而不是改坐标。
+const vbW = 800
+const colX = { login: 170, dice: 630 }
 const pos = id => {
   const node = nodes.value.find(n => n.id === id)
-  if (!node) return { x: (colX.value.login + colX.value.dice) / 2, y: 215 }
+  if (!node) return { x: (colX.login + colX.dice) / 2, y: 215 }
   const col = isLogin(node) ? loginNodes.value : diceNodes.value
   const j = col.findIndex(n => n.id === id)
   const n = col.length
   const y = n <= 1 ? 215 : 60 + j * (310 / (n - 1))
-  return { x: isLogin(node) ? colX.value.login : colX.value.dice, y }
+  return { x: isLogin(node) ? colX.login : colX.dice, y }
 }
 // 分化 C3：面板重启按钮只在 server 版渲染（后端 /panel/restart 对 desktop 返 404）
 const isServer = ref(false)
@@ -1013,26 +1030,8 @@ text.warn { fill: #d97706; font-size: 10px; }
 /* 节点旁的符号按钮：靠 hover/禁用态区分可点性（图形没有文字标签，
    靠 <title> 兜 tooltip）。off = 该操作当前不适用（如已在运行还点「启动」）。
    选择器不带 .node-ops 前缀：管理应用那颗在 <g class="node-ops"> 之外。 */
-/* 节点旁的方形符号按钮。刻意用矢量图形而不是文字符号（▶■↻⚙）：
-   文字符号靠字体渲染，不同系统/字体下形状与位置都不一样（有的方框里
-   根本对不齐），而 <path>/<rect> 是我们自己画的，任何机器上完全一致。
-   图标尺寸按 20px 方块设计：留 5px 内边距，图形本体 10px。 */
-.qbtn { fill: var(--panel); stroke: var(--border); stroke-width: 1; cursor: pointer; }
-.qbtn:hover { fill: var(--brand); stroke: var(--brand); }
-/* 实心图标（播放/停止/箭头头） */
-.qico { fill: var(--text); pointer-events: none; }
-/* 描边图标（重启箭头、齿轮）——方块小，实心会糊成一团 */
-.qico-stroke { fill: none; stroke: var(--text); stroke-width: 1.8;
-               stroke-linecap: round; pointer-events: none; }
-.qbtn:hover .qico { fill: #fff; }
-.qbtn:hover .qico-stroke { stroke: #fff; }
-.qbtn.off { opacity: .35; cursor: default; }
-.qbtn.off:hover { fill: var(--panel); stroke: var(--border); }
-.qbtn.off:hover .qico { fill: var(--text); }
-.qbtn.off:hover .qico-stroke { stroke: var(--text); }
-/* 管理应用：与启停同一视觉语言（方块），只是底色略深以示「功能入口」而非「进程开关」 */
-.qbtn-side { fill: var(--code-bg); }
-.qico-dashed { stroke-dasharray: 2.6 2.2; }   /* 虚线圆环 = 齿轮的「齿」 */
+/* 节点符号按钮的样式在 style.css（全局）—— SVG 元素拿不到 scoped 的 data-v 属性，
+   放在这里会完全不生效，见 style.css 里那段注释。 */   /* 虚线圆环 = 齿轮的「齿」 */
 .qbtn-side:hover { fill: var(--brand); }
 .crash-warn { color: #e5484d; font-weight: 600; }
 text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
@@ -1055,6 +1054,13 @@ button.danger { color: #e5484d; }
 /* 点击实例后：拓扑居左、操作面板固定宽度靠右成侧栏 */
 .layout { display: flex; gap: 16px; align-items: flex-start; }
 .topo-wrap { flex: 1; min-width: 0; }
+/* 侧栏常驻，所以拓扑图宽度不再随选中状态跳变 —— 之前 aside 用 v-if，
+   选中时挤进 340px、取消选中又弹回去，节点位置会在两套坐标间抖动。 */
+.sel-empty {
+  margin: 8px 0; padding: 14px 12px;
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  text-align: center; line-height: 1.9;
+}
 .panel {
   width: 340px; flex-shrink: 0;
   background: var(--panel); border: 1px solid var(--border);

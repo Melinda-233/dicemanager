@@ -220,3 +220,32 @@ button.lnk {
 
 /* ---------- 日志终端 ---------- */
 .term { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ---------- 拓扑图节点旁的方形符号按钮（全局，不能放组件 scoped） ----------
+   ⚠️ 踩过的坑：这些规则最初写在 Overview.vue 的 <style scoped> 里，
+   编译后变成 `.qico[data-v-b84bdbf4]{...}`。而 **SVG 原生元素
+   （<path>/<circle>/<rect>）在模板里静态写死时不会被 Vue 打上 scope id**，
+   于是选择器永远匹配不上 —— 按钮渲染出来了（.qbtn 那些规则在全局能找到），
+   图标却是空的。
+   判据：SVG 内的样式一律放全局；组件 scoped 只用于 HTML 元素。
+   前缀 .topo 是为了不与别处的 .qbtn/.qico 撞名。 */
+/* 节点旁的方形符号按钮。刻意用矢量图形而不是文字符号（▶■↻⚙）：
+   文字符号靠字体渲染，不同系统/字体下形状与位置都不一样（有的方框里
+   根本对不齐），而 <path>/<rect> 是我们自己画的，任何机器上完全一致。
+   图标尺寸按 20px 方块设计：留 5px 内边距，图形本体 10px。 */
+.topo .qbtn { fill: var(--panel); stroke: var(--border); stroke-width: 1; cursor: pointer; }
+.topo .qbtn:hover { fill: var(--brand); stroke: var(--brand); }
+/* 实心图标（播放/停止/箭头头） */
+.topo .qico { fill: var(--text); pointer-events: none; }
+/* 描边图标（重启箭头、齿轮）——方块小，实心会糊成一团 */
+.topo .qico-stroke { fill: none; stroke: var(--text); stroke-width: 1.8;
+               stroke-linecap: round; pointer-events: none; }
+.topo .qbtn:hover .topo .qico { fill: #fff; }
+.topo .topo .qbtn:hover .topo .qico-stroke { stroke: #fff; }
+.topo .qbtn.off { opacity: .35; cursor: default; }
+.topo .qbtn.off:hover { fill: var(--panel); stroke: var(--border); }
+.topo .qbtn.off:hover .topo .qico { fill: var(--text); }
+.topo .qbtn.off:hover .topo .qico-stroke { stroke: var(--text); }
+/* 管理应用：与启停同一视觉语言（方块），只是底色略深以示「功能入口」而非「进程开关」 */
+.topo .qbtn-side { fill: var(--code-bg); }
+.topo .qico-dashed { stroke-dasharray: 2.6 2.2; }
