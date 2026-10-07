@@ -137,6 +137,63 @@
         <input ref="backupInput" type="file" hidden
                accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
       </div>
+      <!-- ===== 管理应用：能力由后端适配器声明，前端不按程序名分支 =====
+           必须紧贴上面的按钮组：面板在 340px 侧栏里一旦被资源曲线/诊断/定时任务
+           隔开，展开的内容就落在视口外，用户看到的是「点了没反应」（后端其实
+           已经正常返回 200 + 数据）。面板要出现在触发它的按钮旁边。 -->
+      <div v-if="manageOpen" class="manage">
+        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
+        <template v-else-if="manage.capabilities && manage.capabilities.length">
+          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
+            <b>{{ c.label }}</b>
+            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
+            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
+            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
+            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
+            <template v-else-if="c.kind === 'python_deps'">
+              <p v-if="c.missing && c.missing.length" class="hint warn">
+                缺少依赖：{{ c.missing.join('、') }}
+              </p>
+              <div class="manage-row">
+                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
+                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
+                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
+                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
+                <button :disabled="manageBusy" @click="doSyncPyproject"
+                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
+                  同步依赖声明</button>
+              </div>
+              <p v-if="sel.state === 'running'" class="hint warn">
+                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
+              </p>
+              <div v-if="depsData" class="pkg-list">
+                <p class="hint">
+                  已装插件（{{ (depsData.packages || []).length }}）：
+                  <button class="lnk" @click="loadManage">刷新</button>
+                </p>
+                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
+                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
+                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
+                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
+                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
+                </div>
+                <p v-if="(depsData.dir_plugins || []).length" class="hint">
+                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
+                </p>
+                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
+                  <code>{{ dp.name }}</code>
+                </div>
+                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
+              </div>
+            </template>
+          </div>
+        </template>
+        <p v-else class="hint">该程序未提供可管理的能力。</p>
+        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
+      </div>
+      <p v-if="webuiInfo" class="hint">
+        WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
+          webuiInfo.token || '日志中未发现令牌，请进 WebUI 查看' }}</code>（点击复制）</p>
       <!-- 资源曲线：24h 内存/CPU 走势（采样 60s 一点，面板重启不丢历史） -->
       <div v-if="showMetrics" class="metrics">
         <div class="metrics-top">
@@ -194,60 +251,6 @@
           <button :disabled="!(newSched.days > 0 || newSched.hours > 0)" @click="addSched">添加</button>
         </div>
       </div>
-      <!-- ===== 管理应用：能力由后端适配器声明，前端不按程序名分支 ===== -->
-      <div v-if="manageOpen" class="manage">
-        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
-        <template v-else-if="manage.capabilities && manage.capabilities.length">
-          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
-            <b>{{ c.label }}</b>
-            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
-            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
-            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
-            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
-            <template v-else-if="c.kind === 'python_deps'">
-              <p v-if="c.missing && c.missing.length" class="hint warn">
-                缺少依赖：{{ c.missing.join('、') }}
-              </p>
-              <div class="manage-row">
-                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
-                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
-                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
-                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
-                <button :disabled="manageBusy" @click="doSyncPyproject"
-                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
-                  同步依赖声明</button>
-              </div>
-              <p v-if="sel.state === 'running'" class="hint warn">
-                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
-              </p>
-              <div v-if="depsData" class="pkg-list">
-                <p class="hint">
-                  已装插件（{{ (depsData.packages || []).length }}）：
-                  <button class="lnk" @click="loadManage">刷新</button>
-                </p>
-                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
-                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
-                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
-                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
-                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
-                </div>
-                <p v-if="(depsData.dir_plugins || []).length" class="hint">
-                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
-                </p>
-                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
-                  <code>{{ dp.name }}</code>
-                </div>
-                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
-              </div>
-            </template>
-          </div>
-        </template>
-        <p v-else class="hint">该程序未提供可管理的能力。</p>
-        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
-      </div>
-      <p v-if="webuiInfo" class="hint">
-        WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
-          webuiInfo.token || '日志中未发现令牌，请进 WebUI 查看' }}</code>（点击复制）</p>
       <!-- ===== 连接管理：支持多连一 / 一连多，按账号分发 ===== -->
       <div class="conn-mgmt">
         <p class="hint" v-if="!isLoginSel">
@@ -354,7 +357,7 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
-         listExports, deleteExport, pruneExports, restartPanel, getEdition,
+         listExports, deleteExport, pruneExports, restartPanel, getEdition,
          revealInstance } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
