@@ -7,6 +7,14 @@
       <button @click="scan">扫描安装目录</button>
     </div>
     <div v-if="scanRes" class="scanbox">
+      <!-- 扫描结果目录可能几十条，压在侧栏上方把真正要操作的按钮顶出视口。
+           给它一个折叠开关，默认收起（扫描是「偶尔看一眼」，不是常驻信息）。 -->
+      <div class="ops scan-toggle">
+        <button @click="scanOpen = !scanOpen">
+          {{ scanOpen ? '▾ 收起扫描结果' : `▸ 安装目录（${scanRes.dirs.length}）` }}
+        </button>
+      </div>
+      <template v-if="scanOpen">
       <p class="hint">安装根：{{ scanRes.roots.join('、') }}
         （owned = 实例受管；orphan = 匹配程序名但无实例记录，可清理；
           external = 无关目录，仅展示）</p>
@@ -26,6 +34,7 @@
       </div>
       <p v-if="!scanRes.dirs.length && !scanRes.procs.length" class="hint">
         安装根下没有目录与相关进程。</p>
+      </template>
     </div>
     <p v-if="!nodes.length && !connected" class="hint">正在连接服务端…</p>
     <p v-else-if="!nodes.length" class="hint">
@@ -61,20 +70,27 @@
              stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点，
              点了「停」却顺带切换选中对象，与用户预期不符。 -->
         <g class="node-ops" @click.stop>
+          <!-- ⚠️ SVG 没有「子元素相对父 rect 定位」这回事：所有图标的坐标都是
+               **节点级绝对坐标**。方块在 y=24（中心 34），图标就必须带这个偏移，
+               写成 M-4.5 -5.5 会画到节点中心（方框里）去 —— 表现为「方块是空的」。
+               偏移量：方块中心 x = -26 / 0 / 26，y = 34。 -->
           <rect :x="-36" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'start')"
                 :class="{off: n.state === 'RUNNING'}">
-            <path d="M-4.5 -5.5 L5 0 L-4.5 5.5 Z" class="qico"/>
+            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" class="qico"/>
             <title>启动 {{ n.dice }}</title></rect>
           <rect x="-10" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'stop')"
                 :class="{off: n.state !== 'RUNNING'}">
-            <rect x="-4.5" y="-4.5" width="9" height="9" class="qico"/>
+            <rect x="-4.5" y="29.5" width="9" height="9" class="qico"/>
             <title>停止 {{ n.dice }}</title></rect>
+          <!-- 重启：圆弧圆心与方块中心 (26,34) 重合（半径 5），缺口开在右侧，
+         箭头贴在圆弧右上端点。图标不必追求几何精确居中 —— 描边图标本身
+         有视觉补偿，1~2px 偏差肉眼不可见，别为它反复重算坐标。 -->
           <rect x="16" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'restart')">
-            <path d="M5.2 -2.6 A5.2 5.2 0 1 0 5.2 2.6" class="qico qico-stroke"/>
-            <path d="M5.2 -5.6 L5.2 -2.4 L2.2 -2.4 Z" class="qico"/>
+            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" class="qico qico-stroke"/>
+            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" class="qico"/>
             <title>重启 {{ n.dice }}</title></rect>
         </g>
         <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置。
@@ -148,15 +164,22 @@
         <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
         <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
       </div>
-      <!-- 高频四项（启停/重启/管理）已内联到拓扑图方框下方，这里不再重复。
-             侧栏只留「需要确认或低频」的动作，并按语义分组 ——
-             14 个按钮平铺时没人能记住哪个是危险操作。 -->
+      <!-- 侧栏按钮分两层：
+           ① 面板按钮（可展开/收起）：管理应用 / 连接管理 / 定时任务 / 资源曲线
+              —— 点开是一块内容，再点收起来。统一放最前，因为它们是「看信息」的入口。
+           ② 直接动作：日志 / 更新 / 文件 / 备份 / 删除 —— 点完即生效，无需二次点击。
+           高频的启停重启+管理已内联到拓扑图方框（见上方 SVG），此处不重复。 -->
       <div class="ops">
-        <button @click="toggleMetrics">{{ showMetrics ? '收起资源曲线' : '资源曲线' }}</button>
-        <button @click="goLogs">查看日志</button>
+        <button :class="{ on: manageOpen }" @click="quickManage()">管理应用</button>
+        <button :class="{ on: connOpen }" @click="togglePanel('conn')">
+          连接管理<template v-if="!isLoginSel && linkRows.length"> ({{ linkRows.length }})</template></button>
+        <button :class="{ on: schedOpen }" @click="togglePanel('sched')">
+          定时任务<template v-if="schedules.length"> ({{ schedules.length }})</template></button>
+        <button :class="{ on: showMetrics }" @click="toggleMetrics">资源曲线</button>
         <button v-if="linkTarget" @click="runDiagnose">诊断连接</button>
       </div>
       <div class="ops">
+        <button @click="goLogs">查看日志</button>
         <button @click="checkUpgrade">检查更新</button>
         <button v-if="upgradeLatest" @click="doUpgrade">{{ upgradeLatest ? `升级到 ${upgradeLatest}` : '升级依赖' }}</button>
       </div>
@@ -167,7 +190,7 @@
       <!-- 备份导出：两个范围会导出完全不同的东西，标题写清差别 -->
       <div class="ops">
         <button @click="doExport('full')" title="程序+配置+存档+数据全部打包">导出整目录</button>
-        <button @click="doExport('data')" title="仅应用数据/存档；恢复前提是已部署同版本程序">仅导出数据</button>
+        <button @click="doExport('data')" title="仅应用数据/存档；恢复前提是实例已部署同版本程序">仅导出数据</button>
       </div>
       <div class="ops">
         <button v-if="uploading" class="danger" @click="cancelUpload">取消上传</button>
@@ -175,60 +198,6 @@
       </div>
       <input ref="backupInput" type="file" hidden
              accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
-      <!-- ===== 管理应用：能力由后端适配器声明，前端不按程序名分支 =====
-           必须紧贴上面的按钮组：面板在 340px 侧栏里一旦被资源曲线/诊断/定时任务
-           隔开，展开的内容就落在视口外，用户看到的是「点了没反应」（后端其实
-           已经正常返回 200 + 数据）。面板要出现在触发它的按钮旁边。 -->
-      <div v-if="manageOpen" class="manage">
-        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
-        <template v-else-if="manage.capabilities && manage.capabilities.length">
-          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
-            <b>{{ c.label }}</b>
-            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
-            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
-            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
-            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
-            <template v-else-if="c.kind === 'python_deps'">
-              <p v-if="c.missing && c.missing.length" class="hint warn">
-                缺少依赖：{{ c.missing.join('、') }}
-              </p>
-              <div class="manage-row">
-                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
-                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
-                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
-                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
-                <button :disabled="manageBusy" @click="doSyncPyproject"
-                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
-                  同步依赖声明</button>
-              </div>
-              <p v-if="sel.state === 'running'" class="hint warn">
-                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
-              </p>
-              <div v-if="depsData" class="pkg-list">
-                <p class="hint">
-                  已装插件（{{ (depsData.packages || []).length }}）：
-                  <button class="lnk" @click="loadManage">刷新</button>
-                </p>
-                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
-                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
-                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
-                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
-                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
-                </div>
-                <p v-if="(depsData.dir_plugins || []).length" class="hint">
-                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
-                </p>
-                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
-                  <code>{{ dp.name }}</code>
-                </div>
-                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
-              </div>
-            </template>
-          </div>
-        </template>
-        <p v-else class="hint">该程序未提供可管理的能力。</p>
-        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
-      </div>
       <p v-if="webuiInfo" class="hint">
         WebUI 登录令牌：<code class="tok" title="点击复制" @click="copyToken">{{
           webuiInfo.token || '日志中未发现令牌，请进 WebUI 查看' }}</code>（点击复制）</p>
@@ -261,8 +230,8 @@
         <p v-for="(d, i) in diag.items" :key="i" :class="d.ok ? 'diag-ok' : 'diag-bad'">
           {{ d.ok ? '✓' : '✗' }} {{ d.detail }}</p>
       </div>
-      <div class="sched">
-        <p class="hint" style="margin:4px 0">定时任务（每 X 天 X 小时自动执行一次）</p>
+      <div v-if="schedOpen" class="sched">
+        <p class="hint" style="margin:4px 0">每 X 天 X 小时自动执行一次</p>
         <div v-for="s in schedules" :key="s.id" class="sched-row">
           <span>每{{ s.every_days }}天{{ s.every_hours }}小时
             · {{ s.kind === 'restart' ? '定时重启'
@@ -290,7 +259,7 @@
         </div>
       </div>
       <!-- ===== 连接管理：支持多连一 / 一连多，按账号分发 ===== -->
-      <div class="conn-mgmt">
+      <div v-if="connOpen" class="conn-mgmt">
         <p class="hint" v-if="!isLoginSel">
           关联登录端：每个关联生成一条「应用端 ↔ 登录端」连接；可绑定登录端的某个 QQ 账号，
           或选「默认账号」由其自动分配（支持一个应用端连多个登录端）。
@@ -372,6 +341,62 @@
       <div class="panel-ops" v-if="isServer">
         <button class="danger" :disabled="panelRestarting" @click="restartPanelNow">重启面板</button>
         <span class="hint">整体重启管理面板，运行中的实例会自动拉回</span>
+      </div>
+      <div v-if="manageOpen" class="mask" @click.self="manageOpen = false">
+        <div class="box manage-box" @click.stop>
+          <div class="manage-head">
+            <b>管理应用 · {{ sel.dice }}</b>
+            <button @click="manageOpen = false">关闭</button>
+          </div>
+        <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
+        <template v-else-if="manage.capabilities && manage.capabilities.length">
+          <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
+            <b>{{ c.label }}</b>
+            <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
+            <!-- webui：直接开子窗口（后端已确认有端口才下发这条能力） -->
+            <button v-if="c.kind === 'webui'" @click="openWebui">打开 WebUI</button>
+            <!-- python_deps：依赖与插件（NoneBot2 这类无自带 WebUI 的程序） -->
+            <template v-else-if="c.kind === 'python_deps'">
+              <p v-if="c.missing && c.missing.length" class="hint warn">
+                缺少依赖：{{ c.missing.join('、') }}
+              </p>
+              <div class="manage-row">
+                <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
+                       @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
+                <button :disabled="manageBusy || !pkgSpec.trim() || sel.state === 'running'"
+                        @click="doInstallPkg">{{ manageBusy ? '处理中…' : '安装' }}</button>
+                <button :disabled="manageBusy" @click="doSyncPyproject"
+                        title="把 libs/ 里现有的包补写进 pyproject.toml（手工装过插件后用）">
+                  同步依赖声明</button>
+              </div>
+              <p v-if="sel.state === 'running'" class="hint warn">
+                实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
+              </p>
+              <div v-if="depsData" class="pkg-list">
+                <p class="hint">
+                  已装插件（{{ (depsData.packages || []).length }}）：
+                  <button class="lnk" @click="loadManage">刷新</button>
+                </p>
+                <p v-if="!(depsData.packages || []).length && !(depsData.dir_plugins || []).length"
+                   class="hint">尚未安装插件。nonebot2 生态的插件包名一般以 nonebot-plugin- 开头。</p>
+                <div v-for="pk in depsData.packages || []" :key="pk.name" class="pkg-row">
+                  <code>{{ pk.name }}</code><span class="hint">{{ pk.version }}</span>
+                  <button class="danger" :disabled="manageBusy" @click="doUninstallPkg(pk.name)">卸载</button>
+                </div>
+                <p v-if="(depsData.dir_plugins || []).length" class="hint">
+                  目录形态插件（不在 pip 体系内，请到实例目录自行管理）：
+                </p>
+                <div v-for="dp in depsData.dir_plugins || []" :key="dp.name" class="pkg-row">
+                  <code>{{ dp.name }}</code>
+                </div>
+                <p class="hint">依赖目录：<code>{{ depsData.libs_path }}</code></p>
+              </div>
+            </template>
+          </div>
+        </template>
+        <p v-else class="hint">该程序未提供可管理的能力。</p>
+        <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
+      </div>
       </div>
       </aside>
     </div>
@@ -498,6 +523,9 @@ watch(sel, () => {
   // 管理面板必须收起：能力属于上一个实例，留着会让人对着 A 实例点 B 实例的操作
   manageOpen.value = false; manage.value = {}; manageErr.value = ''
   manageMsg.value = ''; depsData.value = null; pkgSpec.value = ''
+  // 连接管理 / 定时任务 / 资源曲线同理：内容都绑在实例上，换实例必须一并收起
+  connOpen.value = false; schedOpen.value = false
+  showMetrics.value = false; metrics.value = null
 })
 
 // 启停操作：后端在启动/重启时会顺带开放 WebUI 端口（绑定修正 + ufw），有提示就展示
@@ -510,15 +538,37 @@ const quickOp = (id, o) => guard(async () => {
   const r = await opInstance(id, o)
   connMsg.value = r?.webui_note || ''
 })
-const quickManage = n => {
-  sel.value = n
-  if (manageOpen.value && sel.value?.id === n.id) {      // 再点一次是收起
-    manageOpen.value = false; return
+// 打开/收起管理面板。两个入口共用：
+//  ① 拓扑图方框右侧的 ⚙（传节点对象）
+//  ② 侧栏「管理应用」按钮（不传参数，用当前选中）
+//
+// 语义一（按用户要求）：程序**自带 WebUI** 时直接开新窗口去它那儿管理，
+// 面板里那个「打开 WebUI」按钮就多余了 —— 多一次点击。
+// 语义二：点开 → 再点收。所以要先记住「上一次开的是哪个实例」，
+// 否则切到别的实例再点一下会误判成「收起」。
+let manageOpenFor = null
+const quickManage = (n = null) => guard(async () => {
+  if (n) sel.value = n
+  if (!sel.value) return
+  if (manageOpen.value && manageOpenFor === sel.value.id) {
+    manageOpen.value = false          // 再点一次：收起
+    manageOpenFor = null
+    return
   }
   manageOpen.value = true
+  manageOpenFor = sel.value.id
   manageMsg.value = ''
-  loadManage()
-}
+  manageErr.value = ''
+  const cap = await instanceManage(sel.value.id)   // 先取能力再决定去哪儿
+  manage.value = cap
+  depsData.value = depsDataOf()
+  // 有 WebUI 能力 → 直接开新窗口，面板本身收起（用户要的是「去它那儿管理」）
+  if ((cap?.capabilities || []).some(c => c.kind === 'webui')) {
+    manageOpen.value = false
+    manageOpenFor = null
+    await openWebui()
+  }
+})
 // 模板里不能直接用 location（会编译成 _ctx.location），一律包成方法
 // 在文件管理器里打开实例目录：仅 desktop 有这个概念，server 是无人值守服务器，
 // 按钮与后端端点**两处都要挡**（后端见 rest.py reveal_instance）——只挡一处会
@@ -661,6 +711,20 @@ const killProc = pid => guard(async () => {
 })
 // ---------- 管理应用（能力由后端适配器声明）----------
 const manageOpen = ref(false), manageBusy = ref(false)
+// 可折叠面板：连接管理 / 定时任务 / 资源曲线 / 管理应用 / 扫描结果。
+// 语义统一为「点开 → 再点收」：按钮显示为按下态时表示面板正开着。
+// 各面板互斥吗？不互斥（用户可能要同时看连接与诊断），
+// 但**切换实例时必须全部收起** —— 面板内容属于上一个实例，
+// 留着会让人对着 A 实例的操作按钮去点 B 实例的字段。
+const connOpen = ref(false), schedOpen = ref(false), scanOpen = ref(false)
+const togglePanel = which => {
+  if (which === 'conn') { connOpen.value = !connOpen.value; return }
+  if (which === 'sched') { schedOpen.value = !schedOpen.value; return }
+}
+const closeAllPanels = () => {
+  connOpen.value = false; schedOpen.value = false
+  manageOpen.value = false; showMetrics.value = false
+}
 const manage = ref({}), manageErr = ref(''), manageMsg = ref('')
 const depsData = ref(null), pkgSpec = ref('')
 const depsDataOf = () => manage.value?.data?.python_deps || null
@@ -861,7 +925,8 @@ const toggleMetrics = () => {
   showMetrics.value = true
   loadMetrics()
 }
-watch(sel, () => { showMetrics.value = false; metrics.value = null })
+// 资源曲线随实例切换收起（其余面板的收起已在上面那个 watch(sel) 里统一处理，
+// 不在这里再写一遍 —— 同一件事分两处写必然漂移）
 
 // ---------- 互联诊断（拓展2） ----------
 const diag = ref(null)
@@ -1058,4 +1123,30 @@ button.danger { color: #e5484d; }
 .line-cpu { stroke: #42b883; stroke-width: 2; border-color: #42b883; }
 .metrics-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: #666; margin-top: 4px; }
 .metrics-legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---------- 管理应用浮窗 ----------
+   为什么改成浮窗而不是侧栏内展开：侧栏只有 340px 宽，插件列表 + 安装表单
+   挤在里面要滚好几屏，而且把下方的按钮全顶出视口。 */
+.mask {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0,0,0,.42);
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.manage-box {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: min(680px, 100%); max-height: 86vh; overflow-y: auto;
+  padding: 16px 18px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.22);
+}
+.manage-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 10px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+/* 面板按钮按下态：一眼看出「这个面板正开着」，再点即收起 */
+.ops button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+/* 扫描结果的折叠开关：它常常几十条，压在侧栏上方会把操作按钮顶出视口 */
+.scan-toggle { margin: 4px 0; }
 </style>
