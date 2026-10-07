@@ -27,6 +27,28 @@ from core.atomicio import atomic_write_json
 class LLBotAdapter(BaseAdapter):
     V8 = (8, 0, 9)
 
+    # 可执行文件的候选名（**顺序即优先级，清单登记名必须排第一**）。
+    # 上游 v8.3.0 起把二进制从 `llbot` 改名为 `LuckyLillia`（同为 ~2MB ELF，
+    # 与资产名 LLBot-CLI-* → LuckyLillia-CLI-* 同一波改名），而 bin/llbot/ 下的
+    # 配置与运行时目录名**没变**。
+    # 为什么不能直接把清单 exe 改成 LuckyLillia：已部署的实例目录里仍是 `llbot`，
+    # 一改就启动不了（服务器上那个跑了多天的实例就是这么来的）。
+    # 所以「清单登记名优先 + 候选兜底」，两边都能跑。
+    # ⚠️ 顺序反了的后果：新旧包共存时优先挑到新名，与「升级路径可预期」相悖。
+    EXE_ALIASES = ("llbot", "LuckyLillia")      # 清单登记名在前
+
+    def _resolve_exe(self, instance) -> str:
+        """返回该实例**实际存在**的可执行文件名。
+
+        找不到时回清单登记名 —— 让 verify_required 报出用户预期的那个名字，
+        而不是「LuckyLillia 或 llbot」这种二选一。
+        """
+        d = Path(instance.dir)
+        for name in self.EXE_ALIASES:
+            if (d / name).is_file():
+                return name
+        return self.m["exe"]
+
     # LLBot 的 ob11 端口在配置里固定存在，探测不到即为断连（不是「未配置」）
     HEALTH_USE_ACTUAL_PORT = False
     HEALTH_NO_PORT = "down"
@@ -58,15 +80,35 @@ class LLBotAdapter(BaseAdapter):
         return paths
 
     def build_start_cmd(self, instance) -> list[str]:
-        cmd = [str(Path(instance.dir) / self.m["exe"])]
+        cmd = [str(Path(instance.dir) / self._resolve_exe(instance))]
         if instance.qq:
             cmd.append(f"--qq={instance.qq}")                  # 等号形式
         return cmd
 
+    def verify_required(self, instance) -> list:
+        """可执行文件允许改名（上游 v8.3.0 改名为 LuckyLillia），走候选判定；
+        其余必备文件（bin/llbot/default_config.json 等）仍按清单严格校验。
+
+        顺序要点：**exe 与其他文件要各自独立判定，然后合并报告**。
+        早先写成「其他文件缺了就先 return，exe 另判」—— 结果 exe 缺失时
+        反而不报（源码包只缺配置时，只看到配置那条，看不到 exe 也缺）。
+        """
+        d = Path(instance.dir)
+        missing: list[str] = []
+        # ① 可执行文件：任一候选存在即就绪（都缺时回清单登记名，提示更具体）
+        if not any((d / n).is_file() for n in self.EXE_ALIASES):
+            missing.append(self.m["exe"])
+        # ② 其余必备文件：严格按清单
+        missing += [f for f in self.m["required_files"]
+                    if f != self.m["exe"] and not (d / f).exists()]
+        return missing
+
     # ---------- 启动前准备 ----------
     def prepare_start(self, instance, runner=None) -> bool:
         """执行位保障（zip 解压不保证保留 +x）+ 端口写回 + 首启 --update。"""
-        for rel in (self.m["exe"], "bin/llbot/node", "bin/pmhq/pmhq"):
+        # 遍历候选名而非只管清单那一个：新版包里是 LuckyLillia，
+        # 只 chmod 清单名会留下「没执行位 → 启动报 Permission denied」。
+        for rel in (*self.EXE_ALIASES, "bin/llbot/node", "bin/pmhq/pmhq"):
             exe = Path(instance.dir) / rel
             if exe.exists() and not exe.stat().st_mode & 0o111:
                 exe.chmod(exe.stat().st_mode | 0o111)
