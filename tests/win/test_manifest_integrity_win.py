@@ -109,6 +109,13 @@ def test_install_root_not_linux_path():
 
 def test_napcat_and_dicenext_guard_their_executable():
     """定点回归：NapCat.bat 是 Windows 启动体（误传源码包能挡住）；
-    DiceNext.exe 是发行包里的二进制。"""
+    dice-next.exe 是发行包里的二进制。
+
+    2026-10-08 更正：原先断言 `DiceNext.exe` 是**错的**——上游 Dice-Next 3.x
+    的包里根本没有这个文件名（Windows 实际是 dice-next.exe）。
+    断言照抄清单旧错值等于把错误一起钉住，改对了反而红。
+    """
     assert "NapCat.bat" in ALL["napcat"]["required_files"]
-    assert "DiceNext.exe" in ALL["dicenext"]["required_files"]
+    assert "dice-next.exe" in ALL["dicenext"]["required_files"]
+    # 自洽性：exe 与 required_files 必须指向同一个文件，否则部署成功但启动不了
+    assert ALL["dicenext"]["exe"] == "dice-next.exe"

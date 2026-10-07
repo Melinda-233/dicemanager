@@ -968,13 +968,39 @@ def probe_manifest_package(dice: str, user: Annotated[CurrentUser | None, Depend
     return cls(manifest).probe_package()
 
 
+@router.get("/manifests/{dice}/auth-token-hint")
+def auth_token_hint(dice: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """本机其它实例已用过的 AUTH TOKEN（新建登录端时预填用）。
+
+    LLBot v8.0.9+ 缺 auth_token.txt 就直接退出，而 token 是**按 QQ 号**申请的：
+    换实例后让用户去翻旧目录里的文件，多半会漏填。与其等进程启动失败，
+    不如在填表时就告诉他「这台机器上已有的 token 是这个（来自哪个实例/哪个号）」。
+
+    只对**实现了 peek_auth_token 的适配器**有效，其余程序返回 null（前端不显示）。
+    刻意不在后端替用户填：token 是凭据，要让人看见来源、还能改。
+    """
+    _u(user)
+    if dice not in ctx.adapters:
+        raise HTTPException(404, f"未知程序: {dice}")
+    manifest, cls = ctx.adapters[dice]
+    ad = cls(manifest)
+    peek = getattr(ad, "peek_auth_token", None)
+    if not callable(peek):
+        return {"token": None, "from_instance": None, "from_qq": None}
+    return peek(ctx.registry)
+
+
 @router.get("/manifests")
 def list_manifests():
 
     """Step1 组合选项与兼容矩阵。
 
-    白名单只放前端真正消费的字段：multi_account / recommended_protocols 曾在此透出
-    但前端从不读取（手册 §6.2 记为「文档性字段」），透出只会误导后来者以为有用。
+    白名单只放前端真正消费的字段。`recommended_protocols` 曾在此透出但前端从不读取
+    （手册 §6.2 记为「文档性字段」），透出只会误导后来者以为有用，已移除。
+
+    ⚠️ `multi_account` 现在**真的被消费**了（2026-10-08 重新加入）：总览页关联登录端时，
+    只有多账号端（sealdice/snowluma）才给「绑定账号」下拉；单账号端（llbot/napcat/
+    lagrange 系）选账号是假选择——选谁都只有一个结果，纯噪音。
 
     login_modes 由**适配器方法**给出而非清单字段：能不能写密码是程序自身能力
     （写错字段时程序会静默忽略并退回扫码，用户以为设了密码其实每次都在扫码），
@@ -992,6 +1018,8 @@ def list_manifests():
                                         "webui_default_port", "ob11_default_port",
                                         "approx_memory_mb", "auth_token_conditional",
                                         "prerequisite", "delete_keeps_save",
+                                        # 该端能否挂多个 QQ：单账号端关联时不必选账号
+                                        "multi_account",
                                         # 下载失败时前端要给出「去项目页下载」这条出路，
                                         # 没有链接用户就只能干等（上游改名/限流时尤其）。
                                         "release_page",

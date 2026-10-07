@@ -27,6 +27,20 @@ EDGE_STATES = {"ok": "solid-green",        # 实线绿：已连接
 _scan_cursor: dict[str, tuple] = {}
 
 
+def _multi_account(ctx, dice: str) -> bool:
+    """该程序能否挂多个 QQ 号（清单驱动）。
+
+    前端据此决定关联登录端时给不给「绑定账号」下拉：单账号端（llbot/napcat/
+    lagrange 系）选账号是假选择 —— 选谁都只有一个结果，纯噪音。
+    查不到清单时按不支持处理：多给一个下拉只是噪音，少给会让人以为功能坏了。
+    """
+    entry = ctx.adapters.get(dice)
+    if not entry:
+        return False
+    manifest, _cls = entry
+    return bool(manifest.get("multi_account"))
+
+
 def _consume_new_lines(proc) -> list[tuple[int, str]]:
     """返回自上次消费以来的新增日志行，保持 (seq, line) 二元组格式。
 
@@ -141,6 +155,10 @@ async def overview_loop(ws: WebSocket, user=None):
                               "arch": rec["arch"],              # allinone → 单节点渲染
                               "state": rec["state"],
                               "process_alive": alive,
+                              # 该端能否挂多个 QQ：前端据此决定「绑定账号」下拉要不要出现。
+                              # 只有一个号的登录端（llbot/napcat/lagrange 系）让用户选账号
+                              # 是假选择——选谁都只有一个结果，纯属噪音。
+                              "multi_account": _multi_account(ctx, rec["dice"]),
                               # 熔断告警：反复崩溃已停止自动重启（start 后自动解除）
                               "crash_looped": proc.crash_looped,
                               # 每实例内存（probe 内 psutil rss，异常时 None）

@@ -41,7 +41,9 @@ ROLE_USER = "user"
 RESERVED_USERNAMES = {"admin", "root", "system"}
 # 配额两维：login_qq = 名下登录端已登录 QQ 号总数上限；app = 名下应用端（骰子端）实例上限。
 # 值为 -1 表示不限。管理员不校验配额。
-DEFAULT_QUOTA = {"login_qq": 3, "app": 5}
+# 默认各 1（最小可用），不是 3/5：预填的配额会被当成本来就该有的限制，
+# 而多数账号一辈子就一个号一个端。留空即走这个默认值。
+DEFAULT_QUOTA = {"login_qq": 1, "app": 1}
 
 def _ct_eq(a: str, b: str) -> bool:
     """恒定时间比较：转 bytes，兼容任意 UTF-8 输入（非 ASCII 不再 TypeError）。"""

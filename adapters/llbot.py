@@ -179,6 +179,51 @@ class LLBotAdapter(BaseAdapter):
             restart = True
         return {"ok": True, "qq": qq, "restart": restart}
 
+    # ---------- AUTH TOKEN 复用 ----------
+    # v8.0.9+ 的 AUTH TOKEN 是向快速登录平台按「QQ 号」申请的，不是通用密钥：
+    # 换实例（新机器、重装、清空目录）后让用户去翻旧目录里的 auth_token.txt，
+    # 几乎一定会漏填 → 部署过了但进程启动即退出（LLBot 缺这个文件直接报错）。
+    # 同一台机器上已有跑着的 llbot 实例，其 token 就能直接复用。
+    TOKEN_REL = "bin/llbot/data/auth_token.txt"
+
+    def peek_auth_token(self, registry=None) -> dict:
+        """从本机其它 llbot 实例回收已用过的 AUTH TOKEN，供新建实例预填。
+
+        返回 {token, from_instance, from_qq}；无可复用时 token 为 None。
+        刻意不做「自动带入并跳过用户确认」——token 属于凭据，前端要显式告知
+        来源，用户仍能改；静默复用会让「我填的是哪个 token」变得不可知。
+        """
+        newest: tuple[str, str, str] | None = None   # (mtime, token, instance_id)
+        # 只看 llbot：别的程序没有这个文件概念
+        candidates = []
+        if registry is not None:
+            try:
+                candidates = [r for r in registry.all() if r.get("dice") == "llbot"]
+            except Exception:
+                candidates = []
+        for rec in candidates:
+            p = Path(rec.get("dir") or "") / self.TOKEN_REL
+            try:
+                if not p.is_file():
+                    continue
+                tok = p.read_text(encoding="utf-8", errors="ignore").strip()
+                if not tok:
+                    continue
+                key = (p.stat().st_mtime, tok, rec.get("id", ""))
+            except OSError:
+                continue            # 实例目录已被删/无权限：跳过，不影响其他候选
+            if newest is None or key[0] > newest[0]:
+                newest = key
+        if newest is None:
+            return {"token": None, "from_instance": None, "from_qq": None}
+        # 回带 QQ 号：token 是按号申请的，让人能确认「拿的是哪个号的」
+        qq = ""
+        for rec in candidates:
+            if rec.get("id") == newest[2]:
+                qq = str(rec.get("qq") or "")
+                break
+        return {"token": newest[1], "from_instance": newest[2], "from_qq": qq or None}
+
     def write_conn_config(self, instance, mode, direction, addr, token,
                           link_id: str | None = None) -> WriteResult:
         # 多连一/一连多：每条关联用各自 link_id 作为连接名，互不覆盖；旧单关联兜底名 dicemanager

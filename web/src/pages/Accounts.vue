@@ -62,11 +62,13 @@
         <option value="admin">管理员</option>
       </select>
       <label>QQ 号上限
-        <input v-model.number="nu.login_qq" type="number" min="-1" placeholder="3"/>
+        <input v-model.number="nu.login_qq" type="number" min="-1" placeholder="留空 = 1"/>
       </label>
       <label>应用端上限
-        <input v-model.number="nu.app" type="number" min="-1" placeholder="5"/>
+        <input v-model.number="nu.app" type="number" min="-1" placeholder="留空 = 1"/>
       </label>
+      <p class="hint">配额按该账号<strong>实际要用的量</strong>填，留空即各 1 个
+        （一个 QQ 号 + 一个应用端）；填 -1 表示不限。</p>
       <button class="go" :disabled="busy || !nu.username || !nu.password" @click="doCreate">
         创建账号
       </button>
@@ -104,10 +106,17 @@ const msg = ref('')
 const busy = ref(false)
 const me = ref(getUser()?.username || '')
 const dlg = ref(null)
-const nu = ref({ username: '', display_name: '', password: '', role: 'user',
-                 login_qq: 3, app: 5 })
+// 配额不预填：见模板里的说明。留空（undefined）时后端按「不限」处理，
+// 比硬塞 3/5 更诚实 —— 预填值会被当成本来就该有的限制。
+const nu = ref({ username: '', display_name: '', password: '', role: 'user' })
 
 const fmtQ = v => (Number(v) < 0 ? '不限' : v)
+// 留空 → 1（各一个）。不能直接把空值丢给后端：normalize_quota 对无法解析的值
+// 会回落到 DEFAULT_QUOTA，那正是用户不想要的「凭空多出来的限制」。
+const quotaVal = v => {
+  const n = Number(v)
+  return (v === '' || v === null || v === undefined || Number.isNaN(n)) ? 1 : n
+}
 const over = (a, k) => Number(a.quota[k]) >= 0 && a.usage[k] > Number(a.quota[k])
 const say = m => { msg.value = m; err.value = ''; setTimeout(() => (msg.value = ''), 3000) }
 const fail = e => { err.value = e.message; msg.value = '' }
@@ -124,11 +133,10 @@ const doCreate = async () => {
     await createAccount({
       username: nu.value.username, password: nu.value.password,
       role: nu.value.role, display_name: nu.value.display_name,
-      quota: { login_qq: nu.value.login_qq, app: nu.value.app },
+      quota: { login_qq: quotaVal(nu.value.login_qq), app: quotaVal(nu.value.app) },
     })
     say(`账号 ${nu.value.username} 已创建`)
-    nu.value = { username: '', display_name: '', password: '', role: 'user',
-                 login_qq: 3, app: 5 }
+    nu.value = { username: '', display_name: '', password: '', role: 'user' }
     await load()
   } catch (e) { fail(e) } finally { busy.value = false }
 }

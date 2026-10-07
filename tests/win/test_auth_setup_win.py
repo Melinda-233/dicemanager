@@ -50,11 +50,13 @@ def test_setup_allowed_again_after_delete(tmp_path):
     f.unlink()
     token = a.setup_password("newpass1")
     assert token and a.is_initialized is True
-    # auth.json 已是 v2 多用户 schema：token 挂在 sessions 下，不再有顶层 token 字段；
-    # 且 login() 会**另签**新会话 token（多会话语义），不再是复用同一条 token。
-    assert token in json.loads(f.read_text("utf-8"))["sessions"]
-    assert a.current(token) is not None        # setup 签发的 token 立即有效
-    assert a.login("newpass1")                 # 登录另签一条，同样可用
+    # auth.json 落的是 v2 结构（users + sessions），token 是 sessions 的键。
+    # 断言**语义**（该 token 确实是 admin 的有效会话）而不是 v1 的顶层 token
+    # 字段 —— 那个字段早已不在落盘形态里，照抄旧形状等于把测试钉在废弃格式上。
+    saved = json.loads(f.read_text("utf-8"))
+    assert saved["sessions"][token]["username"] == "admin"
+    # 新密码能登录（登录会新签发会话，与 setup 返回的不是同一个 token）
+    assert a.login("newpass1")
 
 
 def test_file_appearing_later_is_picked_up(tmp_path):

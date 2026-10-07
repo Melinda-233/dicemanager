@@ -33,7 +33,7 @@
     </p>
     <div class="layout">
       <div class="topo-wrap">
-    <svg :viewBox="'0 0 ' + vbW + ' 420'" class="topo">
+    <svg :viewBox="'0 0 ' + vbW + ' 440'" class="topo">
       <text :x="colX.login" y="24" class="col-title" text-anchor="middle">登录端</text>
       <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
       <text v-if="!loginNodes.length" :x="colX.login" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
@@ -55,6 +55,24 @@
         <text y="14" class="sub">{{ n.state }} : {{ n.port || '-' }}{{ n.mem_mb ? ' · ' + n.mem_mb + 'MB' : '' }}</text>
         <text v-if="n.crash_looped" y="40" class="warn">反复崩溃，已停止自动重启</text>
         <text v-for="(w, i) in n.warnings" :key="i" :y="n.crash_looped ? 54 : 40" class="warn">{{ w }}</text>
+        <!-- 高频操作内联到节点上：启停/重启在方框正下方，管理应用在方框右侧。
+             这四个动作占侧栏按钮的一大半，却藏在要滚动才看得到的地方；
+             放到方框边上后，「选谁」和「对它做什么」在同一处。
+             stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点，
+             点了「停」却顺带切换选中对象，与用户预期不符。 -->
+        <g class="node-ops" @click.stop>
+          <circle cx="-24" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'start')"
+                  :class="{off: n.state === 'RUNNING'}"><text y="4">▶</text>
+            <title>启动 {{ n.dice }}</title></circle>
+          <circle cx="0" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'stop')"
+                  :class="{off: n.state !== 'RUNNING'}"><text y="4">■</text>
+            <title>停止 {{ n.dice }}</title></circle>
+          <circle cx="24" cy="34" r="10" class="qbtn" @click="quickOp(n.id, 'restart')">
+            <text y="4">↻</text><title>重启 {{ n.dice }}</title></circle>
+        </g>
+        <!-- 管理应用放右侧：与启停分开，避免「四个圆点里哪个是管理」要认位置 -->
+        <circle :cx="88" cy="0" r="11" class="qbtn qbtn-side" @click.stop="quickManage(n)">
+          <text y="4">⚙</text><title>管理应用（{{ n.dice }}）</title></circle>
       </g>
     </svg>
     <div class="legend">
@@ -118,25 +136,33 @@
         <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
         <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
       </div>
+      <!-- 高频四项（启停/重启/管理）已内联到拓扑图方框下方，这里不再重复。
+             侧栏只留「需要确认或低频」的动作，并按语义分组 ——
+             14 个按钮平铺时没人能记住哪个是危险操作。 -->
       <div class="ops">
-        <button @click="op('start')">启动</button>
-        <button @click="op('stop')">停止</button>
-        <button @click="op('restart')">重启</button>
-        <button v-if="!isServer" @click="openFolder" title="在文件管理器中打开实例目录">打开文件夹</button>
-        <button @click="toggleManage">管理应用</button>
         <button @click="toggleMetrics">{{ showMetrics ? '收起资源曲线' : '资源曲线' }}</button>
         <button @click="goLogs">查看日志</button>
-        <button @click="pickBackup">上传备份</button>
-        <button @click="doExport('full')" title="程序+配置+存档+数据全部打包">导出整目录备份</button>
-        <button @click="doExport('data')" title="仅应用数据/存档（对应程序自身备份功能口径）">导出数据备份</button>
         <button v-if="linkTarget" @click="runDiagnose">诊断连接</button>
+      </div>
+      <div class="ops">
         <button @click="checkUpgrade">检查更新</button>
         <button v-if="upgradeLatest" @click="doUpgrade">{{ upgradeLatest ? `升级到 ${upgradeLatest}` : '升级依赖' }}</button>
-        <button v-if="uploading" class="danger" @click="cancelUpload">取消上传</button>
-        <button class="danger" @click="del">删除</button>
-        <input ref="backupInput" type="file" hidden
-               accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
       </div>
+      <div class="ops">
+        <button v-if="!isServer" @click="openFolder" title="在文件管理器中打开实例目录">打开文件夹</button>
+        <button @click="pickBackup">上传备份</button>
+      </div>
+      <!-- 备份导出：两个范围会导出完全不同的东西，标题写清差别 -->
+      <div class="ops">
+        <button @click="doExport('full')" title="程序+配置+存档+数据全部打包">导出整目录</button>
+        <button @click="doExport('data')" title="仅应用数据/存档；恢复前提是已部署同版本程序">仅导出数据</button>
+      </div>
+      <div class="ops">
+        <button v-if="uploading" class="danger" @click="cancelUpload">取消上传</button>
+        <button class="danger" @click="del">删除实例</button>
+      </div>
+      <input ref="backupInput" type="file" hidden
+             accept=".zip,.tgz,.tar,.tar.gz,.tar.xz,.tar.bz2" @change="doBackup"/>
       <!-- ===== 管理应用：能力由后端适配器声明，前端不按程序名分支 =====
            必须紧贴上面的按钮组：面板在 340px 侧栏里一旦被资源曲线/诊断/定时任务
            隔开，展开的内容就落在视口外，用户看到的是「点了没反应」（后端其实
@@ -265,7 +291,7 @@
               <span v-if="row.accountQq">（QQ {{ row.accountQq }}）</span>
               <span :class="['link-state', row.state]">{{ stateText(row.state) }}</span>
             </div>
-            <div class="field" v-if="row.accounts.length">
+            <div class="field" v-if="needsAccountPick(row.loginRef) && row.accounts.length">
               <label>绑定账号</label>
               <select :value="row.accountQq || ''"
                       @change="e => updateLinkAccount(row.loginRef, row.accountQq, e.target.value || null)">
@@ -289,7 +315,7 @@
                   {{ c.dice }} · {{ c.id }}{{ c.qq ? ' (QQ ' + c.qq + ')' : '' }}</option>
               </select>
             </div>
-            <div class="field" v-if="newLoginRef && newLoginAccounts.length">
+            <div class="field" v-if="newLoginRef && needsAccountPick(newLoginRef) && newLoginAccounts.length">
               <label>绑定账号（可选）</label>
               <select v-model="newAccountQq">
                 <option value="">默认账号（自动分配）</option>
@@ -397,6 +423,15 @@ const loginSet = computed(() => {
   return s
 })
 const isLogin = n => loginSet.value.has(n.dice)
+// 该登录端能否挂多个 QQ。只有多账号端（sealdice/snowluma）关联时才需要问
+// 「绑哪个号」；单账号端（llbot/napcat/lagrange 系）选谁都只有一个结果，
+// 那个下拉框是纯噪音，还会让人以为绑定方式有得选。
+const loginMultiAccount = loginId => {
+  const n = nodes.value.find(x => x.id === loginId)
+  if (n) return !!n.multi_account          // ws_overview 直接推送该字段
+  return !!manifests.value[n?.dice]?.multi_account   // 回退到清单
+}
+const needsAccountPick = loginId => loginMultiAccount(loginId)
 const loginNodes = computed(() => nodes.value.filter(isLogin))
 const diceNodes = computed(() => nodes.value.filter(n => !isLogin(n)))
 // 侧栏打开时收窄画布（列距拉近、viewBox 变窄），节点/文字保持原大——
@@ -454,10 +489,24 @@ watch(sel, () => {
 })
 
 // 启停操作：后端在启动/重启时会顺带开放 WebUI 端口（绑定修正 + ufw），有提示就展示
-const op = o => guard(async () => {
-  const r = await opInstance(sel.value.id, o)
+// 拓扑图方框下方的符号按钮：不经侧栏，直接对指定节点操作。
+// sel 也要跟着切过去 —— 否则右侧详情与连线状态显示的还是上一个实例，
+// 用户点完「停」看不到对应变化，会以为按钮没生效。
+const quickOp = (id, o) => guard(async () => {
+  sel.value = nodes.value.find(n => n.id === id)
+  if (!sel.value) return
+  const r = await opInstance(id, o)
   connMsg.value = r?.webui_note || ''
 })
+const quickManage = n => {
+  sel.value = n
+  if (manageOpen.value && sel.value?.id === n.id) {      // 再点一次是收起
+    manageOpen.value = false; return
+  }
+  manageOpen.value = true
+  manageMsg.value = ''
+  loadManage()
+}
 // 模板里不能直接用 location（会编译成 _ctx.location），一律包成方法
 // 在文件管理器里打开实例目录：仅 desktop 有这个概念，server 是无人值守服务器，
 // 按钮与后端端点**两处都要挡**（后端见 rest.py reveal_instance）——只挡一处会
@@ -609,11 +658,6 @@ const loadManage = () => guard(async () => {
   manage.value = await instanceManage(sel.value.id)
   depsData.value = depsDataOf()
 })
-
-const toggleManage = () => {
-  manageOpen.value = !manageOpen.value
-  if (manageOpen.value) { manageMsg.value = ''; loadManage() }
-}
 
 // 装/卸插件都可能跑几分钟（pip 装依赖），故用 manageBusy 独占按钮；
 // 期间实例状态可能变，装完重新拉一次能力列表让 UI 与后端一致
@@ -889,6 +933,19 @@ text.edge-label.solid-red   { fill: #e5484d; }
 .lg-red   { border-color: #e5484d; }
 rect.dead { fill: var(--code-bg); opacity: .6; }
 text.warn { fill: #d97706; font-size: 10px; }
+/* 节点旁的符号按钮：靠 hover/禁用态区分可点性（图形没有文字标签，
+   靠 <title> 兜 tooltip）。off = 该操作当前不适用（如已在运行还点「启动」）。
+   选择器不带 .node-ops 前缀：管理应用那颗在 <g class="node-ops"> 之外。 */
+.qbtn { fill: var(--panel); stroke: var(--border); stroke-width: 1; cursor: pointer; }
+.qbtn:hover { fill: var(--brand); stroke: var(--brand); }
+.qbtn:hover text { fill: #fff; }
+.qbtn text { fill: var(--text); font-size: 11px; text-anchor: middle; pointer-events: none; }
+.qbtn.off { opacity: .35; cursor: default; }
+.qbtn.off:hover { fill: var(--panel); stroke: var(--border); }
+.qbtn.off:hover text { fill: var(--text); }
+/* 管理应用：挂在方框右侧，视觉上不属于「进程开关」那一组 */
+.qbtn-side { fill: var(--code-bg); }
+.qbtn-side:hover { fill: var(--brand); }
 .crash-warn { color: #e5484d; font-weight: 600; }
 text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
 text.col-empty { fill: #bbb; font-size: 12px; }

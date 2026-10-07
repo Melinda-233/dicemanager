@@ -76,6 +76,15 @@
         <label>AUTH TOKEN（LLBot v8.0.9+ 必填）</label>
         <input v-model="cred.auth_token" placeholder="AUTH TOKEN"/>
         <p class="hint">到 https://auth.luckylia.com 申请获取；进入扫码页时自动保存生效。</p>
+        <!-- 本机已有 llbot 实例跑过 → 直接带出它的 token，省得翻旧目录。
+             刻意不静默填：token 是凭据，要让人看见来源（哪个实例/哪个 QQ）并能改。
+             换一个 QQ 号时必须改，因为 token 是按号申请的。 -->
+        <p class="hint token-hint" v-if="tokenHint">
+          已从本机实例 <code>{{ tokenHint.from_instance }}</code> 带入 AUTH TOKEN<template
+            v-if="tokenHint.from_qq">（QQ {{ tokenHint.from_qq }}）</template>。<template
+            v-if="tokenHint.from_qq">要换 QQ 号请改成对应账号申请的 token。</template><template
+            v-else>确认可用就直接下一步。</template>
+        </p>
       </div>
 
       <div class="field" v-if="dice">
@@ -450,7 +459,7 @@
 import { ref, computed, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
-         deletePackage, linkInstance, probeManifestPackage,
+         deletePackage, linkInstance, probeManifestPackage, authTokenHint,
          createInstance, wizardStep, delInstance, deployProgress, instanceWebui } from '../api'
 
 const ROLES = [
@@ -482,7 +491,8 @@ const pkgBusy = ref(false), pkgMsg = ref('')
 const pkgProbe = ref(null), probing = ref(false)
 // 用 watch 而不是改 6 处 dice 赋值点：那些点分散在选端/选程序/配对/回退等分支，
 // 逐个加必然漏一处（漏了就是「换个入口进来不探测」的行为不一致）。
-watch(dice, () => loadProbe(), { immediate: false })
+// 两个查询共用 dice 变更时机，但各管各的竞态（换程序时结果即过期）
+watch(dice, () => { loadProbe(); loadTokenHint() }, { immediate: false })
 // 换程序要清掉上一次的探测结果，否则会显示上一个程序的包（很容易误读）
 const loadProbe = async (force) => {
   const d = dice.value
@@ -502,6 +512,23 @@ const loadProbe = async (force) => {
     if (dice.value === d) probing.value = false
   }
 }
+// 本机已有 llbot 实例的 AUTH TOKEN 提示（仅 needAuthToken 的程序才有）
+// 只在 cred.auth_token 为空时预填：用户手填过的值绝不覆盖
+const tokenHint = ref(null)
+const loadTokenHint = async () => {
+  const d = dice.value
+  if (!d || !needAuthToken.value) { tokenHint.value = null; return }
+  try {
+    const r = await authTokenHint(d)
+    if (dice.value !== d) return
+    if (!r || !r.token) { tokenHint.value = null; return }
+    tokenHint.value = r
+    if (!cred.value.auth_token) cred.value.auth_token = r.token
+  } catch {
+    if (dice.value === d) tokenHint.value = null     // 无 token / 不支持：静默，不打扰
+  }
+}
+
 // 登录端第三步：勾选要关联的已有应用端 + 每个应用端绑定的账号
 const pickedApps = ref([])
 const pickAcct = reactive({})
