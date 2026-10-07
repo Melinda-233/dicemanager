@@ -4,6 +4,15 @@ ring 存 (seq, line) 对：WS 历史回放与实时 hook 用 seq 去重，消除
 平台适配：
   POSIX: start_new_session=True 创建新进程组，stop() 用 killpg 杀整组
   Windows: CREATE_NEW_PROCESS_GROUP 创建新进程组，stop() 用 taskkill /T /PID 杀整树
+
+⚠️ **所有 Popen 都必须显式给 `stdin=subprocess.DEVNULL`**（2026-10-07 实测）：
+不传 stdin 时子进程**继承父进程的 stdin**，而父进程的 stdin 不保证是
+/dev/null（systemd 下可能是 journal，恰好「有内容可读」）。子进程一旦
+`read()` 就会阻塞到超时——llbot / sealdice 这类登录端启动时会读设备信息，
+napcat 之类要读控制台输入，都会中招。
+⚠️ 这与 `subprocess.run` 的坑是同一个（见 adapters/nonebot2.py 的
+`_pip_install`），但**症状更隐蔽**：run 是同步调用会直接超时可见，
+这里是后台常驻线程，会静默卡住不报错。
   二者语义等价（杀整个进程组/树），保证子进程（launcher 拉起的 worker）一并退出。
   接管的外部进程（re_adopt）统一用 kill_process_tree（psutil 跨平台，无平台分支）。
 """
@@ -117,6 +126,7 @@ class ManagedProcess:
             try:
                 proc = subprocess.Popen(
                     cmd, cwd=cwd, env={**os.environ, **(env or {})},
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, **_popen_kwargs())
             except OSError as e:                           # exe 缺失/权限等：友好报错而非 500
@@ -148,6 +158,7 @@ class ManagedProcess:
             p = None
             try:
                 p = subprocess.Popen(cmd, cwd=cwd, env={**os.environ, **(env or {})},
+                                     stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, **_popen_kwargs())
                 assert p.stdout is not None          # 上面指定了 stdout=PIPE，此处收窄供 mypy

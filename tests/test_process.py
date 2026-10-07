@@ -139,3 +139,65 @@ def test_no_self_heal_without_resolver(tmp_path):
     """无 port_resolver 时，句柄失效即判死（不误触发端口扫描/接管）。"""
     mp = ManagedProcess("t-noheal", tmp_path)
     assert mp.is_alive() is False
+
+
+# ---------- stdin 必须关（回归：2026-10-07） ----------
+
+def test_start_passes_devnull_stdin(tmp_path):
+    """⚠️ `Popen` 不传 stdin 时子进程**继承父进程 stdin**。
+
+    实测：不传 stdin → 子进程 `sys.stdin.read()` 阻塞到超时；
+    传 DEVNULL → 立刻拿到 EOF 返回。
+
+    面板跑在 systemd 下时父进程 stdin 可能是 journal（恰好「有内容可读」），
+    子进程一旦 read() 就会静默卡住—— llbot / sealdice 启动时读设备信息、
+    napcat 读控制台输入都会中招。
+    """
+    mp = ManagedProcess("nb-stdin", tmp_path)
+    seen: dict = {}
+    real = subprocess.Popen
+
+    def spy(cmd, **kw):
+        seen.update(kw)
+        return real([sys.executable, "-c", "pass"], **kw)
+
+    subprocess.Popen = spy
+    try:
+        mp.start([sys.executable, "-c", "pass"], str(tmp_path))
+    finally:
+        subprocess.Popen = real
+    assert seen.get("stdin") == subprocess.DEVNULL, \
+        "没给 DEVNULL → 实例启动时读 stdin 会静默卡住"
+
+
+def test_run_once_passes_devnull_stdin(tmp_path):
+    """一次性命令（登录流程 / 自更新）同样必须关 stdin。"""
+    mp = ManagedProcess("nb-stdin-once", tmp_path)
+    seen: dict = {}
+    real = subprocess.Popen
+
+    def spy(cmd, **kw):
+        seen.update(kw)
+        return real([sys.executable, "-c", "pass"], **kw)
+
+    subprocess.Popen = spy
+    try:
+        mp.run_once([sys.executable, "-c", "pass"], str(tmp_path))
+    finally:
+        subprocess.Popen = real
+    assert seen.get("stdin") == subprocess.DEVNULL
+
+
+def test_devnull_stdin_child_does_not_block(tmp_path):
+    """**真跑一次**：确认给 DEVNULL 后子进程读 stdin 立刻返回（不阻塞）。
+
+    这是唯一能证明「修得对」的用例 —— 参数断言只是防回退，真行为得实测。
+    """
+    mp = ManagedProcess("nb-stdin-real", tmp_path)
+    code = "import sys; d=sys.stdin.read(); print('READ_EOF', len(d))"
+    t0 = time.time()
+    mp.run_once([sys.executable, "-c", code], str(tmp_path), timeout=15)
+    took = time.time() - t0
+    assert took < 5, f"子进程读 stdin 阻塞了 {took:.1f}s（DEVNULL 没生效？）"
+    assert any("READ_EOF" in line for _, line in mp.ring), \
+        f"没拿到子进程输出：{list(mp.ring)}"
