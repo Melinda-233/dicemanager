@@ -166,6 +166,48 @@ def test_form3_zip_also_handled():
     assert ad.verify_required(_Inst(d)) == []
 
 
+def test_form3_exe_shadowed_by_same_named_dir():
+    """回归：exe 与顶层壳**同名**时，壳目录不能挡住 exe 上移。
+
+    这是真实踩过的坑（Lagrange 卡在 DEPLOYING）：形态③里顶层壳叫
+    Lagrange.OneBot/，而 exe 也叫 Lagrange.OneBot。若把壳当普通同名目录做
+    递归合并，exe 会被搬进壳里，根目录永远没有它 → verify_required 仍报缺失。
+    正解：壳是空壳就让位（rmdir 后搬），非空才合并。
+    """
+    arc = Path(tmp) / "shadow.tar.gz"
+    make_tar_gz(arc, {
+        "Lagrange.OneBot/bin/Release/net9.0/linux-x64/publish/Lagrange.OneBot": b"ELF",
+        "Lagrange.OneBot/bin/Release/net9.0/linux-x64/publish/appsettings.json": b"{}",
+    })
+    d, ad = _deploy(arc, ["Lagrange.OneBot"], "shadow")
+    assert (d / "Lagrange.OneBot").is_file(), (
+        "根目录必须是**文件**；落进同名壳目录里等于没部署成功")
+    assert (d / "appsettings.json").is_file(), "exe 同级配置也要在根"
+    assert ad.verify_required(_Inst(d)) == []
+
+
+def test_same_named_nonempty_dir_is_merged_not_clobbered():
+    """src 里有与 target 已有目录同名的子目录 → 合并保留，不 rmdir 掉用户的东西。
+
+    构造：src=Top（Top 内直接有 data/），target 已有非空 data/。
+    合并后 target/data 应同时含「用户原有的」与「包带来的」两份。
+    """
+    arc = Path(tmp) / "nonempty.tar.gz"
+    make_tar_gz(arc, {
+        "Top/launcher.sh": b"SH",
+        "Top/data/from_archive.txt": b"FROM",
+    })
+    d = Path(tmp) / "nonempty"
+    d.mkdir(parents=True)
+    (d / "data").mkdir()
+    (d / "data" / "mine.txt").write_bytes(b"MINE")
+    ad = _Ad(["launcher.sh"])
+    ad._extract(arc, _Inst(d))
+    assert (d / "launcher.sh").read_bytes() == b"SH", "包内文件要上移到根"
+    assert (d / "data" / "mine.txt").read_bytes() == b"MINE", "不能删/覆盖用户已有文件"
+    assert (d / "data" / "from_archive.txt").read_bytes() == b"FROM", "包内同名目录要合并进来"
+
+
 # ---------- 找不到时的行为：不猜、不乱动 ----------
 
 def test_missing_exe_leaves_tree_and_reports():

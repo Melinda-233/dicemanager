@@ -308,17 +308,31 @@ class BaseAdapter(ABC):
         if src is None:
             return                                    # 找不到 → 留给 verify_required 如实报错
 
+        # 上移。用「先整体挪到暂存区、再落位」的两阶段做法，而不是在 target 上
+        # 逐个处理冲突 —— 后者会踩一个很隐蔽的坑：
+        #
+        # 形态③里 target 已有 Lagrange.OneBot/bin/Release/…/publish/（壳子树），
+        # 而 src 正是那个 publish 目录。若逐个 child 判断 dest 是否存在，
+        # exe（文件）撞上壳目录（同名的目录）就会被 merge 进壳里，
+        # 根目录永远没有它 → verify_required 仍报缺失，实例照旧卡在 DEPLOYING
+        # （真实踩过：lagrange-df734a78）。暂存法让 target 先空出来，冲突根本不存在。
+        staging = target.parent / f".dm_flatten_{target.name}"
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
         for child in src.iterdir():
+            shutil.move(str(child), str(staging / child.name))
+        # 壳子树此时已空（src 被搬走后剩下的空壳链），先清掉给 exe 腾位置
+        self._prune_empty_dirs(src, target)
+        # 落位：空壳已清，同名冲突基本消失；仍有冲突（用户自己放的）才合并
+        for child in staging.iterdir():
             dest = target / child.name
             if not dest.exists():
                 shutil.move(str(child), str(dest))
             elif child.is_dir() and dest.is_dir():
-                # 同名目录（形态③：顶层壳名 Lagrange.OneBot 与 exe 同名）→
-                # 必须**递归合并**而不是跳过整个子树。旧写法在这里 continue，
-                # 结果 publish 层里 exe 的所有同级文件（appsettings.json 等）一个没搬，
-                # 部署过了但程序读到的是空配置。
                 self._merge_tree(child, dest)
-        self._prune_empty_dirs(src, target)
+        shutil.rmtree(staging, ignore_errors=True)
+        self._prune_empty_dirs(target, target)
 
     @staticmethod
     def _merge_tree(src: Path, dest: Path) -> None:
@@ -332,13 +346,18 @@ class BaseAdapter(ABC):
 
     @staticmethod
     def _prune_empty_dirs(src: Path, target: Path) -> None:
-        """自底向上删空目录。
+        """自底向上删空目录链，从 src 起、直到（含）target 之前的那一层。
 
-        只清**本次搬运路径上**的空壳（src 那条链），不全局扫：包里自带的空目录
-        （如 data/、logs/ 这类运行时目录）虽空但有语义，删了可能让程序行为异常。
+        只清**搬运路径上**的空壳，不全局扫：包里自带的空目录（如 data/、logs/
+        这类运行时目录）虽空但有语义，删了可能让程序行为异常。
+        传 (target, target) 时会连 target 一起清掉（target 为空时）——
+        实例目录被删空等于把部署产物全丢了，故只在 target 为空时才做。
         """
+        if src.resolve() == target.resolve() and any(target.iterdir()):
+            return
+        stop = target if src.resolve() != target.resolve() else target.parent
         p: Path | None = src
-        while p and p.resolve() != target.resolve():
+        while p and p.resolve() != stop.resolve():
             try:
                 if p.is_dir() and not any(p.iterdir()):
                     p.rmdir()
