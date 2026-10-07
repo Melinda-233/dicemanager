@@ -239,6 +239,36 @@
           <p class="hint">到 https://auth.luckylia.com 申请获取。第一步已填则自动保存，此处仅作补填兜底。</p>
         </div>
         <p class="hint" v-if="needAuthToken && tokenSaved">TOKEN 已保存，二维码生成中；扫码后点击「我已完成扫码」继续。</p>
+
+        <!-- 登录日志（可选）：扫码/账密都停在「看不出进展」时，程序日志是唯一线索
+             （二维码字符画、风控提示、协议握手失败都在里面）。
+             复用总览页的 /ws/logs 通道，不新造后端端点。
+             默认收起 —— 多数用户不需要，不该让日志占满登录区。 -->
+        <div class="login-logs">
+          <div class="ll-head">
+            <label class="pick">
+              <input type="checkbox" v-model="showLoginLog"/>
+              <span>显示登录日志</span>
+            </label>
+            <span class="hint" v-if="showLoginLog">{{ logLines.length }} 行</span>
+            <div class="ops" v-if="showLoginLog">
+              <button @click="clearLoginLog">清空</button>
+              <label class="pick">
+                <input type="checkbox" v-model="logFollow"/>
+                <span>自动滚动</span>
+              </label>
+            </div>
+          </div>
+          <div v-if="showLoginLog" class="term logbox" ref="logBox">
+            <p v-if="!logLines.length" class="hint">
+              暂无日志。若程序未在运行，日志会在向导启动实例后陆续出现。
+            </p>
+            <p v-for="(l, i) in logLines" :key="i" :class="['log-line', { 'log-err': l.error }]">{{ l.text }}</p>
+          </div>
+          <p v-else class="hint">
+            登录卡住或报「已完成扫码却没反应」时，勾开日志能看到程序真实输出。
+          </p>
+        </div>
       </div>
       <p v-else-if="loggedIn" class="ok-line">✓ {{ dice }} 登录完成（<span v-if="curQQ">QQ {{ curQQ }} · </span>令牌与互联地址已就绪{{ loginMode === 'account' ? ' · 密码已保存，下次启动免扫码' : '' }}）</p>
 
@@ -370,7 +400,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
          deletePackage, linkInstance,
@@ -955,6 +985,40 @@ const openLoginWS = () => {
   })
 }
 
+// ---------- 登录日志（可选，复用 /ws/logs 通道）----------
+// 只在用户勾选时才连 WS：默认收起，且不该在用户没要求时占用服务端连接。
+// 环形保留最近 LOG_MAX 行 —— 登录日志可能几分钟内刷屏几百行，无上限会撑爆内存。
+const showLoginLog = ref(false)
+const logFollow = ref(true)
+const logLines = ref([])
+const logBox = ref(null)
+const logSock = ref(null)
+const LOG_MAX = 500
+
+const pushLogLine = (l) => {
+  logLines.value.push(l)
+  if (logLines.value.length > LOG_MAX)
+    logLines.value = logLines.value.slice(-LOG_MAX)
+  // 自动滚动要用 nextTick：此时 DOM 还没插入新行，直接设 scrollTop 无效
+  if (logFollow.value) nextTick(() => {
+    const el = logBox.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+const clearLoginLog = () => { logLines.value = [] }
+
+// 勾选/取消勾选时才开关连接：watch 而非 onMounted，避免默认就占用一条 WS
+watch(showLoginLog, on => {
+  logSock.value?.close()
+  logSock.value = null
+  if (!on) return
+  if (!instanceId) return
+  logLines.value = []
+  logSock.value = connectWS(`/ws/logs/${instanceId}`, m => {
+    if (m.type === 'line') pushLogLine({ text: m.text, error: m.error })
+  })
+})
+
 const saveToken = async () => {                        // AUTH TOKEN 落盘（LLBot v8 出码前置条件）
   const r = await wizardStep(instanceId, 3, { qq: cred.value.qq, credentials: { ...cred.value } })
   if (r.result === 'error' || r.result === 'conflict')
@@ -988,7 +1052,7 @@ const doLogin = () => guard(async () => {              // 登录环节提交（�
   await doStep(3, { qq: cred.value.qq, credentials: { ...cred.value } })
 })
 
-onUnmounted(() => { sock.value?.close(); stopDeployPoll() })
+onUnmounted(() => { sock.value?.close(); logSock.value?.close(); stopDeployPoll() })
 </script>
 
 <style scoped>
@@ -1110,4 +1174,17 @@ pre.preview {
 }
 .done-card b { color: var(--ok); font-size: 15px; }
 .done-card code { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+/* ---------- 登录日志（可选，默认收起）---------- */
+.login-logs { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+.ll-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ll-head .ops { margin: 0; }          /* 复用 .ops 但不引入它自带的 margin-top */
+.logbox {
+  margin-top: 8px; padding: 8px 10px;
+  height: 220px; overflow-y: auto;      /* 固定高度：不能把登录表单顶出视口 */
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12.5px; line-height: 1.5;
+}
+.log-line { margin: 0 0 2px; white-space: pre-wrap; word-break: break-all; }
+.log-err { color: var(--danger); }
 </style>

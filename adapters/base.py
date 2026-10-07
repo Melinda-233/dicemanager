@@ -252,14 +252,101 @@ class BaseAdapter(ABC):
                     tf.extractall(target, filter="data")
                 except TypeError:                # Python < 3.10.12 无 filter 参数
                     tf.extractall(target, members=_safe_tar_members(tf, target))
-        # 归一化：压缩包常带唯一顶层目录（如 SnowLuma-linux-x64/），
-        # 把其内容直接上移到实例目录，避免 instance.dir/xxx/launcher.sh 这种错位
-        entries = [p for p in target.iterdir()]
-        if len(entries) == 1 and entries[0].is_dir():
-            sub = entries[0]
-            for child in sub.iterdir():
-                shutil.move(str(child), str(target / child.name))
-            sub.rmdir()
+        # 归一化：压缩包的顶层目录深度不固定，把必备文件「就地」暴露到实例根目录。
+        #
+        # 为什么不能只处理「单层顶层目录」（旧做法）：包形态有三种，逐一实测过
+        #   ① 条目全在根            → 无需处理
+        #   ② 单一顶层目录          → 上移一层即可（旧做法覆盖）
+        #   ③ 顶层一个目录 + 里面多级嵌套（如 .NET publish 产物：
+        #      ./Lagrange.OneBot/bin/Release/net9.0/linux-x64/publish/Lagrange.OneBot，
+        #      四层深）→ 旧做法会把 bin/ 连同 publish 一起上移，
+        #      Lagrange.OneBot 仍落在 bin/Release/... 下 → verify_required 报
+        #      「部署后缺失必备文件」，实例卡在 DEPLOYING。
+        # 所以这里以清单的 required_files 为准绳：找到它实际在哪一层，
+        # 就把那一层的内容上移到实例根目录。
+        self._flatten_to_required(target)
+
+    def _flatten_to_required(self, target: Path) -> None:
+        """把必备文件所在目录的内容上移到实例根，让 exe 路径 = dir/<exe>。
+
+        以 required_files 定位而非猜深度：
+        - 已在根目录 → 什么都不做（形态 ①）
+        - 顶层单目录 → 上移一层（形态 ②）
+        - 顶层单目录 + 深嵌套 → 上移「含 exe 的那一层」（形态 ③）
+        找不到时原样保留，交给 verify_required 报明确的缺失清单（别在这里猜）。
+        """
+        required = self.m.get("required_files") or []
+        if not required:
+            return                                    # 清单没声明 → 无从判断，保持原样
+        # 守卫必须要求是**文件**：`required_files` 是文件清单，而形态③的顶层壳目录
+        # 可能与 exe 同名（Lagrange.OneBot/bin/.../publish/Lagrange.OneBot）。
+        # 只判 `.exists()` 会把那个空目录当成「已就绪」而直接返回 —— 正是这类包
+        # 部署后卡在 DEPLOYING 的原因（exe 其实还在四层深）。
+        if all((target / r).is_file() for r in required):
+            return                                    # 形态 ①：已在根，无需处理
+
+        # BFS 找「必备文件全在同一层」的最浅目录。逐层下探而不是猜固定深度：
+        # 包的顶层深度是上游打包决定的（.NET publish 四层、带版本号两层、根平铺零层），
+        # 写死任何深度都会在另一种形态上复发。
+        src: Path | None = None
+        queue = [target]
+        seen: set[Path] = set()
+        while queue and src is None:
+            d = queue.pop(0)
+            if d in seen:
+                continue
+            seen.add(d)
+            if d != target and all((d / r).is_file() for r in required):
+                src = d                               # 首个命中即最浅
+                break
+            if len(seen) > 2000:                      # 防御超大/异常深的包
+                break
+            try:
+                queue.extend(c for c in d.iterdir() if c.is_dir())
+            except OSError:
+                continue
+        if src is None:
+            return                                    # 找不到 → 留给 verify_required 如实报错
+
+        for child in src.iterdir():
+            dest = target / child.name
+            if not dest.exists():
+                shutil.move(str(child), str(dest))
+            elif child.is_dir() and dest.is_dir():
+                # 同名目录（形态③：顶层壳名 Lagrange.OneBot 与 exe 同名）→
+                # 必须**递归合并**而不是跳过整个子树。旧写法在这里 continue，
+                # 结果 publish 层里 exe 的所有同级文件（appsettings.json 等）一个没搬，
+                # 部署过了但程序读到的是空配置。
+                self._merge_tree(child, dest)
+        self._prune_empty_dirs(src, target)
+
+    @staticmethod
+    def _merge_tree(src: Path, dest: Path) -> None:
+        """把 src 目录树并入已存在的 dest：文件同名则跳过（不覆盖用户已有内容）。"""
+        for child in src.iterdir():
+            d = dest / child.name
+            if not d.exists():
+                shutil.move(str(child), str(d))
+            elif child.is_dir() and d.is_dir():
+                BaseAdapter._merge_tree(child, d)
+
+    @staticmethod
+    def _prune_empty_dirs(src: Path, target: Path) -> None:
+        """自底向上删空目录。
+
+        只清**本次搬运路径上**的空壳（src 那条链），不全局扫：包里自带的空目录
+        （如 data/、logs/ 这类运行时目录）虽空但有语义，删了可能让程序行为异常。
+        """
+        p: Path | None = src
+        while p and p.resolve() != target.resolve():
+            try:
+                if p.is_dir() and not any(p.iterdir()):
+                    p.rmdir()
+                    p = p.parent
+                    continue
+            except OSError:
+                pass
+            return
 
     def _resolve_download(self) -> str:
         return self._resolve_release()[0]
