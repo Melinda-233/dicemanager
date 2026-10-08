@@ -7,12 +7,12 @@
         <option value="" disabled>选择实例以查看日志…</option>
         <optgroup v-if="running.length" label="运行中">
           <option v-for="i in running" :key="i.id" :value="i.id">
-            ● {{ i.dice }} · {{ shortId(i.id) }}
+            ● {{ i.dice }}<template v-if="qqOf(i)"> · {{ qqOf(i) }}</template> · {{ shortId(i.id) }}
           </option>
         </optgroup>
         <optgroup v-if="stopped.length" label="已停止">
           <option v-for="i in stopped" :key="i.id" :value="i.id">
-            ○ {{ i.dice }} · {{ shortId(i.id) }}
+            ○ {{ i.dice }}<template v-if="qqOf(i)"> · {{ qqOf(i) }}</template> · {{ shortId(i.id) }}
           </option>
         </optgroup>
       </select>
@@ -65,6 +65,18 @@ const render = m => {
 const running = computed(() => instances.value.filter(i => i.state === 'RUNNING'))
 const stopped = computed(() => instances.value.filter(i => i.state !== 'RUNNING'))
 const shortId = id => (id || '').length > 22 ? id.slice(0, 12) + '…' + id.slice(-6) : id
+// QQ 号：登录端有 qq 字段（且 accounts 里也有一份），应用端没有 QQ 这个概念。
+// 两个来源都取、多个账号用顿号列出 —— 挑日志时按 QQ 认实例比按 ID 认快得多。
+const qqOf = i => {
+  const seen = []
+  const push = v => {
+    const t = String(v ?? '').trim()
+    if (t && !seen.includes(t)) seen.push(t)
+  }
+  push(i.qq)
+  for (const a of i.accounts || []) push(a.qq)
+  return seen.join('、')
+}
 
 const reconnect = () => {
   sock?.close(); lines.value = []
@@ -113,7 +125,7 @@ onUnmounted(() => sock?.close())
         height: 70vh; overflow-y: auto; padding: 8px; white-space: pre-wrap; }
 .term .err { color: #ff7b72; background: #3a1d1f; }
 .gq { flex: 1; min-width: 240px; }
-.pick { min-width: 260px; max-width: 380px; }
+.pick { min-width: 320px; max-width: 460px; }
 .gres { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .gres .x { padding: 1px 8px; font-size: 12px; float: right; }
 .g-row { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; font-size: 12.5px; }
