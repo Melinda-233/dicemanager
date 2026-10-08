@@ -1,5 +1,6 @@
 <template>
   <div class="overview">
+    <div v-if="toast" class="toast">{{ toast }}</div>
     <div class="resmon">
       <span>内存 {{ resmon.used_mb ?? '-' }} / {{ resmon.total_mb ?? '-' }} MB</span>
       <div class="bar"><div class="fill" :class="{alert: resmon.alert}"
@@ -949,9 +950,38 @@ const reconn = () => guard(async () => {
 })
 
 // ---------- 小操作：复制实例 ID（审查 #23） ----------
-const copyId = () => {
-  navigator.clipboard?.writeText(sel.value.id).catch(() => {})
-  connMsg.value = `已复制实例 ID：${sel.value.id}`
+// 复制实例 ID。三处都要处理，之前只调 clipboard API 且吞掉异常：
+// ① **必须 HTTPS 或 localhost** 才能用 navigator.clipboard。面板若挂在
+//    域名/反向代理后访问（非 localhost 的 http），API 直接不存在 ——
+//    `navigator.clipboard?.` 的可选链会静默跳过，表现就是「点了没反应」。
+// ② 降级：execCommand('copy') 配合临时 textarea，兼容 http 场景。
+// ③ 必须给用户反馈（成功/失败都要说），否则点了与没点一样。
+const copyId = async () => {
+  const id = sel.value?.id
+  if (!id) return
+  const fallbackCopy = () => {
+    const ta = document.createElement('textarea')
+    ta.value = id
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'        // 不能用 display:none，否则选不中
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try { ok = document.execCommand('copy') } catch { ok = false }
+    document.body.removeChild(ta)
+    return ok
+  }
+  let ok = false
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(id); ok = true } catch { ok = false }
+  }
+  if (!ok) ok = fallbackCopy()
+  // toast 而非 connMsg：ID 在侧栏顶部，而 connMsg 显示在中段中部，
+  // 点了上面看不到反馈 = 「好像没生效」
+  toast.value = ok ? `已复制：${id}` : '复制失败，请手动选中复制'
+  clearTimeout(_toastTimer)
+  _toastTimer = setTimeout(() => { toast.value = '' }, 2600)
 }
 
 // ---------- 备份导出（拓展1）：整目录 / 应用数据两种口径，语义必须分清 ----------
@@ -1117,6 +1147,14 @@ button.danger { color: #e5484d; }
 .topo-wrap { flex: 1; min-width: 0; }
 /* 侧栏常驻，所以拓扑图宽度不再随选中状态跳变 —— 之前 aside 用 v-if，
    选中时挤进 340px、取消选中又弹回去，节点位置会在两套坐标间抖动。 */
+/* 即时反馈（复制等）：飘在页面顶部，任何位置点了都看得见 */
+.toast {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  z-index: 90; padding: 8px 16px; border-radius: 8px;
+  background: var(--text); color: var(--panel);
+  font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.2);
+  max-width: 80vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .sel-empty {
   margin: 8px 0; padding: 14px 12px;
   border: 1px dashed var(--border); border-radius: var(--radius);
