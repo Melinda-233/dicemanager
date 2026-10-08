@@ -149,7 +149,7 @@ class LLBotAdapter(BaseAdapter):
                 # 「第一条 type==ws」，两个实例时就会把**客户端**那条改成 ob11 端口 ——
                 # 于是实例 A 的 ob11 端口被写成了实例 B 客户端要连的端口，两者撞车，
                 # 表现为「诊断说端口未监听 / nonebot 收不到消息」（2026-10-08 实测）。
-                # 修法：优先改**监听地址不是回环**的那条（服务端）；只有一条时才退而改它。
+                # 修法：优先改**监听地址不是回环**的那条（服务端）；没有就新建一条。
                 hit = False
                 for e in conn:
                     if e.get("type") != "ws":
@@ -158,10 +158,22 @@ class LLBotAdapter(BaseAdapter):
                         e["port"] = int(ports["ob11"]); e["enable"] = True; hit = True
                         break
                 if not hit:
-                    for e in conn:
-                        if e.get("type") == "ws":
-                            e["port"] = int(ports["ob11"]); e["enable"] = True; hit = True
-                            break
+                    # 没有服务端条目。只有**一条** ws 时改它；有若干条却都不是
+                    # 服务端（登录后的 config_{qq}.json 常被 LLBot 重写成纯客户端），
+                    # 此时**必须新建一条服务端条目** —— 只退而改客户端那条的话，
+                    # 分配到的端口又变成「LLBot 主动去连别人」的目标，
+                    # 而应用端要连的服务端根本没起（2026-10-08 实测）。
+                    # 无条件**新建**一条服务端条目。
+                    # 曾经的「只有一条 ws 就改它」是错的：LLBot 登录成功后会把
+                    # config_{qq}.json 的 connect 收敛成**只剩客户端**一条，
+                    # 此时改它 = 把分配端口变成「LLBot 主动去连的目标」，
+                    # 服务端仍然不存在（实测：default_config.json 两条都对、
+                    # 进程也在跑，而该端口无人监听）。
+                    conn.append({"type": "ws", "enable": True, "host": "0.0.0.0",
+                                 "port": int(ports["ob11"]), "heartInterval": 60000,
+                                 "token": "", "reportSelfMessage": False,
+                                 "reportOfflineMessage": False})
+                    hit = True
                 if not hit:
                     conn.append({"type": "ws", "enable": True, "host": "0.0.0.0",
                                  "port": int(ports["ob11"]), "heartInterval": 60000,

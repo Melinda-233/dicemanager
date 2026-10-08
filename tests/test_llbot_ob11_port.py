@@ -111,8 +111,8 @@ def test_two_instances_do_not_collide(tmp_path):
     assert server_port(b) == 3002, "第二个实例的服务端端口应独立，不能被客户端条目抢走"
 
 
-def test_falls_back_to_only_ws_entry(tmp_path):
-    """只有一条 ws 条目时（无客户端/服务端之分）仍要写进去。"""
+def test_creates_server_entry_when_only_ws_is_client(tmp_path):
+    """只有一条 ws 且它是客户端时，必须新建服务端条目。"""
     p = _write_cfg(tmp_path)
     cfg = json.loads(p.read_text(encoding="utf-8"))
     cfg["ob11"]["connect"] = [
@@ -124,8 +124,10 @@ def test_falls_back_to_only_ws_entry(tmp_path):
 
     ad = _ad()
     ad._apply_allocated_ports(_instance(tmp_path, {"ob11": 3005}))
-    got = json.loads(p.read_text(encoding="utf-8"))["ob11"]["connect"][0]
-    assert got["port"] == 3005 and got["enable"] is True
+    got = json.loads(p.read_text(encoding="utf-8"))["ob11"]["connect"]
+    server = [e for e in got if str(e.get("host")) == "0.0.0.0"]
+    assert server and server[0]["port"] == 3005 and server[0]["enable"] is True, \
+        "没有服务端条目时应新建一条"
 
 
 def test_appends_when_no_ws_entry(tmp_path):
@@ -141,3 +143,33 @@ def test_appends_when_no_ws_entry(tmp_path):
     added = [e for e in got if e.get("type") == "ws"]
     assert len(added) == 1 and added[0]["port"] == 3007
     assert str(added[0].get("host")) == "0.0.0.0", "新增的应是服务端条目"
+
+
+def test_creates_server_entry_when_logged_in_config_is_client_only(tmp_path):
+    """登录后的 config_{qq}.json 只剩客户端条目时，必须**新建**服务端条目。
+
+    真实故障第二层（2026-10-08）：LLBot 登录成功后会重写
+    `data/config_{qq}.json`，把 ob11.connect 收敛成**只有客户端**一条。
+    此时若只「退而改客户端那条」，分配到的 ob11 端口就变成
+    「LLBot 主动去连的那个目标」，而应用端要连的服务端从未启动。
+    现象：default_config.json 里两条都对、进程也在跑，但该端口无人监听。
+    """
+    cfg_dir = tmp_path / "bin" / "llbot" / "data"
+    cfg_dir.mkdir(parents=True)
+    # 按账号配置：只剩客户端一条（LLBot 登录后的真实形状）
+    per_uin = cfg_dir / "config_10001.json"
+    per_uin.write_text(json.dumps({"ob11": {"enable": True, "connect": [
+        {"type": "ws", "enable": True, "host": "127.0.0.1", "port": 3002,
+         "heartInterval": 60000, "token": "", "reportSelfMessage": False,
+         "reportOfflineMessage": False, "messagePostFormat": "array"},
+    ]}}, ensure_ascii=False), encoding="utf-8")
+    _write_cfg(tmp_path)          # 引导配置照旧
+
+    ad = _ad()
+    ad._apply_allocated_ports(_instance(tmp_path, {"ob11": 3002}))
+
+    got = json.loads(per_uin.read_text(encoding="utf-8"))["ob11"]["connect"]
+    ws = [e for e in got if e.get("type") == "ws"]
+    server = [e for e in ws if str(e.get("host")) == "0.0.0.0"]
+    assert server, "必须新建服务端条目，否则应用端无从连接"
+    assert server[0]["port"] == 3002 and server[0]["enable"] is True
