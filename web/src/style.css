@@ -236,18 +236,27 @@ button.lnk {
 /* ---------- 日志终端 ---------- */
 .term { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 /* ---------- 拓扑图节点旁的方形符号按钮（全局） ----------
-   ⚠️ 图标本身用**内联 fill/stroke="currentColor"**，不再用 CSS 类：
-   scoped + SVG 这组合让类选择器反复失效（SVG 原生元素不被打 scope id；
-   `.topo rect` 又会把图标 rect 一起染色）。呈现属性只被 !important 覆盖，
-   而这里没有 —— 一劳永逸。
-   本段只管**方块本身**的底色/边框，并用 color 驱动图标的 currentColor：
-   hover/禁用时方块与图标一起变，无需分别给图标写规则。 */
+   ⚠️⚠️ 历史包袱：这组图标曾反复「改了着色方式还是不显示」，根因**从来不是
+   CSS**——是<rect> 的子元素根本不渲染（<rect> 是图形元素、不是容器，
+   实测子元素 getBBox() 全是0×0）。已改成方块与图标互为兄弟节点。
+   下面这些写法约束请勿再推翻：
+   - fill/stroke 用**内联 style** 写死在模板里，CSS 不碰颜色
+     （CSS 只能被 !important 覆盖，这里没有→ 优先级最高且可控）。
+   - 不用 `.topo rect` 这类无 class 的通用选择器染图形：会连带命中
+     所有内部子图形。实例方框用 .node-box 显式标记。 */
 .topo .qbtn {
   fill: var(--panel); stroke: var(--border); stroke-width: 1;
-  color: var(--text); cursor: pointer;      /* color → 图标的 currentColor */
+  color: var(--text); cursor: pointer;
 }
+/* 图标层：不吃事件（点击穿透到下层方块，否则 hover 高亮被图标吃掉），
+   颜色跟方块走 currentColor，hover 时方块变蓝→图标自动变白。 */
+.topo .qico { pointer-events: none; fill: currentColor; stroke: none; }
+.topo .qico-arc { fill: none; stroke: currentColor; }
 .topo .qbtn:hover { fill: var(--brand); stroke: var(--brand); color: #fff; }
 .topo .qbtn.off { opacity: .38; cursor: default; }
 .topo .qbtn.off:hover { fill: var(--panel); stroke: var(--border); color: var(--text); }
+/* 禁用态的图标跟着方块一起淡下去（图标是兄弟节点，不会自动继承 opacity） */
+.topo .qico.off { opacity: .38; }
 /* 管理应用：与启停同一视觉语言（方块），底色略深以示「功能入口」而非「进程开关」 */
 .topo .qbtn-side { fill: var(--code-bg); }
+.topo .qbtn-side:hover { fill: var(--brand); stroke: var(--brand); color: #fff; }

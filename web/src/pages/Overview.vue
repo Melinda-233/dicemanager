@@ -84,33 +84,45 @@
              ⚠️ SVG 没有「子元素相对父 rect 定位」：所有坐标都是节点级绝对坐标。
              方块中心 x = -26 / 0 / 26，y = 34，图标坐标必须带这个偏移。
              stop() 必须 @click.stop —— 不阻止冒泡的话点停止会同时把 sel 切成该节点。 -->
+        <!-- ⚠️⚠️ SVG 的<rect> 是**图形元素**、不是容器：它的子元素不会被渲染
+             （实测 getBBox() 返回 0×0，path/polygon/circle/text 一律不显示）。
+             所以按钮方块与图标必须**互为兄弟节点**，各自独立；
+             `<title>` 只能挂在方块上（图标不渲染，挂它无效）。
+             图标一律 pointer-events:none —— 让点击穿透到下层方块，
+             否则点图标不触发、且 hover 高亮也会被图标吃掉。
+             图标坐标仍带方块中心偏移（三颗方块中心 x=-26/0/26，y=34）。 -->
         <g class="node-ops" @click.stop>
+          <!-- 启动：右指三角 -->
           <rect :x="-36" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'start')"
                 :class="{off: n.state === 'RUNNING'}">
-            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" style="fill:var(--text)"/>
             <title>启动 {{ n.dice }}</title></rect>
+          <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" class="qico qico-play"
+                :class="{off: n.state === 'RUNNING'}"/>
+          <!-- 停止：实心方块 -->
           <rect x="-10" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'stop')"
                 :class="{off: n.state !== 'RUNNING'}">
-            <rect x="-4.5" y="29.5" width="9" height="9" class="qico-mark"
-                  style="fill:var(--text)"/>
             <title>停止 {{ n.dice }}</title></rect>
+          <rect x="-4.5" y="29.5" width="9" height="9" class="qico-mark qico"
+                :class="{off: n.state !== 'RUNNING'}" style="fill:var(--text)"/>
           <!-- 重启：圆弧圆心与方块中心 (26,34) 重合，缺口开在右侧，箭头贴在右上端点 -->
           <rect x="16" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'restart')">
-            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" style="fill:none;stroke:var(--text)"
-                  stroke-width="1.8" stroke-linecap="round"/>
-            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" style="fill:var(--text)"/>
             <title>重启 {{ n.dice }}</title></rect>
+          <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" class="qico qico-arc"
+                stroke-width="1.8" stroke-linecap="round" style="fill:none;stroke:var(--text)"/>
+          <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" class="qico qico-head"
+                style="fill:var(--text)"/>
         </g>
         <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置 -->
         <rect x="77" y="-10" width="20" height="20" rx="4" class="qbtn qbtn-side"
               @click.stop="quickManage(n)">
-          <circle cx="87" cy="0" r="2.4" style="fill:none;stroke:var(--text)" stroke-width="1.7"/>
-          <circle cx="87" cy="0" r="6.2" style="fill:none;stroke:var(--text)" stroke-width="1.7"
-                  stroke-dasharray="2.5 2.1"/>
           <title>管理应用（{{ n.dice }}）</title></rect>
+        <circle cx="87" cy="0" r="2.4" class="qico" stroke-width="1.7"
+                style="fill:none;stroke:var(--text)"/>
+        <circle cx="87" cy="0" r="6.2" class="qico" stroke-width="1.7"
+                stroke-dasharray="2.5 2.1" style="fill:none;stroke:var(--text)"/>
       </g>
     </svg>
     <div class="legend">
@@ -171,7 +183,7 @@
         <template v-if="!sel">
           <p class="hint sel-empty">
             点左侧拓扑图里的实例方框（或方框下方的 ▶ 启动）来选择实例。<br/>
-            选好后这里会出现该实例的操作按钮。
+            选好后这里会出现该实例的操作按钮；点方框右侧的 ⚙ 可直接管理该应用。
           </p>
         </template>
         <template v-else>
@@ -1064,12 +1076,9 @@ text.edge-label.solid-red   { fill: #e5484d; }
 .lg-red   { border-color: #e5484d; }
 rect.dead { fill: var(--code-bg); opacity: .6; }
 text.warn { fill: #d97706; font-size: 10px; }
-/* 节点旁的符号按钮：靠 hover/禁用态区分可点性（图形没有文字标签，
-   靠 <title> 兜 tooltip）。off = 该操作当前不适用（如已在运行还点「启动」）。
-   选择器不带 .node-ops 前缀：管理应用那颗在 <g class="node-ops"> 之外。 */
-/* 节点符号按钮的样式在 style.css（全局）—— SVG 元素拿不到 scoped 的 data-v 属性，
-   放在这里会完全不生效，见 style.css 里那段注释。 */   /* 虚线圆环 = 齿轮的「齿」 */
-.qbtn-side:hover { fill: var(--brand); }
+/* 节点旁的符号按钮样式全在 style.css（全局）。svg 元素同样会被打上
+   data-v，但图标绝不能进<rect>—— 它的子元素不渲染（getBBox 全 0），
+   这才是历史上「图标不显示」的真正根因，与 scoped/优先级无关。 */
 .crash-warn { color: #e5484d; font-weight: 600; }
 text.col-title { fill: #888; font-size: 15px; font-weight: 600; }
 text.col-empty { fill: #bbb; font-size: 12px; }
