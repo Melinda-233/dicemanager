@@ -565,8 +565,14 @@ class NoneBot2Adapter(BaseAdapter):
             # 依赖目录（pip install --target 的产物）不在默认搜索路径里
             "sys.path.insert(0, str(Path(__file__).resolve().parent / "
             f"{LIBS_DIR!r}))\n\n"
-            "import nonebot\n\n"
-            "nonebot.init()\n"
+            "import nonebot\n"
+            "import nonebot.adapters.onebot as ob11\n\n"
+            "nonebot.init()\n\n"
+            "# ⚠️ 必须显式注册协议适配器。\n"
+            "# nonebot2 2.5 已移除 nonebot.load_adapter()，改由 driver.register_adapter()；\n"
+            "# 只 import 不注册 → nonebot.get_adapters() 为空 → 不连任何 IM 协议端，\n"
+            "# 表现为「能启动、能响应 HTTP，但收不到任何消息」（2026-10-08 实测）。\n"
+            "nonebot.get_driver().register_adapter(ob11.V11Adapter)\n\n"
             "nonebot.load_plugins('plugins')\n"
             "nonebot.run()\n",
             encoding="utf-8")
@@ -614,9 +620,16 @@ class NoneBot2Adapter(BaseAdapter):
                           link_id: str | None = None) -> WriteResult:
         """写 .env 的 OneBot 连接项。
 
-        nonebot-adapter-onebot 的键名（配置在 .env，nonebot2 2.4+ 实测）：
-          正向 WS（本端主动连登录端）：OB11_WS_URLS + OB11_TOKEN
-          反向 WS（登录端连本端）：    OB11_REVERSE_WS_URLS + OB11_TOKEN
+        ⚠️ 键名必须是 `ONEBOT_V11_*`（2026-10-08 实测）：
+        适配器的 `nonebot/adapters/onebot/v11/config.py` 里字段 alias 是
+        `onebot_v11_ws_urls` / `onebot_v11_access_token`，pydantic 按 alias 读
+        环境变量 → 对应 `ONEBOT_V11_WS_URLS` / `ONEBOT_V11_ACCESS_TOKEN`。
+        旧文档里的 `OB11_WS_URLS` / `OB11_TOKEN` **不被识别** ——
+        写上去症状是「能启动、能响应 HTTP，但收不到消息」，
+        且 `Loaded adapters:` 后为空、3002 端口上没有任何连接，极难定位。
+
+          正向 WS（本端主动连登录端）：ONEBOT_V11_WS_URLS
+          反向 WS（登录端连本端）：    ONEBOT_V11_REVERSE_WS_URLS
         两种方向都以本端为**客户端/服务端**的相对视角命名，故这里按 direction 取键。
 
         另需 DRIVER：nonebot2 默认是 ~none（无驱动器），不设则 OneBot 收发不工作。
@@ -627,7 +640,8 @@ class NoneBot2Adapter(BaseAdapter):
                 manual="NoneBot2 当前仅适配 OneBot 协议（nonebot-adapter-onebot），"
                        "Milky 需另装适配器。请把关联登录端改为 OneBot 协议。")
         forward = direction != "reverse"
-        key = "OB11_WS_URLS" if forward else "OB11_REVERSE_WS_URLS"
+        key = ("ONEBOT_V11_WS_URLS" if forward
+               else "ONEBOT_V11_REVERSE_WS_URLS")
         url = f"ws://{addr}/" if forward else f"ws://0.0.0.0:{addr.split(':')[-1].rstrip('/')}/"
         path = self._env_path(instance)
 
@@ -637,7 +651,7 @@ class NoneBot2Adapter(BaseAdapter):
             "HOST": "127.0.0.1",# 面板单机部署；如需对外可改 0.0.0.0
             "PORT": str(instance.allocated_ports.get("bot") or 8080),
             key: json.dumps([url]),                 # python-dotenv 按 shell 规则解析，此处需 JSON 数组
-            "OB11_TOKEN": token,
+            "ONEBOT_V11_ACCESS_TOKEN": token,
         })
         kind = "正向 WS" if forward else "反向 WS"
         return WriteResult(

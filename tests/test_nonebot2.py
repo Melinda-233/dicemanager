@@ -633,7 +633,12 @@ def test_expose_webui_is_none():
 # ---------- 互联配置（.env） ----------
 
 def test_write_conn_config_forward_sets_ws_urls(tmp_path):
-    """正向 WS：本端主动连登录端 → OB11_WS_URLS，且必须带 DRIVER。"""
+    """正向 WS：本端主动连登录端 → ONEBOT_V11_WS_URLS，且必须带 DRIVER。
+
+    键名是 `ONEBOT_V11_*` 而非旧文档的 `OB11_*`：适配器
+    `nonebot/adapters/onebot/v11/config.py` 的字段 alias 决定了读哪些环境变量。
+    写错键名的症状是「能启动、能响应 HTTP，但收不到消息」，极难定位。
+    """
     d = tmp_path / "nb-fwd"
     d.mkdir()
     ad = _ad()
@@ -641,9 +646,11 @@ def test_write_conn_config_forward_sets_ws_urls(tmp_path):
     assert r.ok and r.path.endswith(".env")
     env = read_dotenv(d / ".env")
     assert env["DRIVER"] == "~fastapi+~websockets", "缺 DRIVER 则 OneBot 收发不工作"
-    assert env["OB11_WS_URLS"] == json.dumps(["ws://127.0.0.1:3001/"])
-    assert env["OB11_TOKEN"] == "TOK123"
-    assert "OB11_REVERSE_WS_URLS" not in env
+    assert env["ONEBOT_V11_WS_URLS"] == json.dumps(["ws://127.0.0.1:3001/"])
+    assert env["ONEBOT_V11_ACCESS_TOKEN"] == "TOK123"
+    assert "ONEBOT_V11_REVERSE_WS_URLS" not in env
+    # 旧键名必须不再出现：残留会让用户以为配了却没生效
+    assert "OB11_WS_URLS" not in env and "OB11_TOKEN" not in env
     assert "重启" in r.manual, "nonebot2 无配置热加载，必须提示重启"
 
 
@@ -654,9 +661,9 @@ def test_write_conn_config_reverse_uses_reverse_key(tmp_path):
     ad = _ad()
     ad.write_conn_config(_inst(d), "ob11", "reverse", "127.0.0.1:6700", "T2")
     env = read_dotenv(d / ".env")
-    assert env["OB11_REVERSE_WS_URLS"] == json.dumps(["ws://0.0.0.0:6700/"])
-    assert env["OB11_TOKEN"] == "T2"
-    assert "OB11_WS_URLS" not in env
+    assert env["ONEBOT_V11_REVERSE_WS_URLS"] == json.dumps(["ws://0.0.0.0:6700/"])
+    assert env["ONEBOT_V11_ACCESS_TOKEN"] == "T2"
+    assert "ONEBOT_V11_WS_URLS" not in env
 
 
 def test_write_conn_config_uses_allocated_port(tmp_path):
@@ -687,7 +694,8 @@ def test_dotenv_preserves_comments_and_is_idempotent(tmp_path):
         encoding="utf-8")
 
     def put(c):
-        return {**c, "DRIVER": "~fastapi+~websockets", "OB11_TOKEN": "TOK"}
+        return {**c, "DRIVER": "~fastapi+~websockets",
+                "ONEBOT_V11_ACCESS_TOKEN": "TOK"}
 
     atomic_write_dotenv(p, put)
     text = p.read_text("utf-8")
@@ -857,7 +865,6 @@ def test_unknown_skeleton_file_fails_loudly(tmp_path):
     """
     d = tmp_path / "nb-unknown"
     d.mkdir()
-    ad = _ad()
     m = dict(MANIFEST)
     m["skeleton"] = {"files": ["poetry.lock"]}
     from adapters.nonebot2 import NoneBot2Adapter
@@ -925,3 +932,26 @@ def test_pip_install_detects_zero_exit_but_missing_deps(tmp_path, monkeypatch):
     msg = str(e.value)
     assert "退出码是 0" in msg, "要解释为什么退出码没能反映失败"
     assert "nonebot2" in msg, "要点出缺哪个依赖"
+
+
+def test_entrypoint_registers_adapter(tmp_path):
+    """生成的 bot.py 必须注册 ob11 适配器，否则收不到任何消息。
+
+    真实故障（2026-10-08）：nonebot2 2.5 移除了 `nonebot.load_adapter()`，
+    改为 driver.register_adapter()。旧模板只 import 不注册 →
+    `nonebot.get_adapters()` 为空 → 能启动、能响应 HTTP，但不连任何 IM 协议端。
+    这个断言锁住「注册」这一步，防止模板回退。
+    """
+    d = tmp_path / "nb-adapter"
+    d.mkdir()
+    ad = _ad()
+    inst = _inst(d)
+    inst.dir = str(d)
+    (d / "bot.py").unlink(missing_ok=True)
+    ad._write_entrypoint(inst)
+    src = (d / "bot.py").read_text(encoding="utf-8")
+    assert "import nonebot.adapters.onebot" in src, "适配器包必须 import"
+    assert "register_adapter(ob11.V11Adapter)" in src, \
+        "必须注册适配器，否则 nonebot2 2.5 下不连任何协议端（收不到消息）"
+    # 注册要发生在 load_plugins/run 之前
+    assert src.index("register_adapter") < src.index("nonebot.run()")
