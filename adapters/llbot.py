@@ -142,11 +142,26 @@ class LLBotAdapter(BaseAdapter):
             ob.setdefault("enable", True)
             conn = ob.setdefault("connect", [])
             if ports.get("ob11"):
+                # ⚠️ LLBot 的 ob11 模板里**有两条 type="ws"**：
+                #   一条 host=127.0.0.1（**客户端**，主动去连别人）
+                #   一条 host=0.0.0.0（**服务端**，等别人连它）
+                # 应用端（nonebot2）要连的是**服务端**那条。早先的实现取
+                # 「第一条 type==ws」，两个实例时就会把**客户端**那条改成 ob11 端口 ——
+                # 于是实例 A 的 ob11 端口被写成了实例 B 客户端要连的端口，两者撞车，
+                # 表现为「诊断说端口未监听 / nonebot 收不到消息」（2026-10-08 实测）。
+                # 修法：优先改**监听地址不是回环**的那条（服务端）；只有一条时才退而改它。
                 hit = False
                 for e in conn:
-                    if e.get("type") == "ws":
+                    if e.get("type") != "ws":
+                        continue
+                    if str(e.get("host") or "").strip().lower() not in LOOPBACK_HOSTS:
                         e["port"] = int(ports["ob11"]); e["enable"] = True; hit = True
                         break
+                if not hit:
+                    for e in conn:
+                        if e.get("type") == "ws":
+                            e["port"] = int(ports["ob11"]); e["enable"] = True; hit = True
+                            break
                 if not hit:
                     conn.append({"type": "ws", "enable": True, "host": "0.0.0.0",
                                  "port": int(ports["ob11"]), "heartInterval": 60000,
