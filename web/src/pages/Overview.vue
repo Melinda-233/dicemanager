@@ -42,11 +42,11 @@
     </p>
     <div class="layout">
       <div class="topo-wrap" ref="topoWrap">
-    <svg :viewBox="'0 0 ' + vbW + ' 440'" class="topo" :style="topoStyle">
+    <svg :viewBox="`0 0 ${vbW} ${vbH}`" class="topo" :style="topoStyle">
       <text :x="colX.login" y="24" class="col-title" text-anchor="middle">登录端</text>
       <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
-      <text v-if="!loginNodes.length" :x="colX.login" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
-      <text v-if="!diceNodes.length" :x="colX.dice" y="215" class="col-empty" text-anchor="middle">（暂无）</text>
+      <text v-if="!loginNodes.length" :x="colX.login" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
+      <text v-if="!diceNodes.length" :x="colX.dice" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
       <line v-for="e in edges" :key="e.src+e.dst"
             :x1="pos(e.src).x" :y1="pos(e.src).y"
             :x2="pos(e.dst).x" :y2="pos(e.dst).y" :class="e.state"/>
@@ -532,23 +532,38 @@ onMounted(() => {
 onUnmounted(() => _ro?.disconnect())
 // 两档：宽裕（列距 460）/ 紧张（列距 300）。方框半宽 70 + 右侧符号到 97，
 // 列距 300 时两列符号之间仍留 106px 间隙，不会撞。
-// 高度按 viewBox 比例算：viewBox 宽 vbW、高 440，故高 = 实际宽 * 440/vbW。
-// 这样 SVG 不做等比缩放（width:100% + height:auto 会缩），1:1 呈现 →
-// **收窄时字号不变**。收窄档 vbW=560 → 同样的容器宽度下画布内容更大、列更靠拢。
+// 画布高度按**实际行数**自适应：固定 440 在 1 个实例时留大片空白，
+// 在 5 个实例时又放不下（末行底边会超出 viewBox 被裁掉）。
+// 下沿 = TOP_PAD + (行数-1)*ROW_H + 节点半高 + 下边距。
+// 高度仍按 viewBox 比例算（宽 vbW、高 vbH），SVG 1:1 呈现不缩放 →
+// **收窄时字号不变**。
+const ROW_H = 120// 节点中心行距
+const TOP_PAD = 95             // 画布上边距：列标题在 y=24，首个方框不能压到它
+const NODE_HALF = 52            // 节点实际半高：方框 26 + 下方符号按钮到 44
+const BOTTOM_PAD = 18
+const maxRows = computed(() =>
+  Math.max(loginNodes.value.length, diceNodes.value.length, 1))
+const vbH = computed(() =>
+  TOP_PAD + (maxRows.value - 1) * ROW_H + NODE_HALF + BOTTOM_PAD)
 const topoStyle = computed(() => {
   const w = wrapW.value || 800
-  return { height: Math.round(w * 440 / vbW.value) + 'px' }
+  return { height: Math.round(w * vbH.value / vbW.value) + 'px' }
 })
 const narrow = computed(() => wrapW.value < 720)
 const vbW = computed(() => narrow.value ? 560 : 800)
 const colX = computed(() => narrow.value ? { login: 130, dice: 430 } : { login: 170, dice: 630 })
 const pos = id => {
   const node = nodes.value.find(n => n.id === id)
-  if (!node) return { x: (colX.value.login + colX.value.dice) / 2, y: 215 }
+  if (!node) return { x: (colX.value.login + colX.value.dice) / 2, y: TOP_PAD }
   const col = isLogin(node) ? loginNodes.value : diceNodes.value
   const j = col.findIndex(n => n.id === id)
   const n = col.length
-  const y = n <= 1 ? 215 : 60 + j * (310 / (n - 1))
+  // 纵向排布：ROW_H 是**节点中心的行距**，不是方框间距。
+  // 每个节点实际占 y=-26(方框上沿) .. 44(下方符号按钮底边) = 70px，
+  // 再留 50px 间隙 → 120px 是「紧凑但按钮不与下一个方框相接」的下限。
+  // 原来的 310/(n-1) 是「把 60~370 均分」的写法：n=2 时行距 310（一列两个
+  // 实例被拉到天南地北）、n=5 时 78（方框与按钮几乎贴上）——两端都不合理。
+  const y = n <= 1 ? TOP_PAD : TOP_PAD + j * ROW_H
   return { x: isLogin(node) ? colX.value.login : colX.value.dice, y }
 }
 // 分化 C3：面板重启按钮只在 server 版渲染（后端 /panel/restart 对 desktop 返 404）
