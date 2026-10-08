@@ -972,8 +972,8 @@ def probe_manifest_package(dice: str, user: Annotated[CurrentUser | None, Depend
 def auth_token_hint(dice: str, user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """本机其它实例已用过的 AUTH TOKEN（新建登录端时预填用）。
 
-    LLBot v8.0.9+ 缺 auth_token.txt 就直接退出，而 token 是**按 QQ 号**申请的：
-    换实例后让用户去翻旧目录里的文件，多半会漏填。与其等进程启动失败，
+    LLBot v8.0.9+ 缺 auth_token.txt 就直接退出。而 token 有绑定 QQ 号数上限、
+    需在平台申请：换实例后让用户去翻旧目录里的文件，多半会漏填。与其等进程启动失败，
     不如在填表时就告诉他「这台机器上已有的 token 是这个（来自哪个实例/哪个号）」。
 
     只对**实现了 peek_auth_token 的适配器**有效，其余程序返回 null（前端不显示）。

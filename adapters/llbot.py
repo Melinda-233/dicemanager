@@ -180,7 +180,8 @@ class LLBotAdapter(BaseAdapter):
         return {"ok": True, "qq": qq, "restart": restart}
 
     # ---------- AUTH TOKEN 复用 ----------
-    # v8.0.9+ 的 AUTH TOKEN 是向快速登录平台按「QQ 号」申请的，不是通用密钥：
+    # v8.0.9+ 的 AUTH TOKEN 是向快速登录平台申请的，有**绑定 QQ 号数上限**
+    # （用户实测：一个 token 可绑 3 个号，不是「一号一 token」）。
     # 换实例（新机器、重装、清空目录）后让用户去翻旧目录里的 auth_token.txt，
     # 几乎一定会漏填 → 部署过了但进程启动即退出（LLBot 缺这个文件直接报错）。
     # 同一台机器上已有跑着的 llbot 实例，其 token 就能直接复用。
@@ -218,7 +219,8 @@ class LLBotAdapter(BaseAdapter):
                 newest = key
         if newest is None:
             return {"token": None, "from_instance": None, "from_qq": None}
-        # 回带 QQ 号：token 是按号申请的，让人能确认「拿的是哪个号的」
+        # 回带 QQ 号：让人能确认「拿的是哪个实例、那个号在用同一个 token」。
+        # 注意它不是「token 的归属号」——一个 token 可绑多个号，这里只是来源信息。
         qq = ""
         for rec in candidates:
             if rec.get("id") == newest[2]:

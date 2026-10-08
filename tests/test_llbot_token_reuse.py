@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """LLBot AUTH TOKEN 复用（peek_auth_token）。
 
-背景：v8.0.9+ 的 AUTH TOKEN 是**按 QQ 号**向快速登录平台申请的，不是通用密钥。
+背景：v8.0.9+ 的 AUTH TOKEN 需在快速登录平台申请，有**绑定 QQ 号数上限**
+（用户实测：一个 token 绑了 3 个号 → 不是「一号一 token」）。
 换实例（新机器 / 重装 / 清空目录）后让用户去翻旧目录里的 auth_token.txt，
 几乎一定会漏填 —— 而 LLBot 缺这个文件是**启动即退出**，报的还是
 「缺必备文件」之外的信息，很难自己定位。
@@ -59,7 +60,9 @@ def test_picks_token_from_existing_instance(tmp_path):
     got = _adapter().peek_auth_token(_Reg([rec]))
     assert got["token"] == "TOKEN-llbot-aaa"
     assert got["from_instance"] == "llbot-aaa"
-    assert got["from_qq"] == "975809162", "回带 QQ 号：token 是按号申请的，要能确认拿的是哪个"
+    # 回带 QQ 号仅作**来源信息**（哪个实例、哪个号在用它），
+    # 不是「token 的归属号」——一个 token 可绑定多个 QQ 号。
+    assert got["from_qq"] == "975809162", "回带来源 QQ 号，便于确认这个 token 出自哪里"
 
 
 def test_ignores_other_programs(tmp_path):

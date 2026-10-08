@@ -77,13 +77,15 @@
         <input v-model="cred.auth_token" placeholder="AUTH TOKEN"/>
         <p class="hint">到 https://auth.luckylia.com 申请获取；进入扫码页时自动保存生效。</p>
         <!-- 本机已有 llbot 实例跑过 → 直接带出它的 token，省得翻旧目录。
-             刻意不静默填：token 是凭据，要让人看见来源（哪个实例/哪个 QQ）并能改。
-             换一个 QQ 号时必须改，因为 token 是按号申请的。 -->
+             刻意不静默填：token 是凭据，要让人看见来源（哪个实例）并能自行更改。
+
+             ⚠️ 不要写「换 QQ 号要换 token」——一个 token 可绑定多个 QQ 号
+             （用户实测：同一个 llbot token 绑了 3 个号），那种提示会误导人去
+             多申请 token。token 的约束是「绑定数上限」，不是「一号一 token」。 -->
         <p class="hint token-hint" v-if="tokenHint">
           已从本机实例 <code>{{ tokenHint.from_instance }}</code> 带入 AUTH TOKEN<template
-            v-if="tokenHint.from_qq">（QQ {{ tokenHint.from_qq }}）</template>。<template
-            v-if="tokenHint.from_qq">要换 QQ 号请改成对应账号申请的 token。</template><template
-            v-else>确认可用就直接下一步。</template>
+            v-if="tokenHint.from_qq">（该实例登录的是 QQ {{ tokenHint.from_qq }}）</template>。
+          同一 token 可绑定多个 QQ 号，无需重复申请；确认可用就直接下一步。
         </p>
       </div>
 
