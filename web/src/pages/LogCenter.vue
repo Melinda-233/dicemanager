@@ -1,9 +1,22 @@
 <template>
   <div class="logcenter">
     <div class="toolbar">
-      <select v-model="instanceId" @change="reconnect">
-        <option v-for="i in instances" :key="i.id" :value="i.id">{{ i.dice }} / {{ i.id }}</option>
+      <!-- 实例选择：加状态点与分组（运行中/已停止），裸列表在实例一多就分不清
+           哪个在跑。另外空态要显式说明，不能留一个空白下拉框让用户干瞪眼。 -->
+      <select v-model="instanceId" @change="onPickInstance" class="pick">
+        <option value="" disabled>选择实例以查看日志…</option>
+        <optgroup v-if="running.length" label="运行中">
+          <option v-for="i in running" :key="i.id" :value="i.id">
+            ● {{ i.dice }} · {{ shortId(i.id) }}
+          </option>
+        </optgroup>
+        <optgroup v-if="stopped.length" label="已停止">
+          <option v-for="i in stopped" :key="i.id" :value="i.id">
+            ○ {{ i.dice }} · {{ shortId(i.id) }}
+          </option>
+        </optgroup>
       </select>
+      <span v-if="!instances.length" class="hint">还没有实例</span>
       <input v-model="keyword" placeholder="关键字过滤（当前实例）" @change="applyFilter"/>
       <button @click="togglePause">{{ paused ? '继续跟随' : '暂停跟随' }}</button>
       <button @click="copyAll">复制</button>
@@ -33,7 +46,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { connectWS } from '../ws'
 import { listInstances, downloadLog, searchLogs } from '../api'
 
@@ -48,10 +61,24 @@ const render = m => {
   if (!paused.value) nextTick(() =>
     term.value && (term.value.scrollTop = term.value.scrollHeight))
 }
+// 运行中 / 已停止分组：只靠文字列表在实例多时无法区分状态
+const running = computed(() => instances.value.filter(i => i.state === 'RUNNING'))
+const stopped = computed(() => instances.value.filter(i => i.state !== 'RUNNING'))
+const shortId = id => (id || '').length > 22 ? id.slice(0, 12) + '…' + id.slice(-6) : id
+
 const reconnect = () => {
   sock?.close(); lines.value = []
   if (!instanceId.value) return
   sock = connectWS(`/ws/logs/${instanceId.value}`, render)
+}
+// 切换实例时把过滤条件一并清掉：后端的 filter 是按实例解析的，
+// 留着上一个实例的关键词会在新实例上匹配不到东西 —— 表现为
+// 「换了实例但搜不到内容」，且没有任何提示说为什么。
+const onPickInstance = () => {
+  keyword.value = ''
+  gResults.value = null
+  paused.value = false
+  reconnect()
 }
 const togglePause = () => { paused.value = !paused.value
   sock?.send(paused.value ? 'pause' : 'resume') }
@@ -86,6 +113,7 @@ onUnmounted(() => sock?.close())
         height: 70vh; overflow-y: auto; padding: 8px; white-space: pre-wrap; }
 .term .err { color: #ff7b72; background: #3a1d1f; }
 .gq { flex: 1; min-width: 240px; }
+.pick { min-width: 260px; max-width: 380px; }
 .gres { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
 .gres .x { padding: 1px 8px; font-size: 12px; float: right; }
 .g-row { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; font-size: 12.5px; }

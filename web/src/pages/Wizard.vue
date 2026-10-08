@@ -265,8 +265,18 @@
         <div v-if="showQrcode" class="qr">
           <img v-if="qr.url" :src="qr.url" alt="二维码"/>
           <img v-if="qr.base64" :src="qr.base64" alt="二维码"/>
+          <p v-if="!qr.url && !qr.base64" class="hint">
+            正在等待二维码…若长时间不出，点下方「重新获取二维码」。
+          </p>
+          <p v-if="qrRestarting" class="hint">正在重启程序并获取新的二维码…</p>
           <div class="ops">
-            <button @click="sock?.send('refresh')">刷新二维码</button>
+            <!-- refresh 的真实语义是「停掉进程重新拉起」→ 会带上 auth_token.txt
+                 重写并重新出码。所以文案要说清它不是单纯「刷新图片」，
+                 否则用户以为只是重新取图、点完发现进程重启了会困惑。 -->
+            <button @click="refreshQrcode" :disabled="qrRestarting">
+              {{ qrRestarting ? '获取中…' : '重新获取二维码' }}
+            </button>
+            <button @click="restartLogin" :disabled="qrRestarting">重新启动程序</button>
             <button class="primary" @click="doLogin">
               {{ needAuthToken && !tokenSaved ? '保存TOKEN 并获取二维码' : '我已完成扫码' }}</button>
           </div>
@@ -1133,17 +1143,59 @@ const resolve = useExisting => guard(async () => {   // 冲突二选一（主实
   await enterStep3()
 })
 
+// 等待新二维码的等待态：点了「重新获取」就置上，**收到新二维码才解除**。
+// 若只发指令不等回包，按钮会立刻恢复可用 —— 用户会以为没生效而连点，
+// 反而把进程反复重启。
+const qrRestarting = ref(false)
+// 回包超时兜底：进程起不来时后端不会推 qrcode，这里不能无限转圈
+let _qrTimer = null
+const clearQrWait = () => { qrRestarting.value = false; clearTimeout(_qrTimer) }
+const armQrWait = () => {
+  qrRestarting.value = true
+  clearTimeout(_qrTimer)
+  _qrTimer = setTimeout(clearQrWait, 30000)
+}
+
 const openLoginWS = () => {
   sock.value?.close()
   sock.value = connectWS(`/ws/login/${instanceId}`, m => {
-    if (m.type === 'qrcode') qr.value = m.payload
+    if (m.type === 'qrcode') {
+      // 与旧码相同则不算「拿到新图」：后端去重后可能重推同一张，
+      // 此时解除等待态会让用户以为更新成功、实际还是过期那张。
+      const same = qr.value?.url === m.payload?.url
+        && qr.value?.base64 === m.payload?.base64
+      qr.value = m.payload
+      if (!same) clearQrWait()
+    }
+    if (m.type === 'restarted') {                  // 后端已重启进程，等新码
+      err.value = ''
+    }
     if (m.type === 'verify') verifyUrl.value = m.payload.url
     if (m.type === 'completed' || m.type === 'skipped') onLoggedIn()
     if (m.type === 'login_failed') {               // 账号登录失败：明确反馈而非卡在原页
+      clearQrWait()
       err.value = m.payload?.message || '登录失败，请检查账号信息后重试'
     }
   })
 }
+// 「重新获取二维码」：后端 refresh 的语义是停掉进程重新拉起（会重写
+// auth_token.txt 并重新出码），所以它能解决「码过期」「码一直不出」。
+const refreshQrcode = () => guard(async () => {
+  if (!sock.value) { openLoginWS(); return }        // WS 断了：先重连，重连逻辑会自动拉起进程
+  err.value = ''
+  armQrWait()
+  sock.value.send('refresh')
+})
+// 「重新启动程序」：给「码拿到了但扫不上/ 登录失败」用 —— 重启整段登录态。
+// 先落盘 token 再重启，避免 LLBot 因缺 auth_token.txt 起来即退。
+const restartLogin = () => guard(async () => {
+  err.value = ''
+  if (needAuthToken.value && cred.value.auth_token && !tokenSaved.value) await saveToken()
+  armQrWait()
+  qr.value = {}                                    // 清掉旧图，避免与新图并存造成误读
+  if (!sock.value) { openLoginWS(); return }
+  sock.value.send('refresh')
+})
 
 // ---------- 登录日志（可选，复用 /ws/logs 通道）----------
 // 只在用户勾选时才连 WS：默认收起，且不该在用户没要求时占用服务端连接。
