@@ -40,6 +40,9 @@
             </template>
           </td>
           <td class="acts">
+            <!-- 管理程序：两个角色都要给。admin 名下也可能有实例（他人删除账号后
+                 实例会转为归属 admin，见 delete_account），同样需要入口。 -->
+            <button @click="openInsts(a)">管理程序</button>
             <template v-if="a.role !== 'admin'">
               <button @click="openQuota(a)">改配额</button>
               <button @click="openPwd(a)">改密码</button>
@@ -92,13 +95,72 @@
         </div>
       </div>
     </div>
+
+    <!-- ===== 管理该用户的程序：浮窗 =====
+         为什么用浮窗而不是塞进表格：表格已经有 6 列，再加「程序/状态/端口/操作」
+         会挤到换行；浮窗能给每个实例一整行放符号按钮。
+         布局与总览页的管理应用浮窗一致（点遮罩关闭），两处交互统一。 -->
+    <div v-if="idlg" class="mask" @click.self="idlg = null">
+      <div class="box ibox" @click.stop>
+        <div class="ihead">
+          <b>管理程序 · {{ idlg.username }}</b>
+          <span class="dim">
+            {{ idlg.instances.length }} 个实例
+            <button class="lnk" @click="loadInsts">刷新</button>
+          </span>
+          <button @click="idlg = null">关闭</button>
+        </div>
+        <p v-if="ierr" class="err">{{ ierr }}</p>
+        <p v-if="!idlg.instances.length && !ibusy" class="hint">
+          该用户还没有实例。实例由「创建」向导生成，归该用户所有。
+        </p>
+        <p v-if="ibusy" class="hint">正在加载…</p>
+        <table v-else-if="idlg.instances.length" class="itable">
+          <thead><tr>
+            <th>程序</th><th>状态</th><th>端口</th><th>QQ</th>
+            <th class="th-ops">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="r in idlg.instances" :key="r.id">
+              <td>
+                <b>{{ r.dice }}</b>
+                <span v-if="r.arch === 'allinone'" class="dim">（整合包）</span>
+                <div class="dim iid">{{ r.id }}</div>
+                <!-- 部署目录默认折叠：路径很长且大多数时候不需要看，
+                     出问题时才展开对照。 -->
+                <button class="lnk" @click="dirOpen[r.id] = !dirOpen[r.id]">
+                  {{ dirOpen[r.id] ? '▾ 收起目录' : '▸ 部署目录' }}
+                </button>
+                <div v-if="dirOpen[r.id]" class="idir">{{ r.dir || '（未知）' }}</div>
+              </td>
+              <td>
+                <span :class="r.live ? 'on' : 'off'">{{ r.state }}</span>
+                <span v-if="r.live && r.mem_mb" class="dim"> · {{ r.mem_mb }}MB</span>
+              </td>
+              <td>{{ r.port || '-' }}</td>
+              <td>{{ r.qq || '-' }}</td>
+              <td class="th-ops">
+                <button title="启动" :disabled="busy" @click="instOp(r, 'start')">▶</button>
+                <button title="停止" :disabled="busy" @click="instOp(r, 'stop')">■</button>
+                <button title="重启" :disabled="busy" @click="instOp(r, 'restart')">↻</button>
+                <button title="查看日志" @click="instLogs(r)">日志</button>
+                <button v-if="r.port" title="打开 WebUI" @click="instWebui(r)">WebUI</button>
+                <button class="danger" title="删除实例" :disabled="busy"
+                        @click="instDel(r)">×</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { listAccounts, createAccount, deleteAccount, setAccountQuota,
-         setAccountPassword, revokeAccount, getUser } from '../api'
+         setAccountPassword, revokeAccount, getUser,
+         listUserInstances, opInstance, delInstance, instanceWebui } from '../api'
 
 const list = ref([])
 const err = ref('')
@@ -173,6 +235,65 @@ const doDelete = async a => {
   try { await deleteAccount(a.username); say(`账号 ${a.username} 已删除`); await load() }
   catch (e) { fail(e) }
 }
+
+// ---------- 管理该用户的程序 ----------
+// 操作类端点（启停/删除/WebUI）复用通用实例 API，不必走 admin 前缀：
+// 后端 owned_by 对管理员放行全部实例。唯一需要 admin 权限的是「按用户名列实例」。
+const idlg = ref(null), ibusy = ref(false), ierr = ref('')
+const dirOpen = reactive({})          // 部署目录默认折叠，按实例 id 记展开状态
+const openInsts = async a => {
+  idlg.value = { username: a.username, instances: [] }
+  ierr.value = ''
+  await loadInsts()
+}
+const loadInsts = async () => {
+  if (!idlg.value) return
+  ibusy.value = true; ierr.value = ''
+  try {
+    const r = await listUserInstances(idlg.value.username)
+    // 期间可能已关闭或切到别的用户 → 丢弃过期结果
+    if (!idlg.value || idlg.value.username !== r.username) return
+    idlg.value.instances = r.instances || []
+  } catch (e) {
+    if (idlg.value) ierr.value = e.message || String(e)
+  } finally {
+    if (idlg.value) ibusy.value = false
+  }
+}
+const instOp = async (r, op) => {
+  busy.value = true
+  try {
+    await opInstance(r.id, op)
+    say(`${r.dice}（${r.id}）已${op === 'start' ? '启动' : op === 'stop' ? '停止' : '重启'}`)
+    await loadInsts()                  // 状态变了，重拉一次让表格跟上
+  } catch (e) { fail(e) }
+  finally { busy.value = false }
+}
+const instLogs = r => { location.hash = `#/logs?instance=${encodeURIComponent(r.id)}` }
+const instWebui = async r => {
+  busy.value = true
+  try {
+    const w = await instanceWebui(r.id)
+    if (!w.port) { say('未发现 WebUI 端口：实例未启动，或该程序没有 WebUI。'); return }
+    window.open(`http://${location.hostname}:${w.port}`, '_blank', 'noopener')
+  } catch (e) { fail(e) }
+  finally { busy.value = false }
+}
+const instDel = async r => {
+  // 删的是别人的实例，比删自己的更需要明确告知：会停进程、按 manifest 决定
+  // 是否保留存档目录，且不可撤销。
+  if (!confirm(`删除实例「${r.dice} · ${r.id}」？\n`
+             + `归属用户：${idlg.value.username}\n`
+             + `会先停止进程；存档目录是否保留由该程序的配置决定。此操作不可撤销。`)) return
+  busy.value = true
+  try {
+    // keep_save 传 true：管理员代人操作时不擅自删用户存档
+    await delInstance(r.id, r.id, false, true)
+    say(`实例 ${r.dice} 已删除`)
+    await loadInsts()
+  } catch (e) { fail(e) }
+  finally { busy.value = false }
+}
 </script>
 
 <style scoped>
@@ -202,4 +323,36 @@ h4 { margin: 0 0 .6rem; font-size: 14px; font-weight: 500; }
 .hint { font-size: 12px; opacity: .7; margin: 0; }
 .row { display: flex; gap: 8px; justify-content: flex-end; }
 code { background: rgba(128,128,128,.15); padding: 1px 4px; border-radius: 3px; }
+
+/* ---------- 管理程序浮窗 ----------
+   复用已有的 .mask/.box，只把卡片放宽并允许纵向滚动：
+   一个用户可能有十几个实例，固定高度会把后面的行挤出视口。 */
+.ibox { min-width: min(760px, 92vw); max-height: 84vh; }
+.ihead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ihead b { font-size: 14px; font-weight: 500; }
+.ihead .dim { flex: 1; }
+.ihead .dim button { margin-left: 8px; }
+.itable { width: 100%; border-collapse: collapse; }
+.itable th, .itable td {
+  text-align: left; padding: 7px 8px; font-size: 13px; vertical-align: top;
+  border-bottom: 1px solid rgba(128,128,128,.2);
+}
+.itable th { font-weight: 500; opacity: .7; white-space: nowrap; }
+.iid { font-size: 11px; margin: 2px 0; word-break: break-all; }
+.idir {
+  font-size: 11px; margin-top: 4px; padding: 4px 6px;
+  background: rgba(128,128,128,.12); border-radius: 4px;
+  word-break: break-all; max-width: 320px;
+}
+.itable .on { color: #30a46c; }
+.itable .off { opacity: .65; }
+.th-ops { white-space: nowrap; }
+.th-ops button {
+  padding: 3px 8px; margin-right: 4px; font-size: 12px;
+  min-width: 30px; line-height: 1.4;
+}
+button.lnk {
+  background: none; border: none; padding: 0; margin: 0;
+  color: #2f6feb; cursor: pointer; font-size: 12px; text-decoration: underline;
+}
 </style>

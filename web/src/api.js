@@ -102,6 +102,12 @@ export const setAccountPassword = (name, pwd) =>
            { method: 'POST', body: { new_password: pwd } })
 export const revokeAccount = name =>
   adminApi(`/admin/accounts/${encodeURIComponent(name)}/revoke`, { method: 'POST' })
+// 某用户名下的全部实例（管理员）：程序、状态、端口、QQ、部署目录、是否存活。
+// 账号列表只有「用了几号几端」，看不出具体是哪些程序、跑没跑 —— 实例出问题时
+// 管理员第一个要看的就是这里。操作类（启停/删除/WebUI）复用通用实例端点：
+// owned_by 对管理员放行全部实例，不必另开一套。
+export const listUserInstances = name =>
+  adminApi(`/admin/accounts/${encodeURIComponent(name)}/instances`)
 export const listInstances = () => api('/instances')
 export const listPending = () => api('/pending')
 export const listManifests = () => api('/manifests')

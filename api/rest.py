@@ -169,11 +169,44 @@ def set_account_password(username: str, body: dict):
     auth.set_password(username, body.get("new_password", ""))
     return {"ok": True, "note": "密码已修改，该用户需重新登录"}
 
-@admin_router.post("/accounts/{username}/revoke")
-def revoke_account_sessions(username: str):
-    """强制下线：吊销该用户全部会话（踢出在线会话），账号保留。"""
-    auth.revoke_sessions(username)
-    return {"ok": True}
+@admin_router.get("/accounts/{username}/instances")
+def admin_user_instances(username: str, _admin: CurrentUser = Depends(require_admin)):
+    """某用户名下的全部实例（管理员视角）。
+
+    存在的理由：账号列表只能看到「用了几号几端」，看不到**具体是哪些程序、
+    跑没跑、占哪个端口**。实例出问题时管理员第一反应就是来这里看。
+
+    存活判定与 /ws/overview、/api/instances 同口径：进程句柄 + 端口探测兜底
+    （launcher/面板重启后 worker reparent，句柄失效但服务仍在跑）。
+    各字段异常一律吞掉返回 null——列表页不该因为某个实例的状态读不出来就整体失败。
+    """
+    recs = [r for r in ctx.registry.all()
+            if (r.get("owner") or "admin") == username]
+    out = []
+    for r in recs:
+        alive, mem = False, None
+        try:
+            proc = ctx.pm.get(r["id"])
+            p = proc.probe()
+            alive = bool(p.get("alive"))
+            mem = p.get("mem_mb")
+            if not alive:
+                try:
+                    if ctx.get_adapter(r["dice"]).is_up(SimpleNamespace(**r)):
+                        alive = True
+                except Exception:
+                    pass
+        except Exception:
+            log.warning("admin inst probe %s failed", r.get("id"), exc_info=True)
+        out.append({
+            "id": r["id"], "dice": r["dice"], "arch": r.get("arch"),
+            "state": r.get("state"), "port": r.get("actual_port")
+                     or (r.get("allocated_ports") or {}).get("webui"),
+            "qq": r.get("qq"), "dir": r.get("dir"),
+            "live": alive, "mem_mb": mem,
+            "login_ref": r.get("login_ref"),
+        })
+    return {"username": username, "instances": out}
 
 # ---------- 归属与配额辅助 ----------
 # 所有按inst_id 操作实例的端点都必须先过 _own。管理员放行全部，普通用户只能操作
