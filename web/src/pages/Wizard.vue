@@ -167,7 +167,23 @@
                                  : '正在下载部署 ' + dice + '，请稍候（首次可能耗时数分钟）…') }}</p>
         <p v-if="dlSpeed" class="hint">{{ dlSpeed }} · 已用 {{ dlElapsed }}</p>
       </div>
-      <p v-else class="hint">部署中，请勿关闭页面…</p>
+      <!-- busy=false 但既没成功也没失败 —— 说明这次是**断点续跑**：UI 停在第二步，
+           部署请求还没发出（用户要点「重试部署」）或已结束但没有推进到下一步。
+           真实故障：llbot 续跑后部署完成却一直停在这里（登录端不出二维码、
+           auth_token.txt 永不落盘），用户无从判断该重试还是该等，只能干看着。
+           → 明确告诉用户「程序已装好、现在需要你做什么」，而不是含糊的「部署中」。 -->
+      <div v-else class="step-wait">
+        <p class="hint">
+          {{ waitStage === 'deployed'
+            ? `程序已部署完成（${dice}）。接下来需要登录 ${dice} 才能继续。`
+            : '尚未开始部署。程序包已就位，点下面的按钮即可开始部署。' }}
+        </p>
+        <div class="ops">
+          <button class="primary" @click="waitStage === 'deployed' ? goLogin() : retryDeploy">
+            {{ waitStage === 'deployed' ? '前往登录' : '开始部署' }}
+          </button>
+        </div>
+      </div>
       <!-- 部署失败（下载超时/断网/上游改名等）：就地给出出路，不必退回第一步。
            「去项目页下载」是第三条路：在线下载失败时用户最需要的就是
            「我自己去 release 页把包下下来，再上传」——没有链接就只能干等或放弃。 -->
@@ -477,6 +493,21 @@ const loading = ref(true), loadError = ref(''), busy = ref(false), err = ref('')
 const conflict = ref(false), conflictDir = ref(''), qr = ref({}), verifyUrl = ref('')
 const cred = ref({ qq: '', password: '', protocol: 'ANDROID_PAD', auth_token: '' })
 const tokenSaved = ref(false)   // AUTH TOKEN 已落盘并重启过进程（LLBot v8 扫码前置条件）
+// 本次部署是否来自「断点续跑」：决定部署成功后是推进到第三步还是直接进链接区
+const resumed = ref(false)
+// 等待态区分「还没开始部署」与「已部署完、等登录」：
+// 两者界面上都是「没有进度条也没有报错」，用户无从判断该点什么。
+// done=true 表示部署请求已经成功返回过（那次响应里带 done）。
+const waitStage = ref('idle')
+// step2 成功后（或续跑进入第二步时）置 'deployed'，失败/未开始时是 'idle'
+const markDeployed = () => { waitStage.value = 'deployed' }
+// 已部署完 → 直接进第三步。不能点「重试部署」：程序目录已存在，
+// step2 的 verify_required 会返回 conflict（目录冲突），
+// 于是用户被弹到「是否复用已有目录」的岔路上 —— 而他真正缺的是去登录。
+const goLogin = () => guard(async () => {
+  step.value = 3
+  await enterStep3()
+})
 const conn = ref({ direction: 'forward', addr: '', token: '' })
 const preview = ref(''), manual = ref('')
 const pending = ref([])          // 中间态实例（断点续跑入口）
@@ -812,7 +843,19 @@ const resume = async p => {
   dice.value = p.dice
   role.value = loginPrograms.value.includes(p.dice) ? 'login' : 'app'
   const ns = Math.min(p.next_step || 1, 5)
-  if (ns === 2) { step.value = 2; return }
+  // ns===2 = 部署到一半中断。从这里续跑的用户是在「待部署」列表点「继续」进来的，
+  // 之前只把 UI 停在第二步就return —— 但**没有任何地方在部署成功后推进到第三步**
+  //（startCreate 那条路有，下面 doStep(2) 成功后统一推进）。
+  // 症状：部署完成却一直停在第二步、登录端不出二维码、LLBot 的
+  // auth_token.txt 永不落盘（缺它程序启动即退出）→ 看着像「部署卡住」。
+  // resumed=true 表示这次部署来自续跑，部署成功后要走 enterStep3 而非跳到链接区。
+  if (ns === 2) {
+    step.value = 2; resumed.value = true
+    // next_step 停在 2 = 后端认为还没部署完。程序目录已存在说明这次是「装到一半」
+    // （例如 auth_token 未落盘导致起不来），按钮给「开始部署」而不是含糊的等待。
+    waitStage.value = 'idle'
+    return
+  }
   // next_step 3 与 5 都落在第三步。5 = 已过登录态（CONFIGURED/RUNNING）：
   // 此时不能再发 step3（会对已配置好的实例重跑 configure_login），只补齐链接区数据
   step.value = 3
@@ -856,6 +899,18 @@ const doStep = async (n, payload) => {
     if (r.preview) preview.value = r.preview
     // 登录步后端判定无需登录（official / 登录已完成）时直接进入链接环节
     if (n === 3 && (r.skipped || r.needs_login === false)) onLoggedIn()
+    // 部署成功 → 推进到第三步。
+    // **仅对 resumed（断点续跑）做**：正常新建那条路由 resolve() 负责推进，
+    // 在这里无条件推进会让它进两次 enterStep3（多发一次 step3，
+    // 对已配置的实例重跑 configure_login）。
+    // 为什么续跑这条曾经漏：部署有两条入口（create / 续跑），推进只写在 resolve 里，
+    // 漏了续跑那条 —— 症状正是「部署完成却停在第二步、登录端不出二维码」。
+    if (n === 2) markDeployed()
+    if (n === 2 && resumed.value && step.value === 2) {
+      resumed.value = false
+      step.value = 3
+      await enterStep3().catch(e => { err.value = e.message || String(e) })
+    }
     return r
   } catch (e) {
     // 部署失败就地展示（重试/上传压缩包），不再抛给 guard 重复报错
@@ -1298,6 +1353,13 @@ pre.preview {
 .done-card code { font-family: ui-monospace, Menlo, Consolas, monospace; }
 
 /* ---------- 登录日志（可选，默认收起）---------- */
+/* 等待态：既没进度条也没报错时的「明确出路」面板 */
+.step-wait {
+  margin: 14px 0; padding: 14px 16px;
+  border: 1px dashed var(--border); border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.step-wait .ops { margin-top: 10px; }
 .login-logs { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
 .ll-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .ll-head .ops { margin: 0; }          /* 复用 .ops 但不引入它自带的 margin-top */
