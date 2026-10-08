@@ -193,7 +193,9 @@ class LLBotAdapter(BaseAdapter):
         刻意不做「自动带入并跳过用户确认」——token 属于凭据，前端要显式告知
         来源，用户仍能改；静默复用会让「我填的是哪个 token」变得不可知。
         """
-        newest: tuple[str, str, str] | None = None   # (mtime, token, instance_id)
+        # (mtime, token, instance_id) —— mtime 是 float（p.stat().st_mtime），
+        # 别标成 str：mypy 会因key[0] > newest[0] 拿 float 和 str 比而报错
+        newest: tuple[float, str, str] | None = None
         # 只看 llbot：别的程序没有这个文件概念
         candidates = []
         if registry is not None:
