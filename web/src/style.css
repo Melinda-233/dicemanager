@@ -131,10 +131,16 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
    ⚠️ 不能写 `.topo rect` —— 那会一并命中图标里的 <rect>（停止图标就是 rect），
    用白色 fill 把它盖掉，图标于是「看不见」。
    呈现属性（fill="currentColor"）优先级**低于** CSS 规则，所以必须靠选择器规避。 */
-.topo .node-box, .topo rect:not([class]) {
+.topo .node-box {
   fill: var(--panel); stroke: var(--border); stroke-width: 1; transition: stroke .15s;
 }
-.topo .node-box:hover, .topo rect:not([class]):hover { stroke: var(--brand); }
+.topo .node-box:hover { stroke: var(--brand); }
+/* 图标一律用 style 属性着色（内联 CSS，优先级高于任何选择器），
+   这里只给停止图标那个 <rect> 一个兜底类。
+   ⚠️ **不要用 `.topo rect:not([class])` 来排除图标** —— 图标里的 <rect>
+   同样没有 class 属性，会被一并命中又染白（这正是它一度不显示的原因）。
+   实例方框用 .node-box 显式标记，别用属性选择器去猜。 */
+.topo .qico-mark { fill: var(--text); stroke: none; }
 .topo text { font-size: 13px; font-weight: 600; text-anchor: middle; fill: var(--text); }
 .topo text.sub { font-size: 11px; font-weight: 400; fill: var(--muted); }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }

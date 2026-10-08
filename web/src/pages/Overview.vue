@@ -88,26 +88,27 @@
           <rect :x="-36" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'start')"
                 :class="{off: n.state === 'RUNNING'}">
-            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" fill="currentColor"/>
+            <path d="M-30.5 28.5 L-21 34 L-30.5 39.5 Z" style="fill:var(--text)"/>
             <title>启动 {{ n.dice }}</title></rect>
           <rect x="-10" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'stop')"
                 :class="{off: n.state !== 'RUNNING'}">
-            <rect x="-4.5" y="29.5" width="9" height="9" fill="currentColor"/>
+            <rect x="-4.5" y="29.5" width="9" height="9" class="qico-mark"
+                  style="fill:var(--text)"/>
             <title>停止 {{ n.dice }}</title></rect>
           <!-- 重启：圆弧圆心与方块中心 (26,34) 重合，缺口开在右侧，箭头贴在右上端点 -->
           <rect x="16" y="24" width="20" height="20" rx="4" class="qbtn"
                 @click="quickOp(n.id, 'restart')">
-            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" fill="none" stroke="currentColor"
+            <path d="M28.9 29.9 A5 5 0 1 0 28.9 38.1" style="fill:none;stroke:var(--text)"
                   stroke-width="1.8" stroke-linecap="round"/>
-            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" fill="currentColor"/>
+            <path d="M27.3 32.2 L27.2 28 L31.2 30.8 Z" style="fill:var(--text)"/>
             <title>重启 {{ n.dice }}</title></rect>
         </g>
         <!-- 管理应用放右侧：与启停分开，避免「四个方块里哪个是管理」要认位置 -->
         <rect x="77" y="-10" width="20" height="20" rx="4" class="qbtn qbtn-side"
               @click.stop="quickManage(n)">
-          <circle cx="87" cy="0" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
-          <circle cx="87" cy="0" r="6.2" fill="none" stroke="currentColor" stroke-width="1.7"
+          <circle cx="87" cy="0" r="2.4" style="fill:none;stroke:var(--text)" stroke-width="1.7"/>
+          <circle cx="87" cy="0" r="6.2" style="fill:none;stroke:var(--text)" stroke-width="1.7"
                   stroke-dasharray="2.5 2.1"/>
           <title>管理应用（{{ n.dice }}）</title></rect>
       </g>
