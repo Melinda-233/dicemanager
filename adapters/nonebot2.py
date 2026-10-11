@@ -112,6 +112,54 @@ builtin_plugins = []
 # repo 的实际归属与直觉不同，按 PyPI 的 project_urls 如实登记：
 #   plugin-session 在 **noneplugin** 组织（不是 nonebot）、
 #   plugin-htmlrender 是社区作者 kexue-z，两者都不在 nonebot 组织下。
+# ---------- 基础配置：.env 里两个列表键的读写 ----------
+#
+# ⚠️ 这两个键在 .env 里是 **nonebot 的列表写法（JSON 数组）**，不是逗号分隔。
+# 2026-10-12 在服务器实测（nonebot 2.5.0 + pydantic-settings）：
+#     SUPERUSERS=123,456        → SettingsError: error parsing env var "superusers"
+#     SUPERUSERS=["123","456"]  → 正常
+#     SUPERUSERS=123            → ValidationError: Input should be a valid set
+# 即 pydantic-settings 对 set[str] 字段**只做 json.loads**，不做逗号切分。
+# 写成逗号串的后果不是「配置没生效」，而是**实例下次启动直接失败**。
+#
+# 界面显示与输入仍用逗号分隔（更好读），读写入口在 _parse_env_list / _dump_env_list
+# 做转换。⚠️ 两端都要转：只转读 → 写回去就是非法格式；只转写 → 界面显示带括号引号。
+#
+# 值 = 该键未出现在 .env 时的默认值（读自 nonebot/config.py 实测：
+#   superusers: set[str] = set()、command_start: set[str] = {"/"}）。
+# 键缺失时按默认值显示，否则「明明有默认行为，界面却一片空白」。
+_CONFIG_DEFAULTS: dict[str, str] = {"SUPERUSERS": "", "COMMAND_START": "/"}
+# nonebot 默认指令前缀：清空时回落用（前缀为空集会让每条普通消息都被当成指令）
+DEFAULT_COMMAND_START = "/"
+
+
+def _parse_env_list(raw: str | None) -> list[str]:
+    """.env 的列表值 → list[str]。兼容 JSON 数组 / 逗号分隔 / 裸值三种写法。"""
+    s = (raw or "").strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            v = json.loads(s)
+        except ValueError:
+            v = None
+        if isinstance(v, (list, tuple, set)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        s = s.strip("[]")          # 括号里不是合法 JSON：退化成按逗号切
+    return [p.strip().strip("\"'") for p in s.split(",") if p.strip()]
+
+
+def _dump_env_list(items) -> str:
+    """list[str] → nonebot 唯一能解析的 .env 值（JSON 数组）。
+
+    紧凑分隔（无空格）以贴近 nb-cli 模板的写法，也让「读出来再原样写回」
+    与用户手写的值字面一致 —— 带空格的 JSON 虽然同样合法，但每次保存都会
+    产生一行无意义的文件 diff。
+    """
+    return json.dumps([str(i).strip() for i in items if str(i).strip()],
+                      ensure_ascii=False, separators=(",", ":"))
+
+
 OFFICIAL_PLUGINS: list[dict] = [
     {"name": "Alconna 指令解析", "spec": "nonebot-plugin-alconna",
      "desc": "灵活强大的指令解析：子命令、类型标注、自动补全、模糊匹配",
@@ -713,39 +761,49 @@ class NoneBot2Adapter(BaseAdapter):
         """
         return [
             {"key": "SUPERUSERS", "label": "超级管理员（QQ 号）", "type": "list",
+             "default": "",
              "placeholder": "123456, 789012",
              "hint": "拥有最高权限的 QQ 号，多个用逗号分隔；改后需重启实例生效"},
             {"key": "COMMAND_START", "label": "指令前缀", "type": "list",
-             "placeholder": ".",
-             "hint": "触发指令的前缀，多个用逗号分隔（例如 . 或 /）；改后需重启实例生效"},
+             "default": DEFAULT_COMMAND_START,
+             "placeholder": DEFAULT_COMMAND_START,
+             "hint": "触发指令的前缀，多个用逗号分隔；留空则回落到 nonebot 默认 "
+                     + DEFAULT_COMMAND_START + "。改后需重启实例生效"},
         ]
 
     def read_config(self, instance) -> dict:
+        """读当前值。**返回显示用的纯文本**（`123456,789012`），不带原文件的括号引号。
+
+        .env 里存的是 nonebot 的列表写法（`["2278442823"]`），原样回传的话界面会显示成
+        `["2278442823"]` —— 看着像坏了，其实只是没解析。键不存在时给程序默认值，
+        否则界面空白会让人以为配置丢了。
+        """
         env = read_dotenv(self._env_path(instance))
-        return {"SUPERUSERS": (env.get("SUPERUSERS") or ""),
-                "COMMAND_START": (env.get("COMMAND_START") or "")}
+        out = {}
+        for key, dflt in _CONFIG_DEFAULTS.items():
+            items = _parse_env_list(env.get(key))
+            out[key] = ",".join(items) if items else dflt
+        return out
 
     def write_config(self, instance, values: dict) -> WriteResult:
-        """把超级管理员 / 指令前缀写回 .env。
+        """写回 .env。⚠️ **落盘必须是 JSON 数组**（原因与实测见 _CONFIG_DEFAULTS 注释）。
 
-        list 类型在前端是「逗号分隔文本」，这里按逗号拆分、剔除空项与首尾空格后
-        再合并回逗号串——pydantic-settings 对 set[str] / tuple[str] 字段正是按逗号
-        切分读取，串里带空格反而会被当成值的一部分。
+        界面用逗号分隔输入，这里转回 nonebot 的列表格式；空值回落到程序默认，
+        避免写出 `KEY=` 空串（同样会让 nonebot 启动时解析失败）。
         """
         path = self._env_path(instance)
 
-        def _norm(s):
-            if s is None:
-                return ""
-            return ",".join(p.strip() for p in str(s).split(",") if p.strip())
+        def _val(key):
+            items = _parse_env_list((values or {}).get(key, ""))
+            if not items and _CONFIG_DEFAULTS.get(key):
+                items = [_CONFIG_DEFAULTS[key]]
+            return _dump_env_list(items)
 
-        sup = _norm(values.get("SUPERUSERS", ""))
-        cmd = _norm(values.get("COMMAND_START", ""))
-        atomic_write_dotenv(path, lambda c: {**c, "SUPERUSERS": sup,
-                                             "COMMAND_START": cmd})
+        updates = {k: _val(k) for k in _CONFIG_DEFAULTS}
+        atomic_write_dotenv(path, lambda c: {**c, **updates})
         return WriteResult(
             ok=True, path=str(path),
-            manual="已写入 .env（SUPERUSERS / COMMAND_START）。\n"
+            manual="已写入 .env（SUPERUSERS / COMMAND_START），按 nonebot 要求的列表格式保存。\n"
                    "⚠️ nonebot2 不支持配置热加载，需重启该实例后生效。")
 
     def extra_manage_capabilities(self, instance) -> list[dict]:

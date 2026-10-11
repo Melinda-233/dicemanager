@@ -513,8 +513,8 @@ def write_conn_config(self, instance, mode: str, direction: str,
 | `extra_manage_capabilities(instance) -> list[dict]` | `[]` | 本程序有 WebUI 之外的可管理对象时（NoneBot2 的插件/依赖）。⚠️ 覆写时**不要**自己判 WebUI 有无——那由 `manage_capabilities` 统一判定，否则 WebUI 入口会被这行覆写吞掉 |
 | `list_plugins / install_package / uninstall_package` | **不存在这三个方法** | 提供可安装的插件/依赖时。⚠️ 这是**鸭子类型探测**（`hasattr`）：API 层靠 `hasattr` 决定是否开放对应端点，不实现就没有该功能 |
 | `config_schema(instance) -> list[dict] \| None` | `None`（= 本程序不支持面板配置） | 无自带 WebUI、需要面板代管基础配置时（NoneBot2 的 `SUPERUSERS` / `COMMAND_START`）。返回 `None` 则 `/manage` 不下发 `config`、且 `POST /config` 返回 400 |
-| `read_config(instance) -> dict` | `{}` | 与 `config_schema` 成对实现，返回当前值（键同 schema）。打开弹窗时前端依此**回填输入框** |
-| `write_config(instance, values) -> WriteResult` | `WriteResult(ok=False, manual="该程序不支持由面板写入配置")` | 与 `config_schema` 成对实现，把 values 按本程序的配置格式落盘 |
+| `read_config(instance) -> dict` | `{}` | 与 `config_schema` 成对实现，返回当前值（键同 schema）。打开弹窗时前端依此**回填输入框**。返回的是**显示用**的值：程序配置里存的是 `["2278442823"]` 的话，应回 `2278442823`，原样回传会让界面看着像坏了 |
+| `write_config(instance, values) -> WriteResult` | `WriteResult(ok=False, manual="该程序不支持由面板写入配置")` | 与 `config_schema` 成对实现，把 values 按本程序的配置格式落盘。⚠️ **落盘格式必须是程序真能解析的那种**：NoneBot2 的 `SUPERUSERS` 只接受 JSON 数组（`["123"]`），写成 `123,456` 会让实例下次启动直接 SettingsError（2026-10-12 实测）。界面格式与落盘格式不一致时，读写**两端都要转**——只在写端转，界面就会显示带括号引号的值 |
 | `config_restart_required = True`（类属性） | `True` | 改配置后**必须重启**才生效的程序保持默认（NoneBot2）；支持热加载的程序设 `False`，前端提示随之变化 |
 | `official_plugins(instance) -> list[dict]` | `[]`（前端退回「自由输入 pip 规格」） | 提供「安装插件」下拉的候选：`[{name, spec, desc, repo}]`，前端会**过滤掉已安装**的。⚠️ `spec` 必须是**真实存在**的 PyPI 包名 —— 写错在界面上完全看不出来（能选能点，只有 pip 装时才失败） |
 

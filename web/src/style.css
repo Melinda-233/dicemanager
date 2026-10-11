@@ -180,6 +180,12 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel); color: var(--text);
 }
+/* 选中插件的说明 + 仓库地址：加一道竖线把这块从周围的说明文字里拉出来，
+   否则两行灰色小字混在一起，等于没写 */
+.plug-info {
+  margin: 6px 0; padding: 4px 0 4px 8px;
+  border-left: 2px solid var(--border);
+}
 /* 插件仓库地址：可点开看文档，但别让下划线把提示文字搅乱 */
 .manage-cap a { color: var(--brand); text-decoration: none; }
 .manage-cap a:hover { text-decoration: underline; }

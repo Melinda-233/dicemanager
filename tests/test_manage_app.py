@@ -12,6 +12,7 @@
 做法参考 tests/test_link_webui.py。
 """
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -200,10 +201,19 @@ def test_manage_config_is_none_for_webui_program():
     assert r["config"] is None
 
 
-def test_config_save_writes_env_for_nonebot2():
-    """保存端点把超级管理员/指令前缀写回 .env，且按逗号归一（去空格）。
+def _env_value(env_text: str, key: str):
+    """取出 .env 里某键的原文值（供 json 回读用）。"""
+    return next(l.split("=", 1)[1] for l in env_text.splitlines()
+                if l.startswith(key + "="))
 
-    适配器按各自格式落盘，这里验 nonebot2 的 .env 路径与值正确性。
+
+def test_config_save_writes_env_for_nonebot2():
+    """保存端点把超级管理员/指令前缀写回 .env。
+
+    ⚠️ 必须落成 **JSON 数组**（nonebot 的列表写法），不是逗号分隔：pydantic-settings
+    对 set[str] 字段只做 json.loads，逗号串会让实例下次启动直接 SettingsError
+    （2026-10-12 在服务器 nonebot 2.5.0 实测）。故这里用 json.loads 回读——
+    只比对字符串的话，格式退化成逗号也能蒙混过关。
     """
     d = Path(tempfile.mkdtemp(prefix="dm_nb_save_"))
     _mk("m-nbsave", "nonebot2", webui=None)
@@ -212,8 +222,41 @@ def test_config_save_writes_env_for_nonebot2():
             {"values": {"SUPERUSERS": "123456, 789012 ", "COMMAND_START": "., /"}}))
     assert r["ok"] is True
     env = (d / ".env").read_text("utf-8")
-    assert "SUPERUSERS=123456,789012" in env
-    assert "COMMAND_START=.,/" in env
+    assert 'SUPERUSERS=["123456","789012"]' in env
+    assert 'COMMAND_START=[".","/"]' in env
+    # 落盘值必须真是 nonebot 能解析的列表（json 合法即可，不依赖 nonebot 在场）
+    assert json.loads(_env_value(env, "SUPERUSERS")) == ["123456", "789012"]
+    assert json.loads(_env_value(env, "COMMAND_START")) == [".", "/"]
+
+
+def test_config_read_shows_plain_values_and_defaults():
+    """.env 里的列表写法要显示成纯文本；键缺失时给 nonebot 默认值。
+
+    界面原样回显 .env 值的话会显示成 ["2278442823"]（看着像坏了，其实只是没解析）；
+    COMMAND_START 未配置时 nonebot 实际用的是默认 "/"，显示空白等于骗人。
+    """
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_read_"))
+    _mk("m-nbread", "nonebot2", webui=None)
+    ctx.registry.update("m-nbread", dir=str(d))
+    (d / ".env").write_text('SUPERUSERS=["2278442823"]\n', "utf-8")
+    vals = instance_manage("m-nbread", None)["config"]["values"]
+    assert vals["SUPERUSERS"] == "2278442823"     # 不带括号引号
+    assert vals["COMMAND_START"] == "/"           # 缺失 → nonebot 默认
+
+
+def test_config_save_empty_falls_back_to_default():
+    """清空选项不能写出空值：`KEY=` 空串同样会让 nonebot 启动解析失败。
+
+    指令前缀留空回落到默认 "/"，因为空前缀意味着每条普通消息都被当成指令。
+    """
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_empty_"))
+    _mk("m-nbempty", "nonebot2", webui=None)
+    ctx.registry.update("m-nbempty", dir=str(d))
+    _run(instance_config_save("m-nbempty",
+                              {"values": {"SUPERUSERS": "", "COMMAND_START": "  "}}))
+    env = (d / ".env").read_text("utf-8")
+    assert json.loads(_env_value(env, "SUPERUSERS")) == []
+    assert json.loads(_env_value(env, "COMMAND_START")) == ["/"]
 
 
 def test_config_save_rejects_unsupported_program():

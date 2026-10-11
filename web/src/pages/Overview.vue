@@ -431,16 +431,21 @@
               <select v-model="pickedPlugin" @change="onPickPlugin" :disabled="manageBusy">
                 <option value="">选择官方插件…（{{ pluginCatalog.length }} 个可装）</option>
                 <option v-for="p in pluginCatalog" :key="p.spec" :value="p.spec">
-                  {{ p.name }} · {{ p.spec }}</option>
+                  {{ p.name }} · {{ p.desc }}</option>
               </select>
             </div>
-            <!-- 选中项的一句话说明 + 仓库地址：装之前能先看一眼它是什么、去哪儿看文档 -->
-            <template v-if="pickedInfo">
+            <!-- 选中项的一句话说明 + 仓库地址：装之前能先看一眼它是什么、去哪儿看文档。
+                 ⚠️ 未选中时也要留一行提示 —— 只在选中后才冒出来的话，
+                 「仓库地址在哪」根本无从发现（仓库地址就是这么被漏看的）。 -->
+            <div v-if="pickedInfo" class="plug-info">
               <p class="hint">{{ pickedInfo.desc }}</p>
               <p class="hint">插件仓库：
-                <a :href="pickedInfo.repo" target="_blank" rel="noopener">{{ pickedInfo.repo }}</a>
+                <a class="lnk" :href="pickedInfo.repo" target="_blank" rel="noopener">{{ pickedInfo.repo }}</a>
               </p>
-            </template>
+            </div>
+            <p v-else-if="pluginCatalog.length" class="hint">
+              从上方选一个官方插件，这里会显示它的一句话说明与仓库地址。
+            </p>
             <div class="manage-row">
               <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
                      @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
