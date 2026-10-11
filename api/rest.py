@@ -169,6 +169,17 @@ def set_account_password(username: str, body: dict):
     auth.set_password(username, body.get("new_password", ""))
     return {"ok": True, "note": "密码已修改，该用户需重新登录"}
 
+@admin_router.post("/accounts/{username}/revoke")
+def revoke_account_sessions(username: str, user: CurrentUser = Depends(require_admin)):
+    """强制下线：吊销该用户全部会话，账号本身保留。
+
+    对应账号页「强制下线」按钮 —— 账号还在、密码没变，只是把对方踢下线重新登录，
+    用于疑似会话泄露时止损。账号不存在时 auth 直接抛 404。
+    """
+    auth.revoke_sessions(username)
+    return {"ok": True, "revoked": username,
+            "note": "该用户全部会话已失效，需重新登录"}
+
 @admin_router.get("/accounts/{username}/instances")
 def admin_user_instances(username: str, _admin: CurrentUser = Depends(require_admin)):
     """某用户名下的全部实例（管理员视角）。

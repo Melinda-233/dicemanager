@@ -411,7 +411,10 @@
           <p v-if="cfgMsg" class="hint">{{ cfgMsg }}</p>
         </template>
       </div>
-      <template v-else-if="manage.capabilities && manage.capabilities.length">
+      <!-- ⚠️ 这里是 v-if 不是 v-else-if：基础配置与下面的能力（插件管理）是两块
+           **并存**的内容 —— 用户要的就是「配置往下翻还能看到插件管理」。
+           写成 v-else-if 的话，程序一旦有 config，插件管理就永远不渲染。 -->
+      <template v-if="manage.capabilities && manage.capabilities.length">
         <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
           <b>{{ c.label }}</b>
           <p v-if="c.disabled_reason" class="hint warn">{{ c.disabled_reason }}</p>
@@ -422,6 +425,22 @@
             <p v-if="c.missing && c.missing.length" class="hint warn">
               缺少依赖：{{ c.missing.join('、') }}
             </p>
+            <!-- 官方插件下拉：只列**尚未安装**的候选（装过的从下拉里消失）。
+                 选中即填入下方输入框；输入框保留，便于装目录里没有的第三方插件。 -->
+            <div class="manage-row" v-if="pluginCatalog.length">
+              <select v-model="pickedPlugin" @change="onPickPlugin" :disabled="manageBusy">
+                <option value="">选择官方插件…（{{ pluginCatalog.length }} 个可装）</option>
+                <option v-for="p in pluginCatalog" :key="p.spec" :value="p.spec">
+                  {{ p.name }} · {{ p.spec }}</option>
+              </select>
+            </div>
+            <!-- 选中项的一句话说明 + 仓库地址：装之前能先看一眼它是什么、去哪儿看文档 -->
+            <template v-if="pickedInfo">
+              <p class="hint">{{ pickedInfo.desc }}</p>
+              <p class="hint">插件仓库：
+                <a :href="pickedInfo.repo" target="_blank" rel="noopener">{{ pickedInfo.repo }}</a>
+              </p>
+            </template>
             <div class="manage-row">
               <input v-model="pkgSpec" placeholder="包名或 pip 规格，如 nonebot-plugin-alconna"
                      @keyup.enter="doInstallPkg" :disabled="manageBusy"/>
@@ -456,7 +475,7 @@
           </template>
         </div>
       </template>
-      <p v-else class="hint">该程序未提供可管理的能力。</p>
+      <p v-if="!manage.config && !(manage.capabilities || []).length" class="hint">该程序未提供可管理的能力。</p>
       <p v-if="manageMsg" class="hint">{{ manageMsg }}</p>
     </div>
     </div>
@@ -470,7 +489,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
 import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
@@ -653,7 +672,14 @@ const quickOp = (id, o) => guard(async () => {
 // 否则切到别的实例再点一下会误判成「收起」。
 let manageOpenFor = null
 const quickManage = (n = null) => guard(async () => {
-  if (n) sel.value = n
+  // ⚠️ 「齿轮要点两次才开」的真因：下面那个 watch(sel) 在切换实例时会把
+  // manageOpen 置回 false，而 watcher 是**下一个 flush** 才跑 —— 它晚于本函数
+  // 里的 manageOpen = true，于是第一次点击「开了又立刻被关」，必须点第二次才留得住。
+  // 故确需切实例时：先切 → await nextTick() 让收起逻辑跑完 → 再往下打开。
+  if (n && sel.value?.id !== n.id) {
+    sel.value = n
+    await nextTick()
+  }
   if (!sel.value) return
   if (manageOpen.value && manageOpenFor === sel.value.id) {
     manageOpen.value = false          // 再点一次：收起
@@ -667,6 +693,8 @@ const quickManage = (n = null) => guard(async () => {
   const cap = await instanceManage(sel.value.id)   // 先取能力再决定去哪儿
   manage.value = cap
   depsData.value = depsDataOf()
+  syncConfigVals(cap)                 // 齿轮进来也要回填，否则配置框一片空白
+  pickedPlugin.value = ''
   // 有 WebUI 能力 → 直接开新窗口，面板本身收起（用户要的是「去它那儿管理」）
   if ((cap?.capabilities || []).some(c => c.kind === 'webui')) {
     manageOpen.value = false
@@ -836,12 +864,12 @@ const depsDataOf = () => manage.value?.data?.python_deps || null
 // 基础配置表单：与 manage.config.schema 同键的本地副本，保存时原样发回后端
 const configVals = ref({}), cfgBusy = ref(false), cfgMsg = ref('')
 
-const loadManage = () => guard(async () => {
-  manageErr.value = ''
-  manage.value = await instanceManage(sel.value.id)
-  depsData.value = depsDataOf()
-  // 初始化基础配置表单：schema 里的字段取后端当前值，缺失则给类型化默认值
-  const cfg = manage.value?.config
+// 把后端当前值填进配置表单：schema 里的字段取后端值，缺失给类型化默认值。
+// ⚠️ 两个入口都要调：齿轮进来的 quickManage、以及刷新 / 保存后的 loadManage。
+// 只在 loadManage 里填的话，走齿轮打开就是一片空白 ——
+// 看着像「配置没保存上 / 丢了」，实际只是没回填。
+const syncConfigVals = cap => {
+  const cfg = cap?.config
   const next = {}
   for (const f of (cfg?.schema || [])) {
     const raw = cfg?.values?.[f.key]
@@ -849,6 +877,31 @@ const loadManage = () => guard(async () => {
       ? (f.default ?? (f.type === 'bool' ? false : '')) : raw
   }
   configVals.value = next
+}
+
+const loadManage = () => guard(async () => {
+  manageErr.value = ''
+  manage.value = await instanceManage(sel.value.id)
+  depsData.value = depsDataOf()
+  syncConfigVals(manage.value)
+})
+
+// ---------- 插件候选下拉（官方目录 − 已装）----------
+// 目录由适配器声明（base 默认空列表 → 不显示下拉，退回自由输入 pip 规格，
+// 其它程序的行为与加这个能力之前完全一致）。
+// 已装的从下拉里去掉：重复安装 pip 只会回一句 already satisfied，
+// 用户却会以为真的装上了新东西。
+const pickedPlugin = ref('')
+const onPickPlugin = () => { if (pickedPlugin.value) pkgSpec.value = pickedPlugin.value }
+const pluginCatalog = computed(() => {
+  const installed = new Set((depsData.value?.packages || []).map(p => p.name))
+  return (depsData.value?.catalog || []).filter(p => p.spec && !installed.has(p.spec))
+})
+// 选中的（或手打成同名规格的）候选：给一句话说明 + 仓库地址，装之前能先看一眼
+const pickedInfo = computed(() => {
+  const s = (pkgSpec.value || '').trim().toLowerCase()
+  if (!s) return null
+  return (depsData.value?.catalog || []).find(p => p.spec.toLowerCase() === s) || null
 })
 
 // 保存基础配置：适配器按各自格式落盘，写后是否需重启由后端告知，发完刷新一次能力列表

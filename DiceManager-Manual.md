@@ -333,6 +333,9 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}` |
 | POST | `/api/instances/{id}/{op}` | `op ∈ start / stop / restart`；已在运行返回 409 |
 | DELETE | `/api/instances/{id}` | `?confirm=true&remove_dir=&keep_save=`；缺 confirm 返回 400 |
+| GET | `/api/instances/{id}/manage` | 「管理应用」弹窗的数据源 → `{capabilities, data, config?}`。`config` **仅当适配器 `config_schema` 非 None 时**才出现（见 §6.3） |
+| POST | `/api/instances/{id}/config` | 写基础配置：`{values}` → `{ok, manual, path, restart_required}`。适配器 `config_schema` 为 None（不支持面板配置）时返回 400 |
+| POST | `/api/admin/accounts/{username}/revoke` | 强制下线：吊销该用户**全部会话**，账号本身保留（对应账号页「强制下线」按钮）。账号不存在时 404 |
 | POST | `/api/instances/{id}/backup` | **备份导入**：原始字节流上传 zip/tar 系（2GB 上限）。流程：运行中先停机 → 魔数识别 + 完整性校验 → 解压覆盖到实例目录（只覆盖包内文件、不删包外文件；zip-slip 整体前置校验；顶层目录歧义按「与已有路径命中多者胜、平手剥离」消解，见 `core/backup.py`）→ 自动重启。恢复失败也会把实例拉回运行态 |
 | GET | `/api/packages` | 本地包列表 |
 | POST | `/api/packages/{dice}` | 原始字节流上传 |
@@ -348,6 +351,9 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 
 > 路由顺序坑：`/packages/unused`、`/exports/prune` 这类「字面量子路径」必须注册在
 > `/packages/{dice}`、`/exports/{name}` 之前，否则会被当成参数值吞掉。
+> 同理 `/instances/{id}/config`、`/instances/{id}/plugins/*` 必须注册在
+> `/instances/{id}/{op}` **之前** —— 否则 `config`、`plugins` 会被当成 `op` 的值。
+> 这类错的表现是「接口 400/404 但路由明明写了」，`tests/test_optim.py` 有专门守卫。
 
 静态资源：若 `web/dist` 存在则挂载在 `/`（SPA，`html=True`）；不存在时服务照常启动，只在控制台警告「仅提供 API」。
 
@@ -506,6 +512,11 @@ def write_conn_config(self, instance, mode: str, direction: str,
 | `extract_verify(line) -> dict \| None` | 匹配 `ticket url: <url>` | 滑块验证的日志锚点不同时 |
 | `extra_manage_capabilities(instance) -> list[dict]` | `[]` | 本程序有 WebUI 之外的可管理对象时（NoneBot2 的插件/依赖）。⚠️ 覆写时**不要**自己判 WebUI 有无——那由 `manage_capabilities` 统一判定，否则 WebUI 入口会被这行覆写吞掉 |
 | `list_plugins / install_package / uninstall_package` | **不存在这三个方法** | 提供可安装的插件/依赖时。⚠️ 这是**鸭子类型探测**（`hasattr`）：API 层靠 `hasattr` 决定是否开放对应端点，不实现就没有该功能 |
+| `config_schema(instance) -> list[dict] \| None` | `None`（= 本程序不支持面板配置） | 无自带 WebUI、需要面板代管基础配置时（NoneBot2 的 `SUPERUSERS` / `COMMAND_START`）。返回 `None` 则 `/manage` 不下发 `config`、且 `POST /config` 返回 400 |
+| `read_config(instance) -> dict` | `{}` | 与 `config_schema` 成对实现，返回当前值（键同 schema）。打开弹窗时前端依此**回填输入框** |
+| `write_config(instance, values) -> WriteResult` | `WriteResult(ok=False, manual="该程序不支持由面板写入配置")` | 与 `config_schema` 成对实现，把 values 按本程序的配置格式落盘 |
+| `config_restart_required = True`（类属性） | `True` | 改配置后**必须重启**才生效的程序保持默认（NoneBot2）；支持热加载的程序设 `False`，前端提示随之变化 |
+| `official_plugins(instance) -> list[dict]` | `[]`（前端退回「自由输入 pip 规格」） | 提供「安装插件」下拉的候选：`[{name, spec, desc, repo}]`，前端会**过滤掉已安装**的。⚠️ `spec` 必须是**真实存在**的 PyPI 包名 —— 写错在界面上完全看不出来（能选能点，只有 pip 装时才失败） |
 
 #### 基类可复用的工具
 

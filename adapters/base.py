@@ -598,6 +598,25 @@ class BaseAdapter(ABC):
         默认不支持（config_schema 为 None 时不会被调用）。"""
         return WriteResult(ok=False, manual="该程序不支持由面板写入配置")
 
+    def official_plugins(self, instance) -> list[dict]:
+        """官方 / 常用插件目录：供面板下拉选择安装（**已装的由前端过滤掉**）。
+
+        返回 [{"name", "spec", "desc", "repo"}]：
+          name = 展示名（中文一句话，给人看的）
+          spec = pip 规格（真实包名，可带版本约束，直接喂给 pip install）
+          desc = 一句话说明这个插件干什么
+          repo = 插件仓库地址（展示给用户，便于看文档 / 报 issue）
+
+        **默认空列表** = 本程序不提供候选，前端退回「自由输入 pip 规格」那一个
+        输入框（行为与加这个钩子之前完全一致，其它程序不受影响）。
+
+        ⚠️ spec 必须是**真实存在**的 PyPI 包名：写错的话 pip 会去装一个空壳包
+        或干脆失败，而这类错在界面上看不出来（下拉里照样能选、照样能点安装，
+        只有装完才发现不对）。增删条目请对着 PyPI 逐个核对 ——
+        建目录时 6 个候选里有 1 个（`nonebot-plugin-saa`）就是这么被筛掉的。
+        """
+        return []
+
     def _webui_port(self, instance) -> int | None:
         """本实例的 WebUI 端口；无 WebUI 返回 None。
 

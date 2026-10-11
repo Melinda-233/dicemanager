@@ -101,6 +101,39 @@ builtin_plugins = []
 """
 
 
+# 官方 / 常用插件目录：面板「安装插件」下拉的候选（已装的会被前端过滤掉）。
+#
+# ⚠️⚠️ **每一条的 spec 与 repo 都对着 PyPI / GitHub 逐个核过（2026-10-12）**：
+# 这类错在界面上完全看不出来 —— 下拉里能选、按钮能点，只有 pip 装的时候才失败
+# （或更糟：装了个空壳包，退出码还是 0）。改动前请重新核对，别凭印象增删。
+#
+# 核对结果（建目录时 7 个候选里筛掉 1 个）：
+#   nonebot-plugin-saa → PyPI 404（不存在），已排除。
+# repo 的实际归属与直觉不同，按 PyPI 的 project_urls 如实登记：
+#   plugin-session 在 **noneplugin** 组织（不是 nonebot）、
+#   plugin-htmlrender 是社区作者 kexue-z，两者都不在 nonebot 组织下。
+OFFICIAL_PLUGINS: list[dict] = [
+    {"name": "Alconna 指令解析", "spec": "nonebot-plugin-alconna",
+     "desc": "灵活强大的指令解析：子命令、类型标注、自动补全、模糊匹配",
+     "repo": "https://github.com/nonebot/plugin-alconna"},
+    {"name": "APScheduler 定时任务", "spec": "nonebot-plugin-apscheduler",
+     "desc": "定时任务调度（cron / interval / date 三种触发器）",
+     "repo": "https://github.com/nonebot/plugin-apscheduler"},
+    {"name": "ORM 数据库支持", "spec": "nonebot-plugin-orm",
+     "desc": "SQLAlchemy ORM 支持，供插件持久化存数据",
+     "repo": "https://github.com/nonebot/plugin-orm"},
+    {"name": "LocalStore 本地存储", "spec": "nonebot-plugin-localstore",
+     "desc": "统一的插件数据 / 缓存 / 配置目录，避免各插件自己乱放",
+     "repo": "https://github.com/nonebot/plugin-localstore"},
+    {"name": "Session 会话信息", "spec": "nonebot-plugin-session",
+     "desc": "会话信息提取与统一会话 ID（多平台场景下的会话抽象）",
+     "repo": "https://github.com/noneplugin/nonebot-plugin-session"},
+    {"name": "HTML 渲染", "spec": "nonebot-plugin-htmlrender",
+     "desc": "把 HTML / Markdown / 模板渲染成图片发送",
+     "repo": "https://github.com/kexue-z/nonebot-plugin-htmlrender"},
+]
+
+
 class NoneBot2Adapter(BaseAdapter):
     # 骰子端是OneBot **客户端**（主动连登录端），不监听任何互联端口。
     # 与 OlivaDice / ShikiAdapter 同款：进程存活即视为已连接。
@@ -735,6 +768,14 @@ class NoneBot2Adapter(BaseAdapter):
 
     # ---------- 插件管理（pip install --target libs）----------
 
+    def official_plugins(self, instance) -> list[dict]:
+        """面板「安装插件」下拉的候选（目录内容与核对说明见 OFFICIAL_PLUGINS）。
+
+        返回**副本**而非常量本身：前端只读，但一旦被下游就地改动，
+        会污染之后所有实例的候选列表。
+        """
+        return [dict(p) for p in OFFICIAL_PLUGINS]
+
     def list_plugins(self, instance) -> dict:
         """已装插件 / 缺依赖 / 目录形态插件，供「管理应用」面板渲染。
 
@@ -756,6 +797,9 @@ class NoneBot2Adapter(BaseAdapter):
                 if _is_plugin_name(name)
             ],
             "dir_plugins": [{"name": n, "path": str(pdir / n)} for n in dirs],
+            # 官方插件候选（下拉用）。随已装列表一起下发，前端才有得比对
+            # 「哪些已经装过了、该从下拉里隐藏掉」。
+            "catalog": self.official_plugins(instance),
             "missing": self._deps_missing(instance),
             "libs_path": str(libs),
         }

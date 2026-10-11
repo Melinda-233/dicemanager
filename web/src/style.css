@@ -173,6 +173,16 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
 .cfg-row input[type="checkbox"] { width: 16px; height: 16px; vertical-align: middle; margin-left: 2px; }
 .manage-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
 .manage-row input { flex: 1 1 260px; min-width: 0; }
+/* 官方插件下拉：与同排输入框同一套规格（否则 select 会用浏览器默认样式，
+   深色主题下是白底黑字，看着像「这块没做」） */
+.manage-row select {
+  flex: 1 1 260px; min-width: 0; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel); color: var(--text);
+}
+/* 插件仓库地址：可点开看文档，但别让下划线把提示文字搅乱 */
+.manage-cap a { color: var(--brand); text-decoration: none; }
+.manage-cap a:hover { text-decoration: underline; }
 .pkg-list { margin-top: 10px; }
 .pkg-row {
   display: flex; gap: 8px; align-items: center;
