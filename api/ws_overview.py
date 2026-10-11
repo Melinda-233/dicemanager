@@ -13,6 +13,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from api.auth import auth
 from api.context import ctx
+from adapters.base import BaseAdapter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -181,8 +182,21 @@ async def overview_loop(ws: WebSocket, user=None):
                     inst = SimpleNamespace(**rec)
                     try:
                         hc = ctx.get_adapter(rec["dice"]).health_check(inst, is_alive=alive)
+                        state = EDGE_STATES.get(hc["conn"], "dashed-gray")
+                        # 客户端式骰子端（nonebot2 这类 HEALTH_PORT_KEYS 为空的）的
+                        # health_check 只判「进程活着」，不判「是否真连上登录端」。
+                        # 补探目标登录端的 OneBot 端口：登录端没起来 → 端口不可达 →
+                        # 边标红（连接失败）。否则 nonebot 反复重连、拓扑图却一直显示
+                        # 「已连接」（2026-10-12 实测）。
+                        if hc.get("conn") == "ok":
+                            dst_inst = ctx.registry.get(dst)
+                            if dst_inst is not None:
+                                _ob11 = (getattr(dst_inst, "allocated_ports", None)
+                                         or {}).get("ob11")
+                                if _ob11 and not BaseAdapter.tcp_probe("127.0.0.1", _ob11):
+                                    state = EDGE_STATES.get("down", "solid-red")
                         edges.append({"src": rec["id"], "dst": dst,
-                                      "state": EDGE_STATES.get(hc["conn"], "dashed-gray"),
+                                      "state": state,
                                       # 按账号分发：连线标注绑定的 QQ，便于一眼看出一连多/多连一
                                       "account_qq": lk.get("account_qq")})
                     except Exception:
