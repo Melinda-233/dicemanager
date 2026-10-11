@@ -45,15 +45,25 @@ OPK 组合部署同类先例——契约本就留了口子），而非塞进 _ex
 A 实例装插件影响 B 实例。wheel 层由 pip 默认 cache 全局复用（DM_PIP_CACHE_DIR
 可覆盖），已下载的 wheel 不会重复下载。
 """
+import ast
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult
+from adapters.base import (
+    DEPLOY_PROGRESS,
+    DEPLOY_VERSION,
+    BaseAdapter,
+    WriteResult,
+    http_get_json,
+    plugin_op_log,
+    remote_search_disabled,
+)
 from core.atomicio import atomic_write_dotenv, read_dotenv, write_atomic
 from core.locks import program_dir_lock
 
@@ -158,6 +168,75 @@ def _dump_env_list(items) -> str:
     """
     return json.dumps([str(i).strip() for i in items if str(i).strip()],
                       ensure_ascii=False, separators=(",", ":"))
+
+
+# ---------- bot.py 里的插件登记 ----------
+#
+# ⚠️ **装进 libs/ 不等于会被加载**。入口 bot.py 里只有
+# `nonebot.load_plugins('plugins')`，那扫的是**目录形态**插件；pip 装到 libs/
+# 的 PyPI 插件不显式 `nonebot.load_plugin()` 就永远不会被加载 ——
+# 表现为「面板显示已安装，但日志里没有它、功能也没有」（2026-10-12 实测：
+# 装了 apscheduler / localstore 却一个都没进日志）。
+#
+# 登记块写成「列表 + 逐个 try」而不是一行行 load_plugin：
+# 1. 增删插件只需改列表，幂等可重入；
+# 2. 单个插件装坏不会让整个 bot 起不来（跳过并打到实例日志）；
+# 3. 「已被别的插件带进来」不算失败（alconna 依赖 localstore，会先注册它），
+#    否则每次启动都刷一条吓人的警告。
+_PLUGINS_MARK_BEGIN = "# ---- DiceManager 插件登记（面板装卸时自动维护，勿手改）----"
+_PLUGINS_MARK_END = "# ---- /DiceManager 插件登记 ----"
+
+
+def _plugin_module(name: str) -> str:
+    """包名 → 可 import 的模块名（nonebot-plugin-alconna → nonebot_plugin_alconna）。"""
+    return name.strip().lower().replace("-", "_")
+
+
+def _botpy_plugins(instance) -> list[str]:
+    """读 bot.py 当前登记的插件模块名；无登记块返回 []。"""
+    path = Path(instance.dir) / "bot.py"
+    if not path.is_file():
+        return []
+    text = path.read_text("utf-8", errors="replace")
+    m = re.search(re.escape(_PLUGINS_MARK_BEGIN) + r".*?"
+                  + re.escape(_PLUGINS_MARK_END), text, re.S)
+    if not m:
+        return []
+    lst = re.search(r"for _p in (\[.*?\])", m.group(0), re.S)
+    if not lst:
+        return []
+    try:
+        return [str(x) for x in ast.literal_eval(lst.group(1))]
+    except (ValueError, SyntaxError):
+        return []
+
+
+def _botpy_set_plugins(instance, modules: list[str]) -> None:
+    """写回登记块（幂等）。bot.py 不存在就不动 —— 入口归用户，我们不生成它。"""
+    path = Path(instance.dir) / "bot.py"
+    if not path.is_file():
+        return
+    mods = sorted({m for m in modules if m})
+    body = ("for _p in " + repr(mods) + ":\n"
+            "    try:\n"
+            "        nonebot.load_plugin(_p)\n"
+            "    except Exception as _e:\n"
+            "        # 已被别的插件带进来 = 已经加载过了，不是失败，别刷警告\n"
+            "        if \"already exists\" not in str(_e):\n"
+            "            print(\"[DiceManager] 插件加载失败，已跳过：\", _p, _e,"
+            " file=sys.stderr)")
+    block = _PLUGINS_MARK_BEGIN + "\n" + body + "\n" + _PLUGINS_MARK_END
+    text = path.read_text("utf-8", errors="replace")
+    if _PLUGINS_MARK_BEGIN in text and _PLUGINS_MARK_END in text:
+        new = re.sub(re.escape(_PLUGINS_MARK_BEGIN) + r".*?"
+                     + re.escape(_PLUGINS_MARK_END),
+                     lambda _m: block, text, flags=re.S)
+    else:
+        if "nonebot.run()" not in text:
+            return
+        new = text.replace("nonebot.run()", block + "\n\nnonebot.run()", 1)
+    if new != text:
+        write_atomic(path, new.encode("utf-8"))
 
 
 OFFICIAL_PLUGINS: list[dict] = [
@@ -351,21 +430,40 @@ class NoneBot2Adapter(BaseAdapter):
             cmd += ["--index-url", DEFAULT_PIP_INDEX]
         cmd += list(targets)
         self._progress(instance, "pip", 0, len(targets))
+        # ⚠️ 用 Popen 逐行读而不用 subprocess.run(capture_output=True)：
+        # 装一个插件常要几分钟（下载 + 编译），全部憋到结束才吐出来的话，
+        # 界面只能干转圈，用户分不清「在装」还是「卡死了」。逐行写进 PLUGIN_OP
+        # 供前端轮询，pip 的输出本身就是最可信的进度来源。
         # stdin=DEVNULL：pip 在依赖冲突时会问「要不要 --force」（实测 AstrBot /
         # Koishi 的 CLI 都有这毛病）。面板无 TTY，stdin 开着会挂到超时。
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           stdin=subprocess.DEVNULL, timeout=timeout,
-                           env=self._clean_env())
+        key = getattr(instance, "id", "") or ""
+        plugin_op_log(key, "$ " + " ".join(cmd))
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True,
+                                stdin=subprocess.DEVNULL, bufsize=1,
+                                env=self._clean_env())
+        assert proc.stdout is not None  # Popen(stdout=PIPE) 必返回流，仅类型收窄用
+        out: list[str] = []
+        try:
+            for ln in proc.stdout:                      # 行缓冲：bufsize=1 + text
+                out.append(ln)
+                plugin_op_log(key, ln)
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            proc.kill()
+            plugin_op_log(key, f"安装超时（>{timeout}s），已中止")
+            raise RuntimeError(f"依赖安装超时（>{timeout}s），请检查网络后重试") from e
+        text_out = "".join(out)
         # ⚠️ 退出码之外还要验产物：`pip install` 在部分失败情形下仍返回 0
         # （例如只有 wheel 平台不匹配而降级为源码编译成功、或包名拼错被当成
         # 新包名而"成功"装了个空壳）。故检查声明的依赖是否都真的进了 libs/。
-        if r.returncode != 0:
-            tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
+        if proc.returncode != 0:
+            tail = text_out.strip().splitlines()[-6:]
             raise RuntimeError(
-                f"依赖安装失败（rc={r.returncode}）：\n" + "\n".join(tail))
+                f"依赖安装失败（rc={proc.returncode}）：\n" + "\n".join(tail))
         missing = self._deps_missing(instance)
         if missing:
-            tail = (r.stderr or r.stdout or "").strip().splitlines()[-6:]
+            tail = text_out.strip().splitlines()[-6:]
             raise RuntimeError(
                 "依赖安装未完成：pip 退出码是 0，但以下依赖没装上——"
                 + "、".join(missing) + "。\n命令输出：\n"
@@ -834,6 +932,77 @@ class NoneBot2Adapter(BaseAdapter):
         """
         return [dict(p) for p in OFFICIAL_PLUGINS]
 
+    # ---------- 插件搜索 ----------
+    support_plugin_search = True
+    # 两个来源，互为兜底：
+    #   本地 OFFICIAL_PLUGINS（6 条，逐个对着 PyPI 核过）——断网也有结果
+    #   https://registry.nonebot.dev/plugins.json（官方商店全量索引，
+    #   2026-10-12 实测 943 条）——这才是「搜索」真正的的意义所在：
+    #   下拉只能塞 6 条，而生态里有九百多个插件。
+    NB_REGISTRY_URL = "https://registry.nonebot.dev/plugins.json"
+
+    def _search_local(self, q: str) -> list[dict]:
+        """本地目录匹配（name / spec / desc 三个字段都参与）。"""
+        ql = q.lower()
+        return [dict(p, version="", official=True, source="local")
+                for p in OFFICIAL_PLUGINS
+                if ql in f"{p['name']} {p['spec']} {p['desc']}".lower()]
+
+    def _search_remote(self, q: str, limit: int) -> list[dict]:
+        """查 nonebot 官方商店索引。
+
+        字段口径（实测样例）：project_link 是 pip 包名（`nonebot-plugin-status`），
+        module_name 是 import 名（`nonebot_plugin_status`）。前者才是能喂给 pip 的，
+        但个别条目会填成 URL 或留空 —— 这时退回把 module_name 的下划线换成横杠，
+        这是 nonebot 包的惯例命名，比直接丢掉这条有用。
+        """
+        data = http_get_json(self.NB_REGISTRY_URL)
+        if not isinstance(data, list):
+            return []
+        ql = q.lower()
+        # 按相关度排序而非按索引顺序返回：943 条里有大量 desc 里顺带提到关键词的
+        # 包，按原顺序会给用户一堆「答非所问」的结果，真正想要的那个排在几十行后。
+        # 「包名/标题以关键词开头」视为强相关（=0），仅正文命中的弱相关（=1）。
+        # sort 是稳定的，同档内部保持索引原有顺序，不会每次搜索跳来跳去。
+        hits: list[tuple[int, dict]] = []
+        for it in data:
+            if not isinstance(it, dict) or it.get("valid") is False:
+                continue                      # valid=false = 上游标记的下架/失效条目
+            spec = (it.get("project_link") or "").strip()
+            if "/" in spec or " " in spec:    # 填成了 URL 之类的非包名内容
+                spec = ""
+            module = (it.get("module_name") or "").strip()
+            if not spec:
+                spec = module.replace("_", "-")
+            if not spec:
+                continue
+            name = (it.get("name") or "").strip() or spec
+            desc = (it.get("desc") or "").strip()
+            if ql not in f"{name} {desc} {spec} {module}".lower():
+                continue
+            strong = 0 if (spec.lower().startswith(ql) or name.lower().startswith(ql)) else 1
+            hits.append((strong, {"name": name, "spec": spec, "desc": desc,
+                                  "repo": (it.get("homepage") or "").strip(),
+                                  "version": (it.get("version") or "").strip(),
+                                  "official": bool(it.get("is_official")),
+                                  "source": "remote"}))
+        hits.sort(key=lambda x: x[0])
+        out = [h[1] for h in hits[:limit]]
+        # 官方排在社区前面：搜索结果长了以后，官方出品的可信度差别对用户是有意义的
+        return sorted(out, key=lambda p: 0 if p["official"] else 1)
+
+    def search_plugins(self, instance, q: str, limit: int = 20) -> list[dict]:
+        """本地目录 + 官方商店，本地结果排前面且与远端去重（同一 spec 只留一条）。"""
+        q = (q or "").strip()
+        if len(q) < 2:
+            return []
+        local = self._search_local(q)
+        if len(local) >= limit or remote_search_disabled():
+            return local[:max(1, limit)]
+        seen = {p["spec"].lower() for p in local}
+        remote = self._search_remote(q, limit - len(local))
+        return (local + [p for p in remote if p["spec"].lower() not in seen])[:max(1, limit)]
+
     def list_plugins(self, instance) -> dict:
         """已装插件 / 缺依赖 / 目录形态插件，供「管理应用」面板渲染。
 
@@ -878,6 +1047,12 @@ class NoneBot2Adapter(BaseAdapter):
             self._require_interpreter(instance)
             self._pip_install(instance, spec)
             self._write_pyproject_deps(instance, {name: _spec_version(spec)})
+            # ③ 登记进 bot.py。**缺这步插件就不会被加载**（见 _botpy_set_plugins
+            # 的说明）：只扫 plugins/ 目录的 load_plugins 认不到 PyPI 插件，
+            # 用户会看到「已安装」但功能不存在，且无从排查。
+            if _is_plugin_name(name) and _plugin_module(name) not in _botpy_plugins(instance):
+                _botpy_set_plugins(instance, _botpy_plugins(instance)
+                                   + [_plugin_module(name)])
         return self._installed_versions(instance).get(name, "?")
 
     def uninstall_package(self, instance, name: str) -> str:
@@ -915,6 +1090,11 @@ class NoneBot2Adapter(BaseAdapter):
             shutil.rmtree(libs / name.replace("-", "_"), ignore_errors=True)
             # ② 同步 pyproject，否则 nb run 会把它装回来
             _remove_pyproject_dep(Path(instance.dir) / "pyproject.toml", name)
+            # ③ 撤掉 bot.py 里的登记，否则下次启动会去加载一个已删的包
+            if _is_plugin_name(name):
+                mod = _plugin_module(name)
+                _botpy_set_plugins(instance,
+                                   [m for m in _botpy_plugins(instance) if m != mod])
         return ver
 
     def sync_pyproject(self, instance) -> str:
@@ -926,6 +1106,13 @@ class NoneBot2Adapter(BaseAdapter):
         with program_dir_lock(self.m["name"]):
             self._write_pyproject_deps(
                 instance, {k: f">={v}" for k, v in installed.items()})
+            # 顺带补登记：libs 里已有但 bot.py 没登记的插件，同步完一样不会加载。
+            # 这条路径正是给「手工 pip 装过插件」和老实例补救用的。
+            mods = _botpy_plugins(instance)
+            for k in installed:
+                if _is_plugin_name(k) and _plugin_module(k) not in mods:
+                    mods.append(_plugin_module(k))
+            _botpy_set_plugins(instance, mods)
         return str(path)
 
 

@@ -30,10 +30,12 @@ from adapters import load_registry  # noqa: E402
 from adapters.nonebot2 import NoneBot2Adapter  # noqa: E402
 from api.context import ctx  # noqa: E402
 from api.rest import (  # noqa: E402
+    instance_config_save,
     instance_manage,
     instance_plugin_install,
+    instance_plugin_op,
+    instance_plugin_search,
     instance_plugin_sync,
-    instance_config_save,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -287,6 +289,34 @@ def test_install_rejects_when_instance_running(monkeypatch):
         proc._proc = None
 
 
+def test_plugin_install_returns_immediately_and_exposes_progress():
+    """装插件是分钟级操作：端点必须**立即返回**，前端才有东西可轮询。
+
+    同步等到 pip 跑完才返回的话，这几分钟里界面只有一个「处理中…」，
+    用户分不清是在装还是卡死（2026-10-12 实测：点了安装，服务器上压根没有
+    pip 进程，界面却一直挂着「安装中」，就是这么来的）。
+    """
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_async_"))
+    _mk("m-async", "nonebot2", webui=None)
+    ctx.registry.update("m-async", dir=str(d))
+    r = _run(instance_plugin_install("m-async", {"spec": "nonebot-plugin-demo"}))
+    assert r.get("started") is True, "应立即返回，而不是等 pip 跑完"
+    # 轮询端点要能读到状态与日志（后台任务此时未必跑完，只验结构）
+    op = _run(instance_plugin_op("m-async"))
+    assert "busy" in op and "lines" in op, op
+
+
+def test_plugin_install_rejects_while_op_running():
+    """已有操作在跑时再点一次要拒掉，否则两条 pip 同时往 libs/ 里写会互相踩。"""
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_dup_"))
+    _mk("m-dup", "nonebot2", webui=None)
+    ctx.registry.update("m-dup", dir=str(d))
+    _run(instance_plugin_install("m-dup", {"spec": "nonebot-plugin-a"}))
+    with pytest.raises(HTTPException) as e:
+        _run(instance_plugin_install("m-dup", {"spec": "nonebot-plugin-b"}))
+    assert e.value.status_code == 409
+
+
 def test_install_rejects_bad_spec(monkeypatch, tmp_path):
     """空包名 / 带空格的包名要在装之前拒掉，别等pip 跑完才失败。"""
     d = tmp_path / "nb-bad"
@@ -406,3 +436,186 @@ def test_list_plugins_separates_packages_from_dir_plugins(tmp_path):
     assert [p["name"] for p in data["dir_plugins"]] == ["my_local"]
     assert "fastapi" not in [p["name"] for p in data["packages"]], \
         "基础依赖不是插件，混进来会让用户误以为能卸载 nonebot2 本体"
+
+
+# ---------- 插件搜索 ----------
+# ⚠️ 全部用例都 monkeypatch 掉 http_get_json：CI 不一定有外网，而 nonebot 索引
+# 有 943 条 / 500KB，真去拉一次会让测试偶发超时。这里验的是「给定索引数据，
+# 能不能挑出对的条目」，不是「网络通不通」。
+
+_NB_INDEX = [
+    {"module_name": "nonebot_plugin_status", "project_link": "nonebot-plugin-status",
+     "name": "服务器状态查看", "desc": "通过戳一戳获取服务器状态",
+     "homepage": "https://github.com/nonebot/plugin-status",
+     "version": "0.9.0", "is_official": True, "valid": True},
+    {"module_name": "nonebot_plugin_wordcloud", "project_link": "nonebot-plugin-wordcloud",
+     "name": "词云", "desc": "生成群聊词云", "homepage": "https://ex.com/w",
+     "version": "0.6.0", "is_official": False, "valid": True},
+    # 下架条目：valid=false 必须排除，否则用户装到一个已被废弃的包还以为能用
+    {"module_name": "nonebot_plugin_dead", "project_link": "nonebot-plugin-dead",
+     "name": "已废弃", "desc": "词云相关但已下架", "homepage": "", "version": "1.0.0",
+     "is_official": False, "valid": False},
+    # project_link 被填成 URL 的脏数据：应退回 module_name 推出的包名，
+    # 而不是把这个 URL 当包名喂给 pip
+    {"module_name": "nonebot_plugin_dirty", "project_link": "https://github.com/x/y",
+     "name": "脏数据", "desc": "词云的另一种实现", "homepage": "", "version": "2.0.0",
+     "is_official": False, "valid": True},
+]
+
+
+@pytest.fixture
+def _search_cache_clean():
+    """索引缓存是**模块级** dict，不清会串到别的用例上（那条用例可能正在
+    monkeypatch 另一个返回值，却读到了这里缓存的数据）。"""
+    from adapters import base
+    saved = dict(base.SEARCH_CACHE)
+    base.SEARCH_CACHE.clear()
+    yield
+    base.SEARCH_CACHE.clear()
+    base.SEARCH_CACHE.update(saved)
+
+
+def test_search_local_works_without_network(monkeypatch, _search_cache_clean):
+    """断网也要能搜到本地推荐目录：那几条是人工逐个核过的，是最稳的一档结果。
+
+    这条是「远端不可降级」的底线——没有它，无外网的机器上搜索直接变空白。
+    """
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: None)
+    got = _ad().search_plugins(None, "alconna", 10)
+    assert [p["spec"] for p in got] == ["nonebot-plugin-alconna"]
+    assert got[0]["source"] == "local"
+
+
+def test_search_short_query_returns_nothing(monkeypatch, _search_cache_clean):
+    """1 个字符不搜：全量索引里几乎每个包都能被单字符命中，结果会淹掉想要的那个。"""
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: _NB_INDEX)
+    assert _ad().search_plugins(None, "a", 10) == []
+
+
+def test_search_remote_failure_degrades_to_local(monkeypatch, _search_cache_clean):
+    """远端不可达要降级，不能报错：索引站挂了本地推荐目录依然是有用的结果，
+    抛异常的话用户看到的是整个插件面板红字报错。"""
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: None)
+    got = _ad().search_plugins(None, "定时任务", 10)
+    assert got and got[0]["spec"] == "nonebot-plugin-apscheduler"
+    assert got[0]["source"] == "local"
+
+
+def test_search_remote_filters_invalid_and_dirty_project_link(monkeypatch, _search_cache_clean):
+    """索引里的两类脏数据：下架条目（valid=false）与 project_link 填成 URL 的条目。
+
+    前者不排会诱导用户装废弃包；后者不处理等于把一个 URL 当 pip 包名喂进去。
+    """
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: _NB_INDEX)
+    got = _ad().search_plugins(None, "词云", 10)
+    specs = [p["spec"] for p in got]
+    assert "nonebot-plugin-wordcloud" in specs
+    assert "nonebot-plugin-dead" not in specs, "valid=false 的下架插件不能进结果"
+    assert "nonebot-plugin-dirty" in specs, "project_link 是 URL 时应退回 module_name"
+    assert not any(p["spec"].startswith("http") for p in got), specs
+
+
+def test_search_dedups_local_over_remote(monkeypatch, _search_cache_clean):
+    """同一 spec 只留一条，本地那条排前面：重复条目会让用户纠结装哪个，
+    而本地那条带人工写的中文说明，信息量更大。"""
+    dup = [{"module_name": "nonebot_plugin_orm", "project_link": "nonebot-plugin-orm",
+            "name": "ORM", "desc": "ORM 支持", "homepage": "", "version": "0.1.0",
+            "is_official": False, "valid": True}]
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: dup)
+    got = _ad().search_plugins(None, "orm", 10)
+    assert [p["spec"] for p in got].count("nonebot-plugin-orm") == 1, got
+    assert got[0]["source"] == "local"
+
+
+def test_search_ranks_package_name_matches_first(monkeypatch, _search_cache_clean):
+    """「包名以关键词开头」的结果要排在只写命中的前面。
+
+    943 条里大量包的 desc 会顺带提到热门关键词，不排序的话用户搜 "alconna"
+    拿到的是一堆「用了 alconna 的插件」，真正想要的那个在几十行开外。
+
+    本地目录（OFFICIAL_PLUGINS）里恰好也有一条 alconna —— 它会按设计排在最前，
+    盖掉远端排序。这里把 _search_local 打成空，专测远端的相关性排序逻辑。
+    """
+    data = [
+        {"module_name": "nonebot_plugin_x", "project_link": "nonebot-plugin-x",
+         "name": "某插件", "desc": "内部用到了 alconna", "homepage": "",
+         "version": "1.0.0", "is_official": False, "valid": True},
+        {"module_name": "nonebot_plugin_alchelper", "project_link": "nonebot-plugin-alchelper",
+         "name": "Alconna 帮助工具", "desc": "生成帮助菜单", "homepage": "",
+         "version": "1.0.0", "is_official": False, "valid": True},
+    ]
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: data)
+    monkeypatch.setattr(NoneBot2Adapter, "_search_local", lambda self, q: [])
+    got = _ad().search_plugins(None, "alconna", 10)
+    assert got[0]["spec"] == "nonebot-plugin-alchelper", got
+
+
+def test_manage_declares_search_capability_by_adapter(tmp_path):
+    """能不能搜由适配器是否实现 search_plugins 决定，不由程序名决定。
+
+    断言这一条是防着有人图省事在后端写 `if dice == "nonebot2"` —— 那么新加
+    一个支持搜索的程序时，忘了改这行就永远不显示搜索框，而且不报错。
+    """
+    _mk("m-caps", "nonebot2", webui=None)
+    ctx.registry.update("m-caps", dir=str(tmp_path))
+    assert instance_manage("m-caps")["search"] is True
+    _mk("m-caps2", "napcat", webui=3080)
+    assert instance_manage("m-caps2")["search"] is False
+
+
+def test_search_endpoint_returns_candidates(monkeypatch, tmp_path, _search_cache_clean):
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: _NB_INDEX)
+    _mk("m-search", "nonebot2", webui=None)
+    ctx.registry.update("m-search", dir=str(tmp_path))
+    r = _run(instance_plugin_search("m-search", "词云", 10))
+    assert r["ok"] is True and r["q"] == "词云"
+    specs = [p["spec"] for p in r["results"]]
+    assert "nonebot-plugin-wordcloud" in specs
+    # 每条都必须带 spec —— 前端拿它去安装，缺了就是「点了没反应」
+    assert all(p.get("spec") for p in r["results"])
+
+
+def test_search_endpoint_rejects_short_query(tmp_path):
+    """短词在端点层就 400：走到底层会变成对全量索引的一次无意义扫描。
+
+    先建实例，否则 _own 会先回 404，断言就落到 404 上了（那是在测别的东西）。
+    """
+    from fastapi import HTTPException as _HE
+    _mk("m-search", "nonebot2", webui=None)
+    ctx.registry.update("m-search", dir=str(tmp_path))
+    try:
+        _run(instance_plugin_search("m-search", "x", 10))
+    except _HE as e:
+        assert e.status_code == 400
+    else:
+        raise AssertionError("短搜索词应被拒绝")
+
+
+def test_search_endpoint_rejects_unsupported_program(tmp_path):
+    """NapCat 这类没有插件体系的程序：给它一个搜索框本身就是 bug。"""
+    from fastapi import HTTPException as _HE
+    _mk("m-nosearch", "napcat", webui=3080)
+    ctx.registry.update("m-nosearch", dir=str(tmp_path))
+    try:
+        _run(instance_plugin_search("m-nosearch", "nonebot", 10))
+    except _HE as e:
+        assert e.status_code == 400
+    else:
+        raise AssertionError("不支持搜索的程序应被拒绝")
+
+
+def test_search_endpoint_is_404_for_other_users_instance(monkeypatch, tmp_path, _search_cache_clean):
+    """搜索也要过归属校验：不校验的话，凭一个实例 ID 就能探到别人实例的存在。"""
+    from fastapi import HTTPException as _HE
+
+    from api.auth import CurrentUser
+    monkeypatch.setattr("adapters.nonebot2.http_get_json", lambda *a, **k: _NB_INDEX)
+    _mk("m-own-search", "nonebot2", webui=None)
+    ctx.registry.update("m-own-search", dir=str(tmp_path), owner="alice")
+    intruder = CurrentUser(username="bob", role="user")
+    try:
+        _run(instance_plugin_search("m-own-search", "词云", 10, user=intruder))
+    except _HE as e:
+        assert e.status_code == 404, e.status_code
+    else:
+        raise AssertionError("他人实例必须 404（与不存在同码，不可区分）")

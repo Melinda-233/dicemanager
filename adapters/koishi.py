@@ -39,8 +39,16 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
-from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult
+from adapters.base import (
+    DEPLOY_PROGRESS,
+    DEPLOY_VERSION,
+    BaseAdapter,
+    WriteResult,
+    http_get_json,
+    remote_search_disabled,
+)
 from core.atomicio import write_atomic
 from core.interpreter import find_node, node_with_npm
 from core.locks import program_dir_lock
@@ -454,6 +462,53 @@ class KoishiAdapter(BaseAdapter):
             "libs_path": str(Path(instance.dir) / "node_modules"),
         }
 
+    # ---------- 插件搜索 ----------
+    support_plugin_search = True
+    # Koishi 侧没有自己维护的本地目录（nonebot2 那份 OFFICIAL_PLUGINS 是人工
+    # 逐个核过的，npm 生态太大也没必要照抄），候选全在 npm 官方搜索接口：
+    #   <registry>/-/v1/search?text=<q>    返回 objects[].package
+    # 2026-10-12 实测可用。DM_NPM_REGISTRY 可换成镜像源（npm Registry API 的
+    # 路径在各镜像上保持一致）。
+    NPM_SEARCH_URL = ((os.environ.get("DM_NPM_REGISTRY", "").strip()
+                       or "https://registry.npmjs.org").rstrip("/")) + "/-/v1/search"
+
+    def search_plugins(self, instance, q: str, limit: int = 20) -> list[dict]:
+        """搜 npm：先按 Koishi 插件的命名约定过滤，一条都不中的话退回全部结果。
+
+        为什么要留这个 fallback：Koishi 实例要装的 npm 包**不只有插件**——
+        适配器（@koishijs/plugin-adapter-onebot）、数据库驱动、主题都是 npm 包，
+        也都支持一键安装。硬按 `koishi-plugin-` 前缀过滤的话，用户搜
+        "adapter-onebot" 会一条都搜不到，而它明明装得上。
+        """
+        q = (q or "").strip()
+        if len(q) < 2 or remote_search_disabled():
+            return []
+        # npm 搜索会把大量无关包一起回，多取一些再自己筛
+        size = max(1, min(limit * 4, 100))
+        data = http_get_json(f"{self.NPM_SEARCH_URL}?text={quote(q)}&size={size}",
+                             ttl=60.0)      # 搜索结果比全量索引变化快，缓存短些
+        hits = (data or {}).get("objects") if isinstance(data, dict) else None
+        if not isinstance(hits, list):
+            return []
+        rows: list[dict] = []
+        for o in hits:
+            pkg = (o or {}).get("package") or {}
+            name = (pkg.get("name") or "").strip()
+            if not name:
+                continue
+            links = pkg.get("links") or {}
+            rows.append({
+                "name": name,
+                "spec": name,
+                "desc": _clean_npm_desc(pkg.get("description") or ""),
+                "repo": (links.get("homepage") or links.get("repository") or ""),
+                "version": (pkg.get("version") or "").strip(),
+                "official": name.startswith("@koishijs/"),
+                "source": "remote",
+            })
+        plugins = [r for r in rows if _is_koishi_plugin(r["name"])]
+        return (plugins or rows)[:max(1, limit)]
+
     def install_package(self, instance, spec: str) -> str:
         """装一个 npm 插件并同步进 package.json。
 
@@ -746,6 +801,16 @@ def _is_koishi_plugin(name: str) -> bool:
     """
     return (name.startswith("koishi-plugin-")
             or name.startswith("@koishijs/plugin-"))
+
+
+# npm 包的 description 常常整段贴 README 的徽章行（`[![npm](...)](...)`），
+# 不清理的话 UI 上是一屏方括号链接，什么字都读不出来
+_MD_BADGE = re.compile(r"\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)|!?\[[^\]]*\]\([^)]*\)")
+
+
+def _clean_npm_desc(s: str) -> str:
+    """去掉 npm description 里的 markdown 链接/徽章、压平空白并截断到 120 字。"""
+    return re.sub(r"\s+", " ", _MD_BADGE.sub("", s or "")).strip(" -|")[:120]
 
 
 def _raise_floor(spec: str, installed: str) -> str:

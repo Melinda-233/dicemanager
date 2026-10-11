@@ -425,6 +425,43 @@
             <p v-if="c.missing && c.missing.length" class="hint warn">
               缺少依赖：{{ c.missing.join('、') }}
             </p>
+            <!-- 插件搜索：下拉里只有几个人工挑的推荐候选，而生态里实际有几百上千
+                 个插件 —— 在那之前，知道包名以外的插件只能靠猜。 -->
+            <div v-if="searchSupported" class="manage-row">
+              <input v-model="pkgQuery" placeholder="搜索插件（关键词或包名，至少 2 字）"
+                     @input="onSearchInput" @keyup.enter="doSearchPlugins" :disabled="manageBusy"/>
+              <button @click="doSearchPlugins"
+                      :disabled="manageBusy || pkgSearching || pkgQuery.trim().length < 2">
+                {{ pkgSearching ? '搜索中…' : '搜索' }}</button>
+              <button v-if="searchDone" class="lnk" @click="clearSearch">清空结果</button>
+            </div>
+            <!-- 未搜索时也要留一行说明：只在有结果之后才冒出来的提示，用户
+                 根本不会发现这里能搜（功能等于不存在）。 -->
+            <p v-if="searchSupported && !searchDone" class="hint">
+              不知道装什么？在上面输入关键词搜索，结果可直接点「安装」。
+            </p>
+            <p v-if="searchErr" class="hint warn">{{ searchErr }}</p>
+            <div v-if="searchDone" class="pkg-sr">
+              <p class="hint">
+                <template v-if="searchResults.length">搜到 {{ searchResults.length }} 个结果：</template>
+                <template v-else>没有匹配的插件，换个关键词试试（也可以直接输包名搜索）。</template>
+              </p>
+              <div v-for="r in searchResults" :key="r.spec" class="sr-item">
+                <div class="sr-head">
+                  <code>{{ r.spec }}</code>
+                  <span v-if="r.version" class="hint">{{ r.version }}</span>
+                  <span v-if="r.official" class="sr-tag">官方</span>
+                  <span v-if="r.source === 'local'" class="sr-tag alt">推荐</span>
+                  <button class="lnk" :disabled="manageBusy || sel.state === 'running' || isInstalled(r.spec)"
+                          @click="installFromSearch(r)">
+                    {{ isInstalled(r.spec) ? '已安装' : '安装' }}</button>
+                </div>
+                <p class="hint">{{ r.name }}<template v-if="r.desc"> · {{ r.desc }}</template></p>
+                <p v-if="r.repo" class="hint">仓库：
+                  <a class="lnk" :href="r.repo" target="_blank" rel="noopener">{{ r.repo }}</a>
+                </p>
+              </div>
+            </div>
             <!-- 官方插件下拉：只列**尚未安装**的候选（装过的从下拉里消失）。
                  选中即填入下方输入框；输入框保留，便于装目录里没有的第三方插件。 -->
             <div class="manage-row" v-if="pluginCatalog.length">
@@ -458,6 +495,16 @@
             <p v-if="sel.state === 'running'" class="hint warn">
               实例运行中无法装/卸插件（替换依赖文件会导致半新半旧的模块状态），请先停止。
             </p>
+            <!-- 安装状态与日志：**必须放在插件列表上方**。此前只在按钮上写
+                 「处理中…」，结果提示还落在面板最底部 —— 装几分钟的过程中用户
+                 看不到任何反馈，只能以为卡死了。 -->
+            <div v-if="pluginOp.busy || pluginOp.msg" class="plug-op">
+              <p v-if="pluginOp.busy" class="hint">
+                <b>正在安装…</b>（首次可能要几分钟，取决于网络）
+              </p>
+              <p v-else :class="pluginOp.ok ? 'hint' : 'hint warn'">{{ pluginOp.msg }}</p>
+              <pre v-if="(pluginOp.lines || []).length" class="plug-log">{{ (pluginOp.lines || []).join('\n') }}</pre>
+            </div>
             <div v-if="depsData" class="pkg-list">
               <p class="hint">
                 已装插件（{{ (depsData.packages || []).length }}）：
@@ -498,7 +545,8 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { connectWS } from '../ws'
 // 注意：下方已有同名 ref `resmon`（内存水位），此处不再导入 api 的 resmon()，否则重复声明导致构建失败
 import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
-         instanceManage, installPackage, uninstallPackage, syncPyproject,
+         instanceManage, installPackage, uninstallPackage, syncPyproject, fetchPluginOp,
+         searchPlugins,
          instanceMetrics, wizardStep,
          scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
@@ -652,6 +700,8 @@ watch(sel, () => {
   // 管理面板必须收起：能力属于上一个实例，留着会让人对着 A 实例点 B 实例的操作
   manageOpen.value = false; manage.value = {}; manageErr.value = ''
   manageMsg.value = ''; depsData.value = null; pkgSpec.value = ''
+  // 搜索结果属于上一个实例：留着会出现「搜的是 A，装到 B 身上」的错觉
+  clearSearch()
   // 连接管理 / 定时任务 / 资源曲线同理：内容都绑在实例上，换实例必须一并收起
   connOpen.value = false; schedOpen.value = false
   showMetrics.value = false; metrics.value = null
@@ -700,6 +750,7 @@ const quickManage = (n = null) => guard(async () => {
   depsData.value = depsDataOf()
   syncConfigVals(cap)                 // 齿轮进来也要回填，否则配置框一片空白
   pickedPlugin.value = ''
+  clearSearch()                       // 搜索结果同理：换实例就得是干净的输入框
   // 有 WebUI 能力 → 直接开新窗口，面板本身收起（用户要的是「去它那儿管理」）
   if ((cap?.capabilities || []).some(c => c.kind === 'webui')) {
     manageOpen.value = false
@@ -909,6 +960,66 @@ const pickedInfo = computed(() => {
   return (depsData.value?.catalog || []).find(p => p.spec.toLowerCase() === s) || null
 })
 
+// ---------- 插件搜索 ----------
+// 为什么要有它：下拉里那几条是人工挑的推荐，而 nonebot 生态有九百多个插件，
+// 全塞进下拉既不可能也没人读。搜索让用户按需求找（"定时任务"），不必先知道包名。
+//
+// ⚠️ 为什么要防抖 + 至少 2 字：不防抖的话每敲一个字符都打一次后端，而后端还会
+// 去查远端索引；抖到 300ms 之后，正常连续输入只会发出一两次请求。
+const pkgQuery = ref(''), searchResults = ref([]), searchErr = ref('')
+const pkgSearching = ref(false), searchDone = ref(false)
+let srTimer = null
+// 能不能搜由**后端声明**（适配器没实现 search_plugins 就是 false），不在前端按
+// 程序名猜 —— 猜的结果永远是某天漏改一处，然后某个程序的搜索框点了没反应。
+const searchSupported = computed(() => !!manage.value?.search)
+// 包名归一化：pip 的 dist-info 名是下划线，索引里是横杠，两者要能对上。
+// backend 已归一，这里也归一，免得「装上了却还显示可安装」。
+const _normPkg = s => (s || '').toLowerCase().replace(/_/g, '-')
+const installedSpecs = computed(() =>
+  new Set((depsData.value?.packages || []).map(p => _normPkg(p.name))))
+const isInstalled = spec => installedSpecs.value.has(_normPkg(spec))
+
+const doSearchPlugins = () => guard(async () => {
+  if (!sel.value) return
+  const q = pkgQuery.value.trim()
+  if (q.length < 2) { searchErr.value = '搜索词至少 2 个字符'; return }
+  pkgSearching.value = true
+  searchErr.value = ''
+  try {
+    const r = await searchPlugins(sel.value.id, q)
+    searchResults.value = r.results || []
+    searchDone.value = true
+  } catch (e) {
+    // 出错就别落成「搜不到」：那会让人以为是关键词不对，其实是后端报错了
+    searchResults.value = []
+    searchDone.value = false
+    searchErr.value = String(e.message || e)
+  } finally {
+    pkgSearching.value = false
+  }
+})
+const onSearchInput = () => {
+  clearTimeout(srTimer)
+  searchErr.value = ''
+  const q = pkgQuery.value.trim()
+  if (q.length < 2) return              // 不满 2 字不发请求：发了也是 400
+  srTimer = setTimeout(doSearchPlugins, 300)
+}
+const clearSearch = () => {
+  clearTimeout(srTimer)
+  pkgQuery.value = ''
+  searchResults.value = []
+  searchDone.value = false
+  searchErr.value = ''
+}
+// 从搜索结果安装：直接复用下面「安装」按钮那套逻辑（含后台轮询与日志），
+// 不另铺一条路 —— 两条安装路径迟早有一天行为不一致，而用户只记得「点了安装」。
+const installFromSearch = r => {
+  pkgSpec.value = r.spec
+  doInstallPkg()
+}
+onUnmounted(() => clearTimeout(srTimer))
+
 // 保存基础配置：适配器按各自格式落盘，写后是否需重启由后端告知，发完刷新一次能力列表
 const saveConfig = () => guard(async () => {
   if (!sel.value) return
@@ -927,20 +1038,43 @@ const saveConfig = () => guard(async () => {
 
 // 装/卸插件都可能跑几分钟（pip 装依赖），故用 manageBusy 独占按钮；
 // 期间实例状态可能变，装完重新拉一次能力列表让 UI 与后端一致
+//
+// ⚠️ 安装是**后台任务**：后端点了就返回，pip 在服务端继续跑。前端轮询
+// /plugins/op 拿实时输出 —— 同步等到完成再返回的话，这几分钟里界面只有一个
+// 「正在安装…」，用户分不清是在装还是卡死（实测点完安装、服务端压根没起 pip
+// 进程，界面却一直挂着"安装中"，就是这么来的）。
+const pluginOp = ref({ busy: false, ok: null, msg: '', lines: [] })
+let opTimer = null
+const stopOpPoll = () => { if (opTimer) { clearInterval(opTimer); opTimer = null } }
+const startOpPoll = (id) => {
+  stopOpPoll()
+  opTimer = setInterval(async () => {
+    try {
+      pluginOp.value = await fetchPluginOp(id)
+      if (!pluginOp.value.busy) {                 // 终态：停轮询 + 刷新已装列表
+        stopOpPoll()
+        manageBusy.value = false
+        await loadManage()
+      }
+    } catch { stopOpPoll(); manageBusy.value = false }
+  }, 1500)
+}
+onUnmounted(stopOpPoll)
+
 const doInstallPkg = () => guard(async () => {
   const spec = pkgSpec.value.trim()
   if (!spec) return
   manageBusy.value = true
   manageErr.value = ''
-  manageMsg.value = `正在安装 ${spec}（首次可能需要几分钟，取决于网络）…`
+  manageMsg.value = ''
+  pluginOp.value = { busy: true, ok: null, msg: '', lines: [`开始安装 ${spec} …`] }
   try {
-    const r = await installPackage(sel.value.id, spec)
+    await installPackage(sel.value.id, spec)      // 立即返回，后续靠轮询
     pkgSpec.value = ''
-    depsData.value = r.data || depsDataOf()
-    manageMsg.value = `已安装 ${spec} ${r.version || ''}。需重启实例后生效。`.trim()
+    startOpPoll(sel.value.id)
   } catch (e) {
     manageErr.value = String(e.message || e)
-  } finally {
+    pluginOp.value = { busy: false, ok: false, msg: String(e.message || e), lines: [] }
     manageBusy.value = false
   }
 })

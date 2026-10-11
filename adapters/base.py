@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import socket
+import time
 import urllib.request
 import zipfile
 from abc import ABC, abstractmethod
@@ -38,6 +39,55 @@ DEPLOY_PROGRESS: dict[str, dict] = {}
 # 部署完成的版本记录（inst_id → release tag）：base 不持有 registry，
 # 由向导 step2 部署完后取走落盘（升级通道比对基线）
 DEPLOY_VERSION: dict[str, str] = {}
+
+# 插件装卸的进度与日志（inst_id → {busy, ok, msg, log: [行…]}）
+#
+# 与 DEPLOY_PROGRESS 同族（前端轮询），差别是**终态要保留**：
+# 安装是分钟级操作且结果需要被读到（装了什么版本 / 为什么失败），
+# 而前端轮询到 done 就停 —— 读一次即清的话结果会丢。下次安装整体覆盖，
+# 日志只留末尾 N 行（pip 输出能上千行），内存占用可控。
+PLUGIN_OP: dict[str, dict] = {}
+_PLUGIN_OP_LOG_MAX = 300
+_PLUGIN_OP_TAIL = 80                     # 单次轮询返回的日志行数
+
+
+def plugin_op_start(inst_id: str, line: str = "") -> None:
+    """开始一次插件操作。同实例重复开始会覆盖上一条（旧结果已消费完）。"""
+    PLUGIN_OP[inst_id] = {"busy": True, "ok": None, "msg": "", "log": []}
+    if line:
+        plugin_op_log(inst_id, line)
+
+
+def plugin_op_log(inst_id: str, line) -> None:
+    """追加日志行。pip 的下载/编译输出是安装过程**唯一可信**的进度来源 ——
+    装几分钟却只有一个转圈，用户没法判断是卡住还是在跑。"""
+    op = PLUGIN_OP.get(inst_id)
+    if not op:
+        return
+    for ln in str(line).replace("\r", "\n").splitlines():
+        s = ln.rstrip()
+        if s:
+            op["log"].append(s)
+    if len(op["log"]) > _PLUGIN_OP_LOG_MAX:
+        del op["log"][:-_PLUGIN_OP_LOG_MAX]
+
+
+def plugin_op_end(inst_id: str, ok: bool, msg: str = "") -> None:
+    op = PLUGIN_OP.get(inst_id)
+    if not op:
+        return
+    op["busy"] = False
+    op["ok"] = ok
+    op["msg"] = msg or ("完成" if ok else "失败")
+
+
+def plugin_op_of(inst_id: str) -> dict:
+    """供前端轮询。无操作记录时 busy=false（不要返回 None，前端好直接取 .lines）。"""
+    op = PLUGIN_OP.get(inst_id)
+    if not op:
+        return {"busy": False, "ok": None, "msg": "", "lines": []}
+    return {"busy": op["busy"], "ok": op["ok"], "msg": op["msg"],
+            "lines": op["log"][-_PLUGIN_OP_TAIL:]}
 
 
 def deploy_version_of(inst_id: str) -> str | None:
@@ -617,6 +667,34 @@ class BaseAdapter(ABC):
         """
         return []
 
+    # 能力标记（鸭子类型的"硬"判定）：只支持搜索的适配器把这一行设成 True。
+    # 不能靠 `hasattr(ad, "search_plugins")` —— 基类的默认实现返回 []，会让
+    # 每个适配器都"看起来支持"，于是 NapCat 这类没有插件体系的程序也会被
+    # 错误放行。所以用独立标记位，与 install_package / config_schema 同一套口径。
+    support_plugin_search = False
+
+    def search_plugins(self, instance, q: str, limit: int = 20) -> list[dict]:
+        """按关键词搜可安装的插件（本地目录 + 本生态的官方索引）。
+
+        与 `official_plugins` 的分工：后者是「面板下拉的固定候选」（短、人工核过、
+        随 manage 一起下发），这个是「用户主动敲关键词去查」的实现（长、可以来自
+        远端）。两者返回同构的结果，前端才能用同一套卡片渲染。
+
+        返回 [{"name", "spec", "desc", "repo", "version", "official", "source"}]：
+          前四项与 official_plugins 同义（spec 必须真能喂给安装器）
+          version  = 索引上的最新版本号，本地目录没有就给 ""
+          official = 是否生态官方出品（远端形态会在 UI 上标官方徽记）
+          source   = "local" | "remote"，让用户知道这条是从哪儿来的
+
+        **默认空列表** = 本程序不支持搜索，前端据此不显示搜索框——行为与加这个
+        钩子之前完全一致，其它程序不受影响。
+
+        ⚠️ **远端失败必须降级成「只有本地结果」，不得抛异常**：搜索是辅助功能，
+        索引站挂掉或机器无外网时，面板仍应能搜到本地那几个候选。抛了异常就是
+        整个插件面板变红，而本地其实有东西可用。
+        """
+        return []
+
     def _webui_port(self, instance) -> int | None:
         """本实例的 WebUI 端口；无 WebUI 返回 None。
 
@@ -826,3 +904,63 @@ def link_id(login_ref: str, account_qq: str | None) -> str:
 
     向导、各适配器共用同一格式，保证 sealdice 端点 id 与 wizard 解析口径一致。"""
     return f"{login_ref}|{account_qq or ''}"
+
+
+# ---------- 插件搜索：HTTP 与缓存（各适配器共用）----------
+# 为什么把「拉 JSON + 按 ttl 缓存 + 失败吞掉」收到 base 而不是每个适配器各写
+# 一份：两边要的东西完全一样，差别只有 URL 和字段映射。写三份的结果是超时、
+# 缓存时长、总开关各不一样，出问题要分别确认。
+
+# url → (取回时刻, 数据)。进程内存态即可：重启后面板本来就要重新拉。
+SEARCH_CACHE: dict[str, tuple[float, object]] = {}
+# 索引是分钟级变化的，但 500KB 级别的全量索引不该每次敲键都重拉
+SEARCH_TTL = 600.0
+
+
+def remote_search_disabled() -> bool:
+    """总开关：DM_PLUGIN_SEARCH_REMOTE=0 时关闭全部远端查询，只走本地目录。
+
+    留这个口子是给「面板跑在没有外网的环境」：那种机器上远端每次都卡到超时，
+    用户看到的只是「搜索很慢」还说不清原因，不如显式降级并让他看得见。
+    """
+    return (os.environ.get("DM_PLUGIN_SEARCH_REMOTE", "").strip().lower()
+            in ("0", "no", "off", "false"))
+
+
+def _search_timeout() -> float:
+    """单次远端查询超时（DM_SEARCH_TIMEOUT 秒，默认 8）。"""
+    raw = os.environ.get("DM_SEARCH_TIMEOUT", "").strip()
+    try:
+        return max(1.0, float(raw)) if raw else 8.0
+    except ValueError:
+        return 8.0
+
+
+def http_get_json(url: str, timeout: float | None = None,
+                  ttl: float | None = None):
+    """GET 一个 JSON 端点，按 ttl 做进程内缓存；**任何失败都返回 None，绝不抛**。
+
+    ⚠️ 刻意吞掉所有异常的原因：搜索是「锦上添花」，索引站挂了、DNS 不通、
+    机器没外网，都不该让「管理应用」面板整体报错。调用方拿到 None 就当远端
+    没结果，退回本地目录。抛出去的话用户看到的是红字报错，而本地其实还有
+    东西可以搜。
+
+    ⚠️ 失败**不入缓存**：把一次失败缓存十分钟，会让接下来这段时间里搜索一直
+    「什么都搜不到」且看不出为什么。宁可每次失败都重试一次。
+    """
+    to = _search_timeout() if timeout is None else timeout
+    cache_ttl = SEARCH_TTL if ttl is None else ttl
+    now = time.time()
+    hit = SEARCH_CACHE.get(url)
+    if hit and cache_ttl > 0 and now - hit[0] < cache_ttl:
+        return hit[1]
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "DiceManager", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=to) as r:  # noqa: S310 - URL 为固定常量
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:            # noqa: BLE001 - 网络失败一律静默降级，见上
+        return None
+    if cache_ttl > 0:
+        SEARCH_CACHE[url] = (now, data)
+    return data

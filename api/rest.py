@@ -711,7 +711,13 @@ def instance_manage(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
     if cfg_schema is not None:
         config = {"schema": cfg_schema, "values": ad.read_config(inst),
                   "restart_required": ad.config_restart_required}
-    return {"ok": True, "capabilities": caps, "data": data, "config": config}
+    # 能否搜索取决于适配器的 support_plugin_search 标记（与 install_package /
+    # config_schema 同一套"能力位"口径）。不按程序名枚举——枚举的后果是
+    # 新加一个支持搜索的程序时，忘了来这里加一行就永远不显示搜索框。
+    # ⚠️ 不能用 hasattr(ad, "search_plugins")：基类默认实现返回 []，会让每个
+    # 适配器都"看起来支持"，导致 NapCat 这类没有插件体系的程序也被错误放行。
+    return {"ok": True, "capabilities": caps, "data": data, "config": config,
+            "search": bool(getattr(ad, "support_plugin_search", False))}
 
 
 @router.post("/instances/{inst_id}/config")
@@ -738,17 +744,76 @@ async def instance_config_save(inst_id: str, body: dict,
             "restart_required": ad.config_restart_required}
 
 
+async def _run_plugin_install(inst_id: str, ad, inst, spec: str) -> None:
+    """后台执行安装：结果写进 PLUGIN_OP 供前端轮询，异常不得冒泡到事件循环。"""
+    from adapters.base import plugin_op_end, plugin_op_log
+    try:
+        ver = await asyncio.to_thread(ad.install_package, inst, spec)
+        plugin_op_log(inst_id, f"完成：{spec} {ver}")
+        plugin_op_end(inst_id, True, f"已安装 {spec} {ver}。需重启实例后生效。")
+    except Exception as e:                       # noqa: BLE001 - 兜底写进日志给用户看
+        plugin_op_log(inst_id, f"失败：{e}")
+        plugin_op_end(inst_id, False, f"安装失败：{e}")
+
+
+@router.get("/instances/{inst_id}/plugins/search")
+async def instance_plugin_search(inst_id: str, q: str, limit: int = 20,
+                            user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """按关键词搜可安装插件（目录里没有的第三方插件也能搜到）。
+
+    结果只是**候选**，不带安装状态：是否已装由前端拿 manage 的已装列表比对
+    （与下拉同一套口径），后端不重复实现一遍「所见 ⟂ 已装」。
+
+    适配器决定去哪儿搜（nonebot2 走官方商店索引 + 本地目录，koishi 走 npm，
+    其余程序没有 search_plugins → 不支持）。远端不可达时适配器会降级成
+    只回本地结果而不是报错，这里不再包一层 fallback。
+
+    ⚠️ 必须注册在 `/instances/{id}/{op}` 之前（同源坑见顶部注释），否则
+    "search" 会被当成 op → 404「未知操作」。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    if not getattr(ad, "support_plugin_search", False):
+        raise HTTPException(400, "该程序不支持插件搜索")
+    kw = (q or "").strip()
+    if len(kw) < 2:
+        raise HTTPException(400, "搜索词至少 2 个字符")
+    n = max(1, min(limit, 50))
+    try:
+        results = await asyncio.to_thread(ad.search_plugins, inst, kw, n)
+    except Exception as e:               # noqa: BLE001 - 远端/解析异常统一转 500
+        raise HTTPException(500, f"插件搜索失败: {e}") from e
+    return {"ok": True, "q": kw, "results": results or []}
+
+
+@router.get("/instances/{inst_id}/plugins/op")
+async def instance_plugin_op(inst_id: str,
+                        user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """插件装卸的实时状态与日志（前端轮询）。
+
+    ⚠️ 必须注册在 `/instances/{id}/{op}` 这个通配路由之前（同源坑见顶部注释），
+    否则 GET 请求会被 {op} 抢走（虽然 {op} 是 POST，仍按规矩排前面）。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    from adapters.base import plugin_op_of
+    return plugin_op_of(inst_id)
+
+
 @router.post("/instances/{inst_id}/plugins/install")
 async def instance_plugin_install(inst_id: str, body: dict,
                             user: Annotated[CurrentUser | None, Depends(current_user)] = None):
-    """装一个 pip 插件（pip install --target libs + 同步 pyproject）。
+    """装一个 pip 插件（pip install --target libs + 同步 pyproject + 登记 bot.py）。
 
     **同步 pyproject 是必须的**，否则 `nb run` 下次按 pyproject 同步依赖时
     会把刚装的插件悄悄移除（用户视角：装完重启就没了）。
 
-    装依赖要跑网络（可能几分钟），放线程池避免阻塞事件循环。
-    实例须停机：正在跑的进程 import 着 libs/ 里的 .py，替换文件会得到
-    半新半旧的模块状态。
+    ⚠️ **异步执行，立即返回**：装依赖要跑网络，常常几分钟。此前同步等到完成
+    才返回，这几分钟里界面只有一个「处理中…」，用户分不清是在装还是卡死了
+    （2026-10-12 实测：点了安装，服务器上压根没有 pip 进程，界面却一直「安装中」）。
+    改为后台跑，前端轮询 `/plugins/op` 看 pip 的实时输出。
+
+    实例须停机：正在跑的进程 import 着 libs/ 里的 .py，替换文件会半新半旧。
     """
     _own(inst_id, user)                  # 越权/不存在 → 404
     inst = ctx.registry.get(inst_id)
@@ -757,13 +822,18 @@ async def instance_plugin_install(inst_id: str, body: dict,
         raise HTTPException(400, "该程序不支持插件安装")
     if ctx.pm.is_alive(inst_id):
         raise HTTPException(400, "请先停止该实例再安装插件（运行中替换依赖文件不安全）")
-    try:
-        ver = await asyncio.to_thread(ad.install_package, inst, body.get("spec", ""))
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    except Exception as e:
-        raise HTTPException(500, f"插件安装失败: {e}") from e
-    return {"ok": True, "version": ver, "data": ad.list_plugins(inst)}
+    spec = (body.get("spec") or "").strip()
+    # 先做与程序无关的基础校验：空 / 带空格的包名不必等 pip 跑完才失败。
+    # （格式细节仍由适配器裁定，这里只挡最常见的手误。）
+    if not spec or any(ch.isspace() for ch in spec):
+        raise HTTPException(400, f"包名不合法：{spec!r}")
+    from adapters.base import plugin_op_of, plugin_op_start
+    if plugin_op_of(inst_id).get("busy"):
+        raise HTTPException(409, "该实例已有插件操作在进行中")
+    plugin_op_start(inst_id,
+                    f"开始安装 {spec} …（首次可能要几分钟，取决于网络）")
+    asyncio.create_task(_run_plugin_install(inst_id, ad, inst, spec))
+    return {"ok": True, "started": True}
 
 
 @router.post("/instances/{inst_id}/plugins/uninstall")

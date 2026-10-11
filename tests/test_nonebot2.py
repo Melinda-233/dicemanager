@@ -21,6 +21,7 @@
 只验调用顺序与参数拼装（`_pip_install` 的命令行里的 `--target`）。真跑一遍的
 端到端验证在 .workbuddy/e2e_libs_check.py（手动执行，不进CI）。
 """
+import io
 import json
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from adapters.nonebot2 import (
     LIBS_DIR,
     PIP_TIMEOUT,
     NoneBot2Adapter,
+    _botpy_plugins,
     _dep_name,
     bump_pyproject_versions,
     merge_pyproject_deps,
@@ -65,6 +67,59 @@ def _inst(d, **kw) -> SimpleNamespace:
 
 def _ad() -> NoneBot2Adapter:
     return NoneBot2Adapter(MANIFEST)
+
+
+class _FakePopen:
+    """subprocess.Popen 替身。
+
+    适配器改成「Popen + 逐行读输出」后（为把 pip 输出实时推给界面），测试桩
+    必须跟着换 —— 仍在 subprocess.run 上打桩的话，适配器会真去跑 pip。
+    ⚠️ wait() / kill() 都要有：超时分支会调它们，缺方法会在超时路径上再抛
+    AttributeError，把真正的失败原因盖掉。
+    """
+
+    def __init__(self, out="", returncode=0, args=None):
+        self.stdout = io.StringIO(out)
+        self.returncode = returncode
+        self.args = args or []          # subprocess.run 用它拼 CompletedProcess
+
+    # subprocess.run 内部用 `with Popen(...)`，替身也得支持上下文协议，
+    # 否则同一份桩在走 run 的代码路径上会报 "does not support the context manager"
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def communicate(self, input=None, timeout=None):
+        """subprocess.run 走的是 communicate()，替身也得有（返回剩余输出）。"""
+        return (self.stdout.read() if self.stdout else "", "")
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    @property
+    def pid(self):
+        return 0
+
+
+def _stub_popen(monkeypatch, out="", returncode=0, on_call=None):
+    """打桩 subprocess.Popen；on_call(cmd, kw) 可记录命令 / 制造副作用（如造 dist-info）。"""
+    def factory(cmd, **kw):
+        if on_call:
+            on_call(cmd, **kw)
+        return _FakePopen(out, returncode, args=cmd)
+    monkeypatch.setattr(subprocess, "Popen", factory)
 
 
 # ---------- 清单契约 ----------
@@ -287,14 +342,13 @@ def test_upgrade_publishes_pip_baseline(tmp_path, monkeypatch):
 
     calls: list = []
 
-    def fake_run(cmd, **kw):
+    def on_pip(cmd, **kw):
         calls.append(cmd)
         # 升级后把版本换成新的（模拟 pip 真的动了 libs/）
         if "install" in cmd:
             _full_libs(d, nonebot2="2.7.1")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_popen(monkeypatch, on_call=on_pip)
     tag = _ad().upgrade(_inst(d, id="up1"))
     DEPLOY_VERSION.pop("up1", None)
 
@@ -514,7 +568,7 @@ def test_pip_install_uses_target_and_clears_pythonpath(tmp_path, monkeypatch):
     monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
     seen: dict = {}
 
-    def fake_run(cmd, **kw):
+    def on_pip(cmd, **kw):
         seen["cmd"] = cmd
         seen["env"] = kw.get("env") or {}
         # 造出依赖元数据（真实 pip 会做），否则新加的产物检查会误判失败
@@ -523,9 +577,8 @@ def test_pip_install_uses_target_and_clears_pythonpath(tmp_path, monkeypatch):
             meta.mkdir(parents=True, exist_ok=True)
             (meta / "METADATA").write_text(
                 f"Name: {n}\nVersion: 9.9.9\n", encoding="utf-8")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_popen(monkeypatch, on_call=on_pip)
     monkeypatch.setenv("PYTHONPATH", "/should/be/ignored")
     monkeypatch.setenv("PYTHONHOME", "/should/be/ignored")
     ad._pip_install(_inst(d), "nonebot2>=2.4.0")
@@ -901,16 +954,15 @@ def test_pip_install_closes_stdin(tmp_path, monkeypatch):
     monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
     seen: dict = {}
 
-    def fake_run(cmd, **kw):
+    def on_pip(cmd, **kw):
         seen.update(kw)
         for n in MANIFEST["dependencies"]:
             meta = d / LIBS_DIR / f"{n}-9.9.9.dist-info"
             meta.mkdir(parents=True, exist_ok=True)
             (meta / "METADATA").write_text(
                 f"Name: {n}\nVersion: 9.9.9\n", encoding="utf-8")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_popen(monkeypatch, on_call=on_pip)
     ad._pip_install(_inst(d), "nonebot2>=2.4.0")
     assert seen.get("stdin") == subprocess.DEVNULL, \
         "没关 stdin → 依赖冲突时挂在 pip 的提问上"
@@ -924,14 +976,51 @@ def test_pip_install_detects_zero_exit_but_missing_deps(tmp_path, monkeypatch):
     d = _ready_dir(tmp_path / "nb-piprc0", with_deps=False)
     ad = _ad()
     monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
-    # 返回 0 但什么都不装
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: SimpleNamespace(
-        returncode=0, stdout="Successfully installed nothing", stderr=""))
+    _stub_popen(monkeypatch, out="Successfully installed nothing", returncode=0)
     with pytest.raises(RuntimeError) as e:
         ad._pip_install(_inst(d), "nonebot2>=2.4.0")
     msg = str(e.value)
     assert "退出码是 0" in msg, "要解释为什么退出码没能反映失败"
     assert "nonebot2" in msg, "要点出缺哪个依赖"
+
+
+def test_install_registers_plugin_into_botpy(tmp_path, monkeypatch):
+    """装进 libs/ 只是第一步：**不登记进 bot.py，nonebot 根本不会加载它**。
+
+    bot.py 里的 `nonebot.load_plugins('plugins')` 只扫目录形态插件。
+    2026-10-12 实测：装了 apscheduler / localstore，日志里一个都没有 ——
+    面板显示「已安装」，功能不存在，且无从排查。
+    """
+    d = _ready_dir(tmp_path / "nb-reg", with_deps=False)
+    (d / "bot.py").write_text(
+        "import sys\nimport nonebot\nnonebot.init()\nnonebot.run()\n",
+        encoding="utf-8")
+    ad = _ad()
+    # install_package 会先探解释器（真实机上才找得到），测试里直接钉成当前解释器
+    monkeypatch.setattr(ad, "_require_interpreter", lambda i: sys.executable)
+    monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
+
+    def on_pip(cmd, **kw):
+        for n in MANIFEST["dependencies"]:
+            meta = d / LIBS_DIR / f"{n}-9.9.9.dist-info"
+            meta.mkdir(parents=True, exist_ok=True)
+            (meta / "METADATA").write_text(
+                f"Name: {n}\nVersion: 9.9.9\n", encoding="utf-8")
+        meta = d / LIBS_DIR / "nonebot_plugin_demo-1.0.0.dist-info"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "METADATA").write_text(
+            "Name: nonebot-plugin-demo\nVersion: 1.0.0\n", encoding="utf-8")
+
+    _stub_popen(monkeypatch, on_call=on_pip)
+    ad.install_package(_inst(d, id="nb-reg"), "nonebot-plugin-demo")
+    assert _botpy_plugins(_inst(d)) == ["nonebot_plugin_demo"], \
+        "装完必须登记，否则 nonebot 不会加载它"
+    # 幂等：重复装同一个不该登记两遍
+    ad.install_package(_inst(d, id="nb-reg"), "nonebot-plugin-demo")
+    assert _botpy_plugins(_inst(d)) == ["nonebot_plugin_demo"]
+    # 卸载要撤掉登记，否则下次启动会去加载一个已删的包
+    ad.uninstall_package(_inst(d, id="nb-reg"), "nonebot-plugin-demo")
+    assert _botpy_plugins(_inst(d)) == []
 
 
 def test_entrypoint_registers_adapter(tmp_path):

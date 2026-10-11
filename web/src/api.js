@@ -148,6 +148,12 @@ export const uninstallPackage = (id, name) =>
   api(`/instances/${id}/plugins/uninstall`, { method: 'POST', body: { name } })
 export const syncPyproject = id =>
   api(`/instances/${id}/plugins/sync`, { method: 'POST' })
+// 插件装卸的实时状态与日志（安装是后台任务，前端轮询它拿 pip 输出）
+export const fetchPluginOp = id => api(`/instances/${id}/plugins/op`)
+// 插件搜索：由适配器决定去哪儿搜（nonebot2 官方商店索引 / koishi npm），
+// 结果只是候选，是否已装由前端拿 manage 的列表比对
+export const searchPlugins = (id, q, limit = 20) =>
+  api(`/instances/${id}/plugins/search?q=${encodeURIComponent(q)}&limit=${limit}`)
 // 资源曲线：[时间戳, 内存MB, CPU%] 采样点，默认 24h
 export const instanceMetrics = (id, hours = 24) =>
   api(`/instances/${id}/metrics?hours=${hours}`)

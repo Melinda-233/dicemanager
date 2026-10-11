@@ -180,6 +180,15 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel); color: var(--text);
 }
+/* 插件安装状态与实时日志：装在列表上方，装几分钟的过程里这是唯一的反馈 */
+.plug-op { margin: 8px 0; }
+.plug-log {
+  max-height: 170px; overflow: auto; margin: 6px 0 0;
+  padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--panel);
+  font-size: 12px; line-height: 1.45;
+  white-space: pre-wrap; word-break: break-all;
+}
 /* 选中插件的说明 + 仓库地址：加一道竖线把这块从周围的说明文字里拉出来，
    否则两行灰色小字混在一起，等于没写 */
 .plug-info {
@@ -196,6 +205,26 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
 }
 .pkg-row code { word-break: break-all; }
 .pkg-row .hint { flex: 0 0 auto; }
+/* ---------- 插件搜索结果 ---------- */
+/* 结果条目比「已装列表」信息量大（有说明、版本号、仓库、徽记），一行塞不下，
+   故改成上下两行的块，并用左侧色块跟下面的粗插头区分开 */
+.pkg-sr { margin: 8px 0; max-height: 320px; overflow: auto; }
+.sr-item {
+  padding: 7px 0 7px 9px; margin-bottom: 6px;
+  border-left: 3px solid var(--brand); border-radius: 0 6px 6px 0;
+  background: var(--panel-2);
+}
+.sr-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sr-head code { font-weight: 600; word-break: break-all; }
+.sr-head button { margin-left: auto; flex: 0 0 auto; }
+.sr-item p { margin: 3px 0 0; }
+.sr-tag {
+  flex: 0 0 auto; padding: 1px 6px; border-radius: 4px;
+  font-size: 11px; line-height: 1.6;
+  color: var(--brand); background: var(--brand-weak);
+  border: 1px solid var(--brand-weak);
+}
+.sr-tag.alt { color: var(--ok); background: transparent; border-color: var(--step-done-border); }
 button.lnk {
   padding: 0 4px; background: none; border: none;
   color: var(--brand); text-decoration: underline; cursor: pointer;
