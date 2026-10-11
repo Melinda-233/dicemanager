@@ -161,6 +161,16 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 13px
   border-radius: var(--radius);
 }
 .manage-cap + .manage-cap { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+/* 基础配置卡片：位于插件管理上方，与 manage-cap 视觉一致 */
+.cfg-card { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.cfg-row { margin: 10px 0; }
+.cfg-row label { display: block; font-weight: 600; margin-bottom: 3px; }
+.cfg-row input[type="text"], .cfg-row input[type="number"] {
+  width: 100%; box-sizing: border-box; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel); color: var(--text);
+}
+.cfg-row input[type="checkbox"] { width: 16px; height: 16px; vertical-align: middle; margin-left: 2px; }
 .manage-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
 .manage-row input { flex: 1 1 260px; min-width: 0; }
 .pkg-list { margin-top: 10px; }

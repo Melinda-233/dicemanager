@@ -693,7 +693,38 @@ def instance_manage(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
             }
         elif c["kind"] == "python_deps":
             data["python_deps"] = ad.list_plugins(inst)
-    return {"ok": True, "capabilities": caps, "data": data}
+    # 基础配置（无 WebUI 程序的超级管理员 / 指令前缀等）：由适配器按 schema 声明，
+    # 前端据此在插件管理上方渲染通用表单。返回 None 时面板不显示该卡片。
+    cfg_schema = ad.config_schema(inst)
+    config = None
+    if cfg_schema is not None:
+        config = {"schema": cfg_schema, "values": ad.read_config(inst),
+                  "restart_required": ad.config_restart_required}
+    return {"ok": True, "capabilities": caps, "data": data, "config": config}
+
+
+@router.post("/instances/{inst_id}/config")
+async def instance_config_save(inst_id: str, body: dict,
+                          user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """写回无 WebUI 程序的基础配置（超级管理员、指令前缀等）。
+
+    字段与落盘格式完全由适配器负责——前端只发 schema 里的原始值（list 为逗号分隔
+    字符串），适配器按 .env / YAML 等各自格式写回。必须注册在 `/instances/{id}/{op}`
+    这个通配路由之前（同源坑见 rest.py 顶部注释），否则 {op} 会抢先吞掉 /config。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad = _manage_adapter(inst)
+    if not ad.config_schema(inst):
+        raise HTTPException(400, "该程序不支持面板配置")
+    try:
+        r = ad.write_config(inst, (body or {}).get("values", {}))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, f"配置写入失败: {e}") from e
+    return {"ok": r.ok, "manual": r.manual, "path": r.path,
+            "restart_required": ad.config_restart_required}
 
 
 @router.post("/instances/{inst_id}/plugins/install")

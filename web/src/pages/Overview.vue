@@ -388,6 +388,29 @@
           <button @click="manageOpen = false">关闭</button>
         </div>
       <p v-if="manageErr" class="hint err">{{ manageErr }}</p>
+      <!-- 基础配置：无 WebUI 程序（如 nonebot2 的超级管理员 / 指令前缀），
+           置于插件管理上方——自带 WebUI 的程序不在面板里重复管一份配置 -->
+      <div v-if="manage.config" class="cfg-card">
+        <b>基础配置</b>
+        <p v-if="manage.config.schema && !manage.config.schema.length" class="hint">
+          该程序暂无可在面板编辑的基础配置。</p>
+        <template v-else>
+          <div v-for="f in (manage.config.schema || [])" :key="f.key" class="cfg-row">
+            <label :title="f.hint">{{ f.label }}</label>
+            <input v-if="f.type === 'bool'" type="checkbox" v-model="configVals[f.key]"/>
+            <input v-else-if="f.type === 'int'" type="number"
+                   v-model.number="configVals[f.key]" :placeholder="f.placeholder"/>
+            <input v-else type="text" v-model="configVals[f.key]" :placeholder="f.placeholder"/>
+            <p v-if="f.hint" class="hint">{{ f.hint }}</p>
+          </div>
+          <div class="ops">
+            <button :disabled="cfgBusy" @click="saveConfig">
+              {{ cfgBusy ? '保存中…' : '保存配置' }}</button>
+            <span v-if="manage.config.restart_required" class="hint">改后需重启实例生效</span>
+          </div>
+          <p v-if="cfgMsg" class="hint">{{ cfgMsg }}</p>
+        </template>
+      </div>
       <template v-else-if="manage.capabilities && manage.capabilities.length">
         <div v-for="c in manage.capabilities" :key="c.kind" class="manage-cap">
           <b>{{ c.label }}</b>
@@ -458,7 +481,7 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
          listExports, deleteExport, pruneExports, restartPanel, getEdition,
-         revealInstance } from '../api'
+         revealInstance, saveInstanceConfig } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -810,11 +833,38 @@ const closeAllPanels = () => {
 const manage = ref({}), manageErr = ref(''), manageMsg = ref('')
 const depsData = ref(null), pkgSpec = ref('')
 const depsDataOf = () => manage.value?.data?.python_deps || null
+// 基础配置表单：与 manage.config.schema 同键的本地副本，保存时原样发回后端
+const configVals = ref({}), cfgBusy = ref(false), cfgMsg = ref('')
 
 const loadManage = () => guard(async () => {
   manageErr.value = ''
   manage.value = await instanceManage(sel.value.id)
   depsData.value = depsDataOf()
+  // 初始化基础配置表单：schema 里的字段取后端当前值，缺失则给类型化默认值
+  const cfg = manage.value?.config
+  const next = {}
+  for (const f of (cfg?.schema || [])) {
+    const raw = cfg?.values?.[f.key]
+    next[f.key] = (raw === undefined || raw === null)
+      ? (f.default ?? (f.type === 'bool' ? false : '')) : raw
+  }
+  configVals.value = next
+})
+
+// 保存基础配置：适配器按各自格式落盘，写后是否需重启由后端告知，发完刷新一次能力列表
+const saveConfig = () => guard(async () => {
+  if (!sel.value) return
+  cfgBusy.value = true; cfgMsg.value = ''
+  try {
+    const r = await saveInstanceConfig(sel.value.id, configVals.value)
+    cfgMsg.value = r.manual || (r.ok
+      ? ('配置已保存。' + (r.restart_required ? '需重启实例生效。' : '')) : '保存失败')
+    if (r.ok) await loadManage()
+  } catch (e) {
+    cfgMsg.value = String(e.message || e)
+  } finally {
+    cfgBusy.value = false
+  }
 })
 
 // 装/卸插件都可能跑几分钟（pip 装依赖），故用 manageBusy 独占按钮；

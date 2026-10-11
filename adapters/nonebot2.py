@@ -54,7 +54,7 @@ import sys
 from pathlib import Path
 
 from adapters.base import DEPLOY_PROGRESS, DEPLOY_VERSION, BaseAdapter, WriteResult
-from core.atomicio import atomic_write_dotenv, write_atomic
+from core.atomicio import atomic_write_dotenv, read_dotenv, write_atomic
 from core.locks import program_dir_lock
 
 # 依赖安装目录（放实例目录内，删实例即彻底清理；不进备份——备份只关心 .env 与 plugins/）
@@ -669,6 +669,51 @@ class NoneBot2Adapter(BaseAdapter):
         """无 WebUI 端口可放行（.env 里的 PORT 是 nonebot 自身驱动器端口，
         属应用内部监听，面板不代为放通——需要时由用户在防火墙自行处理）。"""
         return None
+
+    # ---------- 基础配置（无 WebUI：超级管理员 / 指令前缀）----------
+    def config_schema(self, instance) -> list[dict] | None:
+        """nonebot2 没有自带 WebUI，超级管理员与指令前缀恰是 nonebot2 的**标准**
+        `.env` 配置（SUPERUSERS / COMMAND_START），由面板编辑最合适。
+
+        ⚠️ 值需重启进程才生效：nonebot2 用 pydantic-settings 在启动时读一次 .env，
+        与 NapCat/LLBot 不同，没有配置热加载（与 write_conn_config 同源约束）。
+        """
+        return [
+            {"key": "SUPERUSERS", "label": "超级管理员（QQ 号）", "type": "list",
+             "placeholder": "123456, 789012",
+             "hint": "拥有最高权限的 QQ 号，多个用逗号分隔；改后需重启实例生效"},
+            {"key": "COMMAND_START", "label": "指令前缀", "type": "list",
+             "placeholder": ".",
+             "hint": "触发指令的前缀，多个用逗号分隔（例如 . 或 /）；改后需重启实例生效"},
+        ]
+
+    def read_config(self, instance) -> dict:
+        env = read_dotenv(self._env_path(instance))
+        return {"SUPERUSERS": (env.get("SUPERUSERS") or ""),
+                "COMMAND_START": (env.get("COMMAND_START") or "")}
+
+    def write_config(self, instance, values: dict) -> WriteResult:
+        """把超级管理员 / 指令前缀写回 .env。
+
+        list 类型在前端是「逗号分隔文本」，这里按逗号拆分、剔除空项与首尾空格后
+        再合并回逗号串——pydantic-settings 对 set[str] / tuple[str] 字段正是按逗号
+        切分读取，串里带空格反而会被当成值的一部分。
+        """
+        path = self._env_path(instance)
+
+        def _norm(s):
+            if s is None:
+                return ""
+            return ",".join(p.strip() for p in str(s).split(",") if p.strip())
+
+        sup = _norm(values.get("SUPERUSERS", ""))
+        cmd = _norm(values.get("COMMAND_START", ""))
+        atomic_write_dotenv(path, lambda c: {**c, "SUPERUSERS": sup,
+                                             "COMMAND_START": cmd})
+        return WriteResult(
+            ok=True, path=str(path),
+            manual="已写入 .env（SUPERUSERS / COMMAND_START）。\n"
+                   "⚠️ nonebot2 不支持配置热加载，需重启该实例后生效。")
 
     def extra_manage_capabilities(self, instance) -> list[dict]:
         """nonebot2 无自带 WebUI，能管的就是**依赖与插件**。

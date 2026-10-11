@@ -138,6 +138,10 @@ export const linkInstance = (id, payload) =>
 export const instanceWebui = id => api(`/instances/${id}/webui`)
 // 管理应用：后端按适配器能力返回（webui / python_deps），前端不按程序名分支
 export const instanceManage = id => api(`/instances/${id}/manage`)
+// 无 WebUI 程序的基础配置（超级管理员 / 指令前缀等）：获取随 manage 一并返回，
+// 这里只提供保存入口（适配器按各自格式落盘 .env / YAML，写后是否需重启由后端告知）
+export const saveInstanceConfig = (id, values) =>
+  api(`/instances/${id}/config`, { method: 'POST', body: { values } })
 export const installPackage = (id, spec) =>
   api(`/instances/${id}/plugins/install`, { method: 'POST', body: { spec } })
 export const uninstallPackage = (id, name) =>

@@ -32,6 +32,7 @@ from api.rest import (  # noqa: E402
     instance_manage,
     instance_plugin_install,
     instance_plugin_sync,
+    instance_config_save,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -168,6 +169,59 @@ def test_manage_unknown_instance_is_404():
     with pytest.raises(HTTPException) as e:
         instance_manage("no-such-inst", None)
     assert e.value.status_code == 404
+
+
+# ---------- 基础配置（无 WebUI 程序） ----------
+
+def test_manage_includes_config_schema_for_nonebot2():
+    """无 WebUI 的 nonebot2 要在「管理应用」里带上基础配置 schema。
+
+    超级管理员（SUPERUSERS）/ 指令前缀（COMMAND_START）是 nonebot2 的标准 .env
+    配置，面板渲染表单的字段来源就在这里；漏了等于没做这次功能。
+    """
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_cfg_"))
+    _mk("m-nbcfg", "nonebot2", webui=None)
+    ctx.registry.update("m-nbcfg", dir=str(d))
+    r = instance_manage("m-nbcfg", None)
+    cfg = r["config"]
+    assert cfg is not None, "nonebot2 应暴露基础配置"
+    keys = {s["key"] for s in cfg["schema"]}
+    assert keys == {"SUPERUSERS", "COMMAND_START"}
+    assert cfg["restart_required"] is True
+
+
+def test_manage_config_is_none_for_webui_program():
+    """自带 WebUI 的程序（NapCat）不应在面板里重复管配置，config 应为 None。
+
+    否则等于把海豹/LLBot 等在各自 WebUI 里已能改的配置又做一遍，且字段会冲突。
+    """
+    _mk("m-napcat-cfg", "napcat")
+    r = instance_manage("m-napcat-cfg", None)
+    assert r["config"] is None
+
+
+def test_config_save_writes_env_for_nonebot2():
+    """保存端点把超级管理员/指令前缀写回 .env，且按逗号归一（去空格）。
+
+    适配器按各自格式落盘，这里验 nonebot2 的 .env 路径与值正确性。
+    """
+    d = Path(tempfile.mkdtemp(prefix="dm_nb_save_"))
+    _mk("m-nbsave", "nonebot2", webui=None)
+    ctx.registry.update("m-nbsave", dir=str(d))
+    r = _run(instance_config_save("m-nbsave",
+            {"values": {"SUPERUSERS": "123456, 789012 ", "COMMAND_START": "., /"}}))
+    assert r["ok"] is True
+    env = (d / ".env").read_text("utf-8")
+    assert "SUPERUSERS=123456,789012" in env
+    assert "COMMAND_START=.,/" in env
+
+
+def test_config_save_rejects_unsupported_program():
+    """不支持面板配置的程序（NapCat）调保存端点应 400，而不是悄悄写错文件。"""
+    _mk("m-napcat-save", "napcat")
+    with pytest.raises(HTTPException) as e:
+        _run(instance_config_save("m-napcat-save", {"values": {}}))
+    assert e.value.status_code == 400
 
 
 # ---------- 插件装卸 ----------

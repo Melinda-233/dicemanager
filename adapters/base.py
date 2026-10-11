@@ -571,6 +571,33 @@ class BaseAdapter(ABC):
         """本程序特有的管理能力（默认无）。子类覆写时记得调super()."""
         return []
 
+    # ---------- 基础配置（无 WebUI 程序的面板内配置管理）----------
+    # 为什么要单独做一层（而不是前端按程序名硬编码字段）：程序配置差异极大——
+    # nonebot2 是 .env 的 SUPERUSERS / COMMAND_START，海豹是 config.yaml 的
+    # superUsers / commandPrefix，且后者自带 WebUI 本就不该在面板里再管一份。
+    # 字段由适配器声明，前端只按 schema 渲染通用表单，改清单/适配器不会漏改前端。
+    def config_schema(self, instance) -> list[dict] | None:
+        """该实例可在面板内编辑的基础配置字段（超级管理员、指令前缀等）。
+
+        返回 None = 本程序不支持面板配置（默认）。通常是自带 WebUI 的程序
+        （海豹/AstrBot/DiceNext/Koishi）应在自己的 WebUI 里管配置，面板不重复造；
+        无 WebUI 的骰子端（nonebot2 等）由子类覆写声明字段。
+
+        字段 schema：{key, label, type, placeholder?, hint?, options?, default?}
+          type ∈ {string, int, bool, list}；list 在前端是「逗号分隔文本」，
+          后端按逗号拆分/合并存储（nonebot2 的 SUPERUSERS / COMMAND_START 即此形态）。
+        """
+        return None
+
+    def read_config(self, instance) -> dict:
+        """读取当前基础配置值（键同 config_schema）。仅 config_schema 非 None 时有意义。"""
+        return {}
+
+    def write_config(self, instance, values: dict) -> WriteResult:
+        """写回基础配置（values 键同 config_schema）。返回 WriteResult。
+        默认不支持（config_schema 为 None 时不会被调用）。"""
+        return WriteResult(ok=False, manual="该程序不支持由面板写入配置")
+
     def _webui_port(self, instance) -> int | None:
         """本实例的 WebUI 端口；无 WebUI 返回 None。
 
@@ -673,6 +700,9 @@ class BaseAdapter(ABC):
     HEALTH_USE_ACTUAL_PORT = True
     # 无端口可探时的 conn 取值（LLBot 必定有 ob11，缺了就是 down 而非 none）
     HEALTH_NO_PORT = "none"
+    # 基础配置改完是否必须重启进程才生效（nonebot2 的 .env 在启动时读一次 → True）。
+    # 个别程序若支持热加载可覆写为 False；影响面板保存后的提示文案。
+    config_restart_required = True
 
     def _health_port(self, instance) -> int:
         ports = instance.allocated_ports or {}
