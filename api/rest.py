@@ -786,7 +786,6 @@ async def instance_plugin_search(inst_id: str, q: str, limit: int = 20,
         raise HTTPException(500, f"插件搜索失败: {e}") from e
     return {"ok": True, "q": kw, "results": results or []}
 
-
 @router.get("/instances/{inst_id}/plugins/op")
 async def instance_plugin_op(inst_id: str,
                         user: Annotated[CurrentUser | None, Depends(current_user)] = None):
@@ -907,6 +906,94 @@ def reveal_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
         # Linux 上跑测试，故给 xdg-open 兜底而不是抛平台异常
         subprocess.Popen(["xdg-open", str(d)])
     return {"ok": True, "dir": str(d)}
+
+
+# ---------- 实例文件只读浏览（D 项，并入「日志中心」）----------
+# 只读：仅列目录 / 查看文本 / 下载；所有路径必经 realpath 前缀校验，越界即 403。
+# 复用 _inst_or_404 做归属校验 —— server 多用户天然只看到自己实例目录，零新增权限逻辑。
+# ⚠️ 必须注册在 `/instances/{inst_id}/{op}` 通配之前（与 export/backup/diagnose 同理）。
+
+def _instance_root(inst_id: str, user) -> Path:
+    rec = _inst_or_404(inst_id, user)
+    root = Path(rec.dir).resolve()
+    if not root.is_dir():
+        raise HTTPException(404, f"实例目录不存在: {root}")
+    return root
+
+def _contained(root: Path, rel: str) -> Path:
+    """把相对路径解析到 root 内；resolve() 会跟随符号链接，故软链逃逸也会被前缀校验挡下。
+    返回 root 自身（rel 空）或 root 之内；越界（含 ../ 穿越、symlink 逃逸）即 403。"""
+    target = (root / rel).resolve() if rel else root
+    if target != root and root not in target.parents:
+        raise HTTPException(403, "越界访问被拒绝")
+    return target
+
+
+@router.get("/instances/{inst_id}/files")
+def instance_files(inst_id: str, path: str = "",
+                   user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """列出实例目录内某路径下的内容（含根）。只读，越界 403。"""
+    root = _instance_root(inst_id, user)
+    cur = _contained(root, path)
+    if not cur.is_dir():
+        raise HTTPException(400, "不是目录")
+    entries = []
+    try:
+        for e in sorted(cur.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+            try:
+                st = e.stat()
+            except OSError:
+                continue
+            entries.append({
+                "name": e.name,
+                "is_dir": e.is_dir(),
+                "size": st.st_size if e.is_file() else None,
+                "mtime": int(st.st_mtime),
+            })
+    except PermissionError:
+        raise HTTPException(403, "无读取权限")
+    return {"root": str(root), "path": path, "entries": entries}
+
+
+@router.get("/instances/{inst_id}/files/content")
+def instance_file_content(inst_id: str, path: str = "",
+                          user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """查看文本文件内容（限 256KB；二进制 / 非 UTF-8 拒绝，避免把图片/压缩包当文本dump）。"""
+    root = _instance_root(inst_id, user)
+    if not path:
+        raise HTTPException(400, "需要 path")
+    f = _contained(root, path)
+    if f == root or not f.is_file():
+        raise HTTPException(404, "文件不存在")
+    MAX = 256 * 1024
+    if f.stat().st_size > MAX:
+        raise HTTPException(413, f"文件过大（>{MAX // 1024}KB），请下载后查看")
+    try:
+        data = f.read_bytes()
+    except OSError as e:
+        raise HTTPException(403, str(e)) from e
+    if b"\x00" in data[:512]:
+        raise HTTPException(415, "二进制文件不支持在线查看")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(415, "非 UTF-8 文本，不支持在线查看")
+    return {"path": path, "text": text, "size": len(data)}
+
+
+@router.get("/instances/{inst_id}/files/download")
+def instance_file_download(inst_id: str, path: str = "",
+                           user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """下载文件（限 50MB，避免大包把受限内存的服务器拖垮）。"""
+    root = _instance_root(inst_id, user)
+    if not path:
+        raise HTTPException(400, "需要 path")
+    f = _contained(root, path)
+    if f == root or not f.is_file():
+        raise HTTPException(404, "文件不存在")
+    if f.stat().st_size > 50 * 1024 * 1024:
+        raise HTTPException(413, "文件过大（>50MB）暂不支持下载")
+    return FileResponse(f, filename=Path(path).name)
 
 
 @router.post("/instances/{inst_id}/{op}")

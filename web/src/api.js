@@ -257,6 +257,27 @@ export const diagnoseInstance = id => api(`/instances/${id}/diagnose`)
 // 在文件管理器里打开实例目录（分化 C6，仅 desktop；server 上返 404）
 export const revealInstance = id => api(`/instances/${id}/reveal`, { method: 'POST' })
 
+// ---------- 实例文件管理（功能 2：并入日志中心；只读 + 受限写）----------
+// 所有操作都限制在实例自身目录内（后端 realpath 前缀 containment）。
+export const listInstanceFiles = (id, path = '') =>
+  api(`/instances/${id}/files?path=${encodeURIComponent(path)}`)
+export const getInstanceFileContent = (id, path) =>
+  api(`/instances/${id}/files/content?path=${encodeURIComponent(path)}`)
+export async function downloadInstanceFile(id, path, name) {
+  const r = await fetch(`/api/instances/${id}/files/download?path=${encodeURIComponent(path)}`,
+                        { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+  if (r.status === 401) { unauthorized(); throw new Error('未授权') }
+  if (!r.ok) {
+    let detail = r.statusText
+    try { detail = (await r.json()).detail || detail } catch { /* 非 JSON 兜底 */ }
+    throw new Error(detail)
+  }
+  const b = await r.blob(), u = URL.createObjectURL(b)
+  const a = Object.assign(document.createElement('a'), { href: u, download: name || 'file' })
+  a.click()
+  URL.revokeObjectURL(u)
+}
+
 // ---------- 定时任务（拓展7） ----------
 export const listSchedules = () => api('/schedules')
 export const addSchedule = b => api('/schedules', { method: 'POST', body: b })

@@ -11,9 +11,9 @@ from types import SimpleNamespace
 import psutil
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from adapters.base import BaseAdapter
 from api.auth import auth
 from api.context import ctx
-from adapters.base import BaseAdapter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

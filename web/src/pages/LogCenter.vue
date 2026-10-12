@@ -17,42 +17,96 @@
         </optgroup>
       </select>
       <span v-if="!instances.length" class="hint">还没有实例</span>
-      <input v-model="keyword" placeholder="关键字过滤（当前实例）" @change="applyFilter"/>
-      <button @click="togglePause">{{ paused ? '继续跟随' : '暂停跟随' }}</button>
-      <button @click="copyAll">复制</button>
-      <button @click="download">下载</button>
-    </div>
-    <!-- 跨实例聚合检索（拓展10）：ring + 磁盘日志尾部，不依赖当前选中实例 -->
-    <div class="toolbar">
-      <input v-model="gq" class="gq" placeholder="跨实例全局搜索（回车执行，至少 2 字符）"
-             @keyup.enter="globalSearch"/>
-      <button @click="globalSearch">搜索</button>
-    </div>
-    <div v-if="searching" class="hint">搜索中…</div>
-    <div v-if="gResults" class="gres">
-      <p class="hint">全局搜索「{{ gResults.q }}」：{{ gResults.results.length }} 条结果
-        <button class="x" @click="gResults = null">收起</button></p>
-      <div v-for="(r, i) in gResults.results" :key="i" class="g-row">
-        <span class="g-inst" :title="r.instance">{{ r.dice }}</span>
-        <span class="g-line">{{ r.line }}</span>
-        <button v-if="r.instance !== instanceId" @click="jumpTo(r.instance)">查看该实例</button>
+      <!-- 子视图切换：日志流 / 实例文件只读浏览（D 项）。两个互斥，用独立 v-if 各自渲染。 -->
+      <div class="subtabs">
+        <button :class="{active: view === 'logs'}" @click="view = 'logs'">日志</button>
+        <button :class="{active: view === 'files'}" @click="view = 'files'">文件</button>
       </div>
-      <p v-if="!gResults.results.length" class="hint">没有匹配的日志行。</p>
     </div>
-    <div class="term" ref="term">
-      <div v-for="l in lines" :key="l.seq" :class="{err: l.error}">{{ l.text }}</div>
-    </div>
+
+    <!-- ===== 日志视图 ===== -->
+    <template v-if="view === 'logs'">
+      <div class="toolbar">
+        <input v-model="keyword" placeholder="关键字过滤（当前实例）" @change="applyFilter"/>
+        <button @click="togglePause">{{ paused ? '继续跟随' : '暂停跟随' }}</button>
+        <button @click="copyAll">复制</button>
+        <button @click="download">下载</button>
+      </div>
+      <!-- 跨实例聚合检索（拓展10）：ring + 磁盘日志尾部，不依赖当前选中实例 -->
+      <div class="toolbar">
+        <input v-model="gq" class="gq" placeholder="跨实例全局搜索（回车执行，至少 2 字符）"
+               @keyup.enter="globalSearch"/>
+        <button @click="globalSearch">搜索</button>
+      </div>
+      <div v-if="searching" class="hint">搜索中…</div>
+      <div v-if="gResults" class="gres">
+        <p class="hint">全局搜索「{{ gResults.q }}」：{{ gResults.results.length }} 条结果
+          <button class="x" @click="gResults = null">收起</button></p>
+        <div v-for="(r, i) in gResults.results" :key="i" class="g-row">
+          <span class="g-inst" :title="r.instance">{{ r.dice }}</span>
+          <span class="g-line">{{ r.line }}</span>
+          <button v-if="r.instance !== instanceId" @click="jumpTo(r.instance)">查看该实例</button>
+        </div>
+        <p v-if="!gResults.results.length" class="hint">没有匹配的日志行。</p>
+      </div>
+      <div class="term" ref="term">
+        <div v-for="l in lines" :key="l.seq" :class="{err: l.error}">{{ l.text }}</div>
+      </div>
+    </template>
+
+    <!-- ===== 文件视图（D 项，只读） ===== -->
+    <template v-else>
+      <div class="toolbar">
+        <button @click="goUp" :disabled="!fPath">上一级</button>
+        <span class="crumb">
+          <span class="link" @click="loadFiles('')">根目录</span>
+          <template v-for="(c, i) in breadcrumb" :key="i">
+            <span class="sep">/</span><span class="link" @click="goCrumb(c.path)">{{ c.name }}</span>
+          </template>
+        </span>
+        <span v-if="fLoading" class="hint">加载中…</span>
+      </div>
+      <div v-if="fErr" class="hint warn">{{ fErr }}</div>
+
+      <!-- 文件内容查看（文本） -->
+      <div v-if="fContent" class="fileview">
+        <div class="toolbar">
+          <span class="hint">{{ fContent.path }}（{{ fmtSize(fContent.size) }}）</span>
+          <button @click="fContent = null">返回列表</button>
+          <button @click="fDownloadCurrent">下载</button>
+        </div>
+        <pre class="ftext">{{ fContent.text }}</pre>
+      </div>
+
+      <!-- 目录列表 -->
+      <div v-else class="filelist">
+        <div v-for="e in fEntries" :key="e.name" class="frow" @click="openEntry(e)">
+          <span class="ficon">{{ e.is_dir ? '📁' : '📄' }}</span>
+          <span class="fname">{{ e.name }}</span>
+          <span class="fmeta" v-if="!e.is_dir">{{ fmtSize(e.size) }} · {{ fmtTime(e.mtime) }}</span>
+          <button v-if="!e.is_dir" class="fbtn" @click.stop="fDownload(e)">下载</button>
+        </div>
+        <p v-if="!fLoading && !fErr && !fEntries.length" class="hint">空目录</p>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { connectWS } from '../ws'
-import { listInstances, downloadLog, searchLogs } from '../api'
+import { listInstances, downloadLog, searchLogs,
+         listInstanceFiles, getInstanceFileContent, downloadInstanceFile } from '../api'
 
 const instances = ref([]), instanceId = ref(''), lines = ref([])
 const keyword = ref(''), paused = ref(false), term = ref(null)
 const gq = ref(''), gResults = ref(null), searching = ref(false)
+const view = ref('logs')          // 'logs' | 'files'
+
+// 文件视图状态
+const fPath = ref(''), fEntries = ref([]), fErr = ref('')
+const fLoading = ref(false), fContent = ref(null)
+
 let sock
 const render = m => {
   if (m.type !== 'line') return
@@ -91,6 +145,7 @@ const onPickInstance = () => {
   gResults.value = null
   paused.value = false
   reconnect()
+  if (view.value === 'files') loadFiles('')   // 切到别的实例时文件视图也要重新列
 }
 const togglePause = () => { paused.value = !paused.value
   sock?.send(paused.value ? 'pause' : 'resume') }
@@ -110,6 +165,58 @@ const globalSearch = async () => {
   }
 }
 const jumpTo = id => { instanceId.value = id; reconnect() }
+
+// ---------- 文件只读浏览（D 项） ----------
+const loadFiles = async (p = '') => {
+  if (!instanceId.value) return
+  fLoading.value = true; fErr.value = ''; fContent.value = null
+  try {
+    const r = await listInstanceFiles(instanceId.value, p)
+    fEntries.value = r.entries
+    fPath.value = r.path
+  } catch (e) { fErr.value = e.message } finally { fLoading.value = false }
+}
+const openEntry = e => {
+  const p = fPath.value ? `${fPath.value}/${e.name}` : e.name
+  if (e.is_dir) loadFiles(p)
+  else viewFile(p)
+}
+const viewFile = async path => {
+  fLoading.value = true; fErr.value = ''
+  try {
+    fContent.value = await getInstanceFileContent(instanceId.value, path)
+  } catch (e) { fErr.value = e.message; fContent.value = null } finally { fLoading.value = false }
+}
+const goUp = () => {
+  const parts = (fPath.value || '').split('/').filter(Boolean)
+  parts.pop(); loadFiles(parts.join('/'))
+}
+const goCrumb = p => loadFiles(p)
+const breadcrumb = computed(() => {
+  const acc = [], out = []
+  for (const p of (fPath.value || '').split('/').filter(Boolean)) {
+    acc.push(p); out.push({ name: p, path: acc.join('/') })
+  }
+  return out
+})
+const fDownload = e => {
+  const p = fPath.value ? `${fPath.value}/${e.name}` : e.name
+  downloadInstanceFile(instanceId.value, p, e.name).catch(e => fErr.value = e.message)
+}
+const fDownloadCurrent = () =>
+  downloadInstanceFile(instanceId.value, fContent.value.path, fContent.value.path.split('/').pop())
+    .catch(e => fErr.value = e.message)
+
+const fmtSize = n => {
+  if (n == null) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+const fmtTime = ts => {
+  const d = new Date(ts * 1000), p = x => String(x).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 onMounted(async () => {
   instances.value = await listInstances()
@@ -133,4 +240,29 @@ onUnmounted(() => sock?.close())
 .g-line { flex: 1; font-family: ui-monospace, Menlo, Consolas, monospace;
           white-space: pre-wrap; word-break: break-all; }
 .g-row button { padding: 0 8px; font-size: 12px; flex-shrink: 0; }
+
+/* 子视图切换：与日志中心的其余按钮区分开，避免误以为是日志过滤动作 */
+.subtabs { margin-left: auto; display: flex; gap: 4px; }
+.subtabs button { padding: 4px 14px; border: 1px solid var(--border);
+                  background: var(--bg); color: var(--text); border-radius: 6px; cursor: pointer; }
+.subtabs button.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+
+/* 文件浏览器 */
+.crumb { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 2px; }
+.crumb .link { color: var(--brand); cursor: pointer; }
+.crumb .link:hover { text-decoration: underline; }
+.crumb .sep { color: var(--muted); margin: 0 2px; }
+.filelist { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.frow { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+        border-bottom: 1px solid var(--border); cursor: pointer; }
+.frow:last-child { border-bottom: none; }
+.frow:hover { background: var(--bg-hover); }
+.ficon { width: 22px; text-align: center; }
+.fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fmeta { font-size: 12px; color: var(--muted); flex-shrink: 0; }
+.fbtn { padding: 1px 10px; font-size: 12px; flex-shrink: 0; }
+.fileview { border: 1px solid var(--border); border-radius: 8px; }
+.ftext { font-family: ui-monospace, Menlo, Consolas, monospace; margin: 0;
+         padding: 12px; max-height: 64vh; overflow: auto;
+         white-space: pre-wrap; word-break: break-all; font-size: 12.5px; }
 </style>
