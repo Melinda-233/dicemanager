@@ -64,8 +64,13 @@
             <span class="sep">/</span><span class="link" @click="goCrumb(c.path)">{{ c.name }}</span>
           </template>
         </span>
+        <span class="spacer" />
+        <button @click="fNewFile">新建文件</button>
+        <button @click="fNewFolder">新建文件夹</button>
+        <button @click="fUpload">上传</button>
         <span v-if="fLoading" class="hint">加载中…</span>
       </div>
+      <input ref="fileInput" type="file" class="hide" @change="fOnFile" />
       <div v-if="fErr" class="hint warn">{{ fErr }}</div>
 
       <!-- 文件内容查看（文本） -->
@@ -73,9 +78,15 @@
         <div class="toolbar">
           <span class="hint">{{ fContent.path }}（{{ fmtSize(fContent.size) }}）</span>
           <button @click="fContent = null">返回列表</button>
+          <button v-if="!fEditing" @click="startEdit">编辑</button>
+          <template v-else>
+            <button class="primary" @click="saveEdit">保存</button>
+            <button @click="cancelEdit">取消</button>
+          </template>
           <button @click="fDownloadCurrent">下载</button>
         </div>
-        <pre class="ftext">{{ fContent.text }}</pre>
+        <pre v-if="!fEditing" class="ftext">{{ fContent.text }}</pre>
+        <textarea v-else ref="editArea" v-model="fEditText" class="fedit" spellcheck="false"></textarea>
       </div>
 
       <!-- 目录列表 -->
@@ -84,7 +95,11 @@
           <span class="ficon">{{ e.is_dir ? '📁' : '📄' }}</span>
           <span class="fname">{{ e.name }}</span>
           <span class="fmeta" v-if="!e.is_dir">{{ fmtSize(e.size) }} · {{ fmtTime(e.mtime) }}</span>
-          <button v-if="!e.is_dir" class="fbtn" @click.stop="fDownload(e)">下载</button>
+          <span class="factions">
+            <button v-if="!e.is_dir" class="fbtn" @click.stop="fDownload(e)">下载</button>
+            <button class="fbtn" @click.stop="fRename(e)">重命名</button>
+            <button class="fbtn danger" @click.stop="fDelete(e)">删除</button>
+          </span>
         </div>
         <p v-if="!fLoading && !fErr && !fEntries.length" class="hint">空目录</p>
       </div>
@@ -96,7 +111,8 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { connectWS } from '../ws'
 import { listInstances, downloadLog, searchLogs,
-         listInstanceFiles, getInstanceFileContent, downloadInstanceFile } from '../api'
+         listInstanceFiles, getInstanceFileContent, downloadInstanceFile,
+         writeInstanceFile, mkdirInstanceFile, renameInstanceFile, deleteInstanceFile } from '../api'
 
 const instances = ref([]), instanceId = ref(''), lines = ref([])
 const keyword = ref(''), paused = ref(false), term = ref(null)
@@ -106,6 +122,8 @@ const view = ref('logs')          // 'logs' | 'files'
 // 文件视图状态
 const fPath = ref(''), fEntries = ref([]), fErr = ref('')
 const fLoading = ref(false), fContent = ref(null)
+const fEditing = ref(false), fEditText = ref('')
+const fileInput = ref(null), editArea = ref(null)
 
 let sock
 const render = m => {
@@ -207,6 +225,68 @@ const fDownloadCurrent = () =>
   downloadInstanceFile(instanceId.value, fContent.value.path, fContent.value.path.split('/').pop())
     .catch(e => fErr.value = e.message)
 
+// ---------- 受限写：编辑 / 新建 / 上传 / 重命名 / 删除（限制在实例目录内）----------
+const startEdit = () => {
+  fEditText.value = fContent.value.text
+  fEditing.value = true
+  nextTick(() => editArea.value?.focus())
+}
+const cancelEdit = () => { fEditing.value = false }
+const saveEdit = async () => {
+  try {
+    await writeInstanceFile(instanceId.value, fContent.value.path, fEditText.value, 'text')
+    fContent.value = await getInstanceFileContent(instanceId.value, fContent.value.path)
+    fEditing.value = false; fErr.value = ''
+  } catch (e) { fErr.value = e.message }
+}
+const fNewFile = async () => {
+  const name = window.prompt('新文件名（可含子目录，如 config/sub.txt）：')
+  if (!name) return
+  try {
+    await writeInstanceFile(instanceId.value, name.trim(), '', 'text')
+    await loadFiles(fPath.value); fErr.value = ''
+  } catch (e) { fErr.value = e.message }
+}
+const fNewFolder = async () => {
+  const name = window.prompt('新文件夹名：')
+  if (!name) return
+  try {
+    await mkdirInstanceFile(instanceId.value, name.trim())
+    await loadFiles(fPath.value); fErr.value = ''
+  } catch (e) { fErr.value = e.message }
+}
+const fRename = async (e) => {
+  const newName = window.prompt('重命名为：', e.name)
+  if (!newName || newName.trim() === e.name) return
+  const p = fPath.value ? `${fPath.value}/${e.name}` : e.name
+  try {
+    await renameInstanceFile(instanceId.value, p, newName.trim())
+    await loadFiles(fPath.value); fErr.value = ''
+  } catch (err) { fErr.value = err.message }
+}
+const fDelete = async (e) => {
+  if (!window.confirm(`确定删除 ${e.is_dir ? '文件夹' : '文件'}「${e.name}」？此操作不可恢复。`)) return
+  const p = fPath.value ? `${fPath.value}/${e.name}` : e.name
+  try {
+    await deleteInstanceFile(instanceId.value, p)
+    await loadFiles(fPath.value); fErr.value = ''
+  } catch (err) { fErr.value = err.message }
+}
+const fUpload = () => fileInput.value?.click()
+const fOnFile = async (ev) => {
+  const f = ev.target.files?.[0]
+  if (!f) return
+  try {
+    const buf = await f.arrayBuffer()
+    const bytes = new Uint8Array(buf); let bin = ''
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+    const p = fPath.value ? `${fPath.value}/${f.name}` : f.name
+    await writeInstanceFile(instanceId.value, p, btoa(bin), 'base64')
+    await loadFiles(fPath.value); fErr.value = ''
+  } catch (e) { fErr.value = e.message }
+  ev.target.value = ''
+}
+
 const fmtSize = n => {
   if (n == null) return ''
   if (n < 1024) return `${n} B`
@@ -265,4 +345,17 @@ onUnmounted(() => sock?.close())
 .ftext { font-family: ui-monospace, Menlo, Consolas, monospace; margin: 0;
          padding: 12px; max-height: 64vh; overflow: auto;
          white-space: pre-wrap; word-break: break-all; font-size: 12.5px; }
+
+/* 文件视图工具条与受限写控件 */
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.toolbar .spacer { flex: 1; }
+.hide { display: none; }
+.factions { margin-left: auto; display: inline-flex; gap: 6px; flex-shrink: 0; }
+.fbtn.danger { color: #ff7b72; border-color: #ff7b7255; }
+.fbtn.danger:hover { background: #ff7b7222; }
+.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+.fedit { width: 100%; min-height: 60vh; box-sizing: border-box; margin: 0; padding: 12px;
+         border: none; resize: vertical; background: var(--bg); color: var(--text);
+         font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+         white-space: pre-wrap; line-height: 1.5; }
 </style>

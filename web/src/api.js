@@ -278,6 +278,17 @@ export async function downloadInstanceFile(id, path, name) {
   URL.revokeObjectURL(u)
 }
 
+// 受限写：创建/覆盖文本、上传二进制（base64）、新建文件夹、重命名、删除。
+// 全部限制在实例自身目录内（后端 containment）；不允许改实例根、不允许越界。
+export const writeInstanceFile = (id, path, content, encoding = 'text') =>
+  api(`/instances/${id}/files`, { method: 'POST', body: { path, content, encoding } })
+export const mkdirInstanceFile = (id, path) =>
+  api(`/instances/${id}/files/mkdir`, { method: 'POST', body: { path } })
+export const renameInstanceFile = (id, path, newName) =>
+  api(`/instances/${id}/files/rename`, { method: 'POST', body: { path, new_name: newName } })
+export const deleteInstanceFile = (id, path) =>
+  api(`/instances/${id}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+
 // ---------- 定时任务（拓展7） ----------
 export const listSchedules = () => api('/schedules')
 export const addSchedule = b => api('/schedules', { method: 'POST', body: b })

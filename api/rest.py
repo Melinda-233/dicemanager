@@ -12,6 +12,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
 
+from core.instance_files import (
+    delete_file,
+    download_file,
+    list_files,
+    mkdir,
+    read_file,
+    rename_file,
+    write_file,
+)
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -908,92 +917,154 @@ def reveal_instance(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
     return {"ok": True, "dir": str(d)}
 
 
-# ---------- 实例文件只读浏览（D 项，并入「日志中心」）----------
-# 只读：仅列目录 / 查看文本 / 下载；所有路径必经 realpath 前缀校验，越界即 403。
-# 复用 _inst_or_404 做归属校验 —— server 多用户天然只看到自己实例目录，零新增权限逻辑。
-# ⚠️ 必须注册在 `/instances/{inst_id}/{op}` 通配之前（与 export/backup/diagnose 同理）。
+# ---------- 实例文件管理（功能 2：并入「日志中心」；只读浏览 + 受限写）----------
+# 文件系统逻辑（含 realpath 前缀 containment、大小上限、原子写）统一在 core.instance_files，
+# 本模块只做归属校验（_own）+ HTTP 映射 + 错误码转换。server 多用户天然只看到自己实例目录，
+# 零新增权限逻辑。⚠️ 必须注册在 `/instances/{inst_id}/{op}` 通配之前（与 export/backup/diagnose 同理）。
 
-def _instance_root(inst_id: str, user) -> Path:
-    rec = _inst_or_404(inst_id, user)
-    root = Path(rec.dir).resolve()
-    if not root.is_dir():
-        raise HTTPException(404, f"实例目录不存在: {root}")
-    return root
-
-def _contained(root: Path, rel: str) -> Path:
-    """把相对路径解析到 root 内；resolve() 会跟随符号链接，故软链逃逸也会被前缀校验挡下。
-    返回 root 自身（rel 空）或 root 之内；越界（含 ../ 穿越、symlink 逃逸）即 403。"""
-    target = (root / rel).resolve() if rel else root
-    if target != root and root not in target.parents:
-        raise HTTPException(403, "越界访问被拒绝")
-    return target
+def _files_root(inst_id: str, user) -> str:
+    """取实例目录（归属校验走 _own）。越权/不存在 → 404；未部署（无目录）→ 400。"""
+    rec = _own(inst_id, user)
+    d = rec.get("dir")
+    if not d:
+        raise HTTPException(400, "该实例没有可管理的目录")
+    return d
 
 
 @router.get("/instances/{inst_id}/files")
-def instance_files(inst_id: str, path: str = "",
-                   user: Annotated[CurrentUser | None, Depends(current_user)] = None):
-    """列出实例目录内某路径下的内容（含根）。只读，越界 403。"""
-    root = _instance_root(inst_id, user)
-    cur = _contained(root, path)
-    if not cur.is_dir():
-        raise HTTPException(400, "不是目录")
-    entries = []
+def instance_files_list(inst_id: str, path: str = "",
+                        user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """列出实例目录内某路径下的内容（含根）。越界 403。"""
+    root = _files_root(inst_id, user)
     try:
-        for e in sorted(cur.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-            try:
-                st = e.stat()
-            except OSError:
-                continue
-            entries.append({
-                "name": e.name,
-                "is_dir": e.is_dir(),
-                "size": st.st_size if e.is_file() else None,
-                "mtime": int(st.st_mtime),
-            })
-    except PermissionError:
-        raise HTTPException(403, "无读取权限")
-    return {"root": str(root), "path": path, "entries": entries}
+        res = list_files(root, path)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from None
+    # 前端约定字段：items/type → entries/is_dir
+    entries = [{"name": i["name"], "is_dir": i["type"] == "dir",
+                "size": i["size"], "mtime": i["mtime"]} for i in res["items"]]
+    return {"path": res["path"], "entries": entries}
 
 
 @router.get("/instances/{inst_id}/files/content")
-def instance_file_content(inst_id: str, path: str = "",
-                          user: Annotated[CurrentUser | None, Depends(current_user)] = None):
-    """查看文本文件内容（限 256KB；二进制 / 非 UTF-8 拒绝，避免把图片/压缩包当文本dump）。"""
-    root = _instance_root(inst_id, user)
+def instance_file_read(inst_id: str, path: str = "",
+                       user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """查看文本文件内容（限 4MB；二进制 / 非 UTF-8 拒绝，避免把图片/压缩包当文本 dump）。"""
     if not path:
         raise HTTPException(400, "需要 path")
-    f = _contained(root, path)
-    if f == root or not f.is_file():
-        raise HTTPException(404, "文件不存在")
-    MAX = 256 * 1024
-    if f.stat().st_size > MAX:
-        raise HTTPException(413, f"文件过大（>{MAX // 1024}KB），请下载后查看")
+    root = _files_root(inst_id, user)
     try:
-        data = f.read_bytes()
-    except OSError as e:
-        raise HTTPException(403, str(e)) from e
-    if b"\x00" in data[:512]:
-        raise HTTPException(415, "二进制文件不支持在线查看")
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise HTTPException(415, "非 UTF-8 文本，不支持在线查看")
-    return {"path": path, "text": text, "size": len(data)}
+        res = read_file(root, path)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from None
+    except ValueError as e:               # 文件过大（>4MB）
+        raise HTTPException(413, str(e)) from None
+    if not res["is_text"]:
+        raise HTTPException(415, "二进制文件不支持在线查看，请下载")
+    return {"path": path, "text": res["content"], "size": res["size"]}
 
 
 @router.get("/instances/{inst_id}/files/download")
 def instance_file_download(inst_id: str, path: str = "",
                            user: Annotated[CurrentUser | None, Depends(current_user)] = None):
     """下载文件（限 50MB，避免大包把受限内存的服务器拖垮）。"""
-    root = _instance_root(inst_id, user)
     if not path:
         raise HTTPException(400, "需要 path")
-    f = _contained(root, path)
-    if f == root or not f.is_file():
-        raise HTTPException(404, "文件不存在")
-    if f.stat().st_size > 50 * 1024 * 1024:
-        raise HTTPException(413, "文件过大（>50MB）暂不支持下载")
-    return FileResponse(f, filename=Path(path).name)
+    root = _files_root(inst_id, user)
+    try:
+        p = download_file(root, path)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from None
+    except ValueError as e:               # 文件过大（>50MB）
+        raise HTTPException(413, str(e)) from None
+    return FileResponse(p, filename=Path(path).name)
+
+
+class FileWriteReq(BaseModel):
+    path: str = ""
+    content: str = ""
+    encoding: str = "text"                # "text" | "base64"（上传二进制）
+
+
+@router.post("/instances/{inst_id}/files")
+def instance_file_write(inst_id: str, body: FileWriteReq,
+                        user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """创建 / 覆盖文件（受限写）。文本走 utf-8；二进制上传走 base64。父目录自动创建，原子写。"""
+    root = _files_root(inst_id, user)
+    try:
+        res = write_file(root, body.path, body.content, body.encoding)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except (FileNotFoundError, IsADirectoryError) as e:
+        raise HTTPException(400, str(e)) from None
+    except ValueError as e:               # base64 解码失败 / 写入过大（>16MB）
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, "name": res["name"], "size": res["size"], "mtime": res["mtime"]}
+
+
+class FileMkdirReq(BaseModel):
+    path: str = ""
+
+
+@router.post("/instances/{inst_id}/files/mkdir")
+def instance_file_mkdir(inst_id: str, body: FileMkdirReq,
+                        user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """在实例目录内新建文件夹。"""
+    root = _files_root(inst_id, user)
+    try:
+        res = mkdir(root, body.path)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileExistsError as e:
+        raise HTTPException(409, str(e)) from None
+    except ValueError as e:               # 路径非法
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, "name": res["name"]}
+
+
+class FileRenameReq(BaseModel):
+    path: str = ""
+    new_name: str = ""
+
+
+@router.post("/instances/{inst_id}/files/rename")
+def instance_file_rename(inst_id: str, body: FileRenameReq,
+                         user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """重命名（限同一目录内）。"""
+    root = _files_root(inst_id, user)
+    try:
+        res = rename_file(root, body.path, body.new_name)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from None
+    except FileExistsError as e:
+        raise HTTPException(409, str(e)) from None
+    except ValueError as e:               # 非法新名称
+        raise HTTPException(400, str(e)) from None
+    return {"ok": True, "name": res["name"]}
+
+
+@router.delete("/instances/{inst_id}/files")
+def instance_file_delete(inst_id: str, path: str = "",
+                         user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """删除文件或（递归）目录。禁止删除实例根目录。"""
+    if not path:
+        raise HTTPException(400, "需要 path")
+    root = _files_root(inst_id, user)
+    try:
+        res = delete_file(root, path)
+    except PermissionError as e:
+        raise HTTPException(403, str(e)) from None
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e)) from None
+    return {"ok": True, "name": res["name"]}
 
 
 @router.post("/instances/{inst_id}/{op}")
