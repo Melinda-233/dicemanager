@@ -12,15 +12,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
 
-from core.instance_files import (
-    delete_file,
-    download_file,
-    list_files,
-    mkdir,
-    read_file,
-    rename_file,
-    write_file,
-)
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -40,6 +31,15 @@ from api.context import ctx
 from core import backup, exports, quota, scanner
 from core import packages as pkgstore
 from core.edition import EDITION, is_desktop, is_server
+from core.instance_files import (
+    delete_file,
+    download_file,
+    list_files,
+    mkdir,
+    read_file,
+    rename_file,
+    write_file,
+)
 from core.locks import instance_lock, quota_lock
 from core.registry import State
 from core.roles import is_login_program
@@ -310,7 +310,15 @@ def list_instances(user: Annotated[CurrentUser | None, Depends(current_user)] = 
                     p = {**p, "alive": True}
             except Exception:
                 pass
-        out.append({**r, "process": p})
+        rec = {**r, "process": p}
+        # 账号在线状态与 /ws/overview 同口径（判据在 BaseAdapter.stamp_accounts）：
+        # 否则总览页显示「在线」、向导/实例列表显示「unknown」，两处自相矛盾。
+        try:
+            rec["accounts"] = ctx.get_adapter(r["dice"]).stamp_accounts(
+                SimpleNamespace(**r), r.get("accounts") or [], bool(p.get("alive")))
+        except Exception:
+            pass                               # 取适配器失败时保留盘上原值
+        out.append(rec)
     return out
 
 class LinkReq(BaseModel):

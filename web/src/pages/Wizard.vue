@@ -373,7 +373,7 @@
             <select v-if="pickedApps.includes(a.id)" v-model="pickAcct[a.id]" class="acct">
               <option value="">默认账号（自动分配）</option>
               <option v-for="ac in myAccounts" :key="ac.qq" :value="String(ac.qq)">
-                QQ {{ ac.qq }}{{ ac.status ? '（' + ac.status + '）' : '' }}</option>
+                QQ {{ ac.qq }}（{{ acctStateText(ac.status) }}）</option>
             </select>
           </div>
 
@@ -425,7 +425,7 @@
                 <select v-model="l.account_qq">
                   <option value="">默认账号（自动分配）</option>
                   <option v-for="a in accountsOf(l.login_ref)" :key="a.qq" :value="String(a.qq)">
-                    QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+                    QQ {{ a.qq }}（{{ acctStateText(a.status) }}）</option>
                 </select>
               </div>
               <div>
@@ -673,6 +673,9 @@ const needLoginHere = computed(() => {
 })
 const loginInstOf = lr => instances.value.find(i => i.id === lr) || null
 const accountsOf = lr => loginInstOf(lr)?.accounts || []
+// 账号在线状态：后端给出 running/stopped/unknown，展示统一转中文（与总览页同口径）。
+// unknown 不并入「离线」——没判据就不装作知道。
+const acctStateText = s => (s === 'running' ? '在线' : (s === 'stopped' ? '离线' : '未知'))
 const needsLoginEnd = computed(() => loginOptions.value.length > 0 && !pickedLinks.value.length)
 
 // ---------- 步骤条 ----------

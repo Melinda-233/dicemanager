@@ -11,14 +11,20 @@
 - **缺 appsettings.json 时程序会 Console.ReadKey(true) 等按键**（Program.cs 原话
   "Please Edit the appsettings.json ... and press any key to continue"）——无头部署必然
   卡死或抛异常。故部署阶段就预置配置，不依赖 Step5 的 prepare_start。
-- 登录：扫码（上游主路径）+ 账号密码（feature table 的 UnusalDevice Password）。
-  二维码以 Unicode 方块字符画打到 stdout
+- 登录：扫码（上游当前**唯一**可用路径）。二维码以 Unicode 方块字符画打到 stdout
   （ConsoleCompatibilityMode=false 用 ▄▀█，true 用 .^@），**不打印 data URL**，
   同时落盘 `qr-{Account:Uin}.png`（Uin 默认 0 → qr-0.png）。
   所以二维码取自磁盘 png，基类那条「日志里找 data:image… 」的正则抓不到。
-  密码登录：`Account.Password` 非空即走账密（为空才是扫码），官方文档的说法是
-  "After QRCode Login, write password and uin back to appsettings.json" ——
-  即首次扫码后把账密回写，之后启动免扫码。
+- ⚠️ **账号密码登录已关闭**（2026-10-13 复核上游文档后改）：
+  官方配置文档 https://lagrangedev.github.io/Lagrange.Doc/v1/Lagrange.OneBot/Config/
+  对 Account 段的注释是 `"Password": "", // 不再支持`，且
+  `"Uin": 0, // 用于识别 db 和 qrcode 文件, 无任何其他用途`。
+  即现在写了 Password 也不会走账密，仍旧出二维码 —— 让用户填完密码（还明文落盘）
+  却每次都得扫码，比不给这个选项更糟，故 login_modes 退回 ["qrcode"]。
+  免扫码快速登录**另有一条路且是有效的**：登录成功后程序自己落 keystore.json
+  （会话票据），下次启动读它即可免扫码（社区实测「扫码一次后不用再配置」）。
+  恢复条件：上游重新支持 Account.Password。届时只需把 login_modes 加回 "account"，
+  save_login_credentials 的实现已保留在下面，不用重写。
 - 自更新默认关闭（UpdaterConfig.EnableAutoUpdate=false），无需干预。
 """
 import copy
@@ -61,13 +67,16 @@ class LagrangeAdapter(LagrangeBase):
 
     # ---------- 登录方式 ----------
     def login_modes(self) -> list[str]:
-        """扫码 + 账号密码二选一（上游 feature table 的 UnusalDevice Password）。
+        """只提供扫码：上游已不再支持 Account.Password（详见本文件顶部 docstring）。
 
-        上游 appsettings.json 的 Account 段即为此设计：`{"Uin": 0, "Password": ""}`，
-        官方文档明确 "After QRCode Login, write password and uin back to appsettings.json"
-        —— Password 为空才走扫码。写了就免扫码快速登录。
+        原先这里返回 ["qrcode", "account"]，依据是旧版 README 的
+        "After QRCode Login, write password and uin back to appsettings.json"。
+        2026-10-13 复核官方配置文档，该字段已被标注「不再支持」——写了密码也仍旧
+        出二维码。保留一个不生效的选项比不给选项更糟（用户会以为自己设过了），故关闭。
+
+        免扫码快速登录不依赖这里：登录成功后上游自己落 keystore.json，重启即免扫码。
         """
-        return ["qrcode", "account"]
+        return ["qrcode"]
 
     # Account.Protocol 的可选值（上游 appsettings.json 的 Protocol 字段）
     LOGIN_PROTOCOLS = [{"id": "Windows", "label": "Windows（兼容性最好）"},
@@ -76,6 +85,10 @@ class LagrangeAdapter(LagrangeBase):
 
     def save_login_credentials(self, instance, credentials) -> dict:
         """写 Account.Uin / Password / Protocol，使其以后免扫码启动即登录。
+
+        ⚠️ **当前不会被调用**：login_modes 已退回 ["qrcode"]（上游不再支持
+        Account.Password，见顶部 docstring）。实现特意保留，等上游恢复支持时
+        只需改 login_modes 一行，不必重新核对字段路径。
 
         **密码明文落盘**：这是上游格式本身的要求（程序直接读明文），不是管理器的
         偷懒——加密就没法让程序自己登录了。因此只写程序配置文件，不进管理器状态库
@@ -109,11 +122,19 @@ class LagrangeAdapter(LagrangeBase):
     def list_accounts(self, instance) -> list[dict]:
         """回读 Lagrange 已登录账号（一个实例通常一个 Account.Uin）。
 
-        Lagrange.OneBot 多账号需多实例，故这里通常返回单条；返回结构保持一致即可。"""
+        Lagrange.OneBot 多账号需多实例，故这里通常返回单条；返回结构保持一致即可。
+
+        ⚠️ Uin 取不到时**回落到 keystore.json**：扫码登录成功一定会落 keystore，
+        但上游**未必**把 Uin 回写 appsettings.json（官方对该字段的注释就是
+        「用于识别 db 和 qrcode 文件，无任何其他用途」）。只看配置的话，
+        「已经登上号了、配置里 Uin 还是 0」会让总览认不出这个号，
+        拓扑图也就没有账号状态点可画。detect_account 走的正是 keystore 这条路，
+        这里复用同一口径，避免两处判断打架。
+        """
         data = self.read_json(self._config(instance))
-        if not data:
-            return []
         uin = (data.get("Account") or {}).get("Uin") or 0
+        if not uin:
+            uin = self.detect_account(instance) or 0
         if not uin:
             return []
         port = token = None

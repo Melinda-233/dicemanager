@@ -11,6 +11,10 @@
 - 登录：二维码（二维码取自磁盘 qr-{Uin}.png，同 OneBot 版）。**也支持账密**：
   `Lagrange.Login.Uin` / `Password`（见本文件 DEFAULT_CONFIG，与上游默认一致），
   Password 非空即走账密、为空才是扫码。
+  ⚠️ 2026-10-13 复核时看到第三方接入文档（Lagrange V2 Sign API 指南）给的却是
+  `Core.Login.Uin/Password` 与 `Core.Signer`，与本文件的 `Lagrange.*` 路径不同，
+  疑为上游新版改了段名。**没拿到上游 appsettings.json 原文前不动字段路径**——
+  改错等于把当前能用的改坏；若用户反馈账密登录无效，第一件事就是核对这一项。
 - 自更新默认关，无需干预。
 """
 import copy
@@ -132,11 +136,16 @@ class LagrangeMilkyAdapter(LagrangeBase):
         return (data.get("Milky") or {}).get("AccessToken")
 
     def list_accounts(self, instance) -> list[dict]:
-        """回读 Lagrange.Milky 已登录账号（一个实例一个 Uin，单条）。"""
+        """回读 Lagrange.Milky 已登录账号（一个实例一个 Uin，单条）。
+
+        ⚠️ Uin 取不到时**回落到 keystore.json**（理由同 lagrange.py 的同名方法）：
+        扫码登录成功必落 keystore，但上游未必把 Uin 回写 appsettings.json。
+        只看配置会在「已登录但配置里 Uin 还是 0」时认不出这个号。
+        """
         data = self.read_json(self._config(instance))
-        if not data:
-            return []
         uin = ((data.get("Lagrange") or {}).get("Login") or {}).get("Uin") or 0
+        if not uin:
+            uin = self.detect_account(instance) or 0
         if not uin:
             return []
         milky = data.get("Milky") or {}

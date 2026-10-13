@@ -128,6 +128,20 @@ def _service_reachable(rec: dict) -> bool:
         return False
 
 
+def _stamped_accounts(rec: dict, alive: bool) -> list[dict]:
+    """给已登录账号打上在线状态（判据在 BaseAdapter.stamp_accounts，此处只做兜底）。
+
+    拿不到适配器时原样返回盘上的 accounts（status 恒 unknown）—— 少一项增强信息
+    可以接受，但绝不能让节点因为取适配器失败而从总览消失。
+    """
+    try:
+        adapter = ctx.get_adapter(rec["dice"])
+    except Exception:
+        return list(rec.get("accounts") or [])
+    return adapter.stamp_accounts(SimpleNamespace(**rec),
+                                  rec.get("accounts") or [], alive)
+
+
 async def overview_loop(ws: WebSocket, user=None):
     """周期推送总览拓扑。
 
@@ -168,7 +182,9 @@ async def overview_loop(ws: WebSocket, user=None):
                                       or rec.get("allocated_ports", {}).get("webui"),
                               # 连接管理面板需要：关联目标与登录账号（旧 payload 缺这两项）
                               "login_ref": rec.get("login_ref"),
-                              "accounts": rec.get("accounts") or [],
+                              # 在线状态在此打标（不落盘）：同一份 accounts 在
+                              # 侧栏/拓扑图按 status 上色，落盘时仍是 unknown
+                              "accounts": _stamped_accounts(rec, alive),
                               "links": rec.get("links") or (
                                   [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else []),
                               "qq": rec.get("qq"),

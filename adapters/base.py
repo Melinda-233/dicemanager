@@ -781,8 +781,71 @@ class BaseAdapter(ABC):
         """登录端：回读已登录的全部 QQ 账号 [{qq, token, port, status}]。
 
         默认空列表（应用端 / 无多账号能力的登录端）；各登录端适配器按需覆写。
-        这是「登录端可登多个 QQ」与「多连一按账号分发」的数据来源。"""
+        这是「登录端可登多个 QQ」与「多连一按账号分发」的数据来源。
+
+        回读要**尽量认出已登录的号**：只盯一个配置文件会在「程序把登录态写到了
+        别处」时漏号（Lagrange 就是典型：登录态在 keystore.json，appsettings.json
+        里的 Uin 可能还是 0）。漏号的表现是总览认不出这个号、拓扑图没有状态点，
+        看着像「功能没做」，其实是回读口径太窄。
+
+        ⚠️ status 只填 "unknown"：本方法是**文件/配置回读**，回答的是「登过哪些号」，
+        不是「现在是否在线」。在线状态由 account_status() 判定并在推送时覆盖，
+        不参与这里的签名比对（否则 2s 周期会因端口抖动反复写盘）。"""
         return []
+
+    # ---------- 账号在线状态 ----------
+    # status 取值沿用 core/registry.py 对 accounts 的约定：running / stopped / unknown
+    def account_status(self, instance, qq: str, port=None) -> str | None:
+        """该 QQ 账号**当前**是否在线。返回 running/stopped，或 None = 没有更准的判据。
+
+        为什么默认返回 None 而不是猜：QQ 掉线（被踢/网络断）时登录端进程往往还在、
+        OneBot 端口也仍在监听，只有日志原文或 OneBot API 才分得出来。没核实过该程序
+        的日志锚点就一律给 None，由 stamp_accounts 回落到通用兜底。
+
+        各登录端核实过「登录成功 / 掉线」的日志锚点或 API 后覆写本方法即可升级为
+        精确判定——**没核实的不要照抄别家的正则**，不命中等于永远 unknown，既没
+        用也不误导，反而不如老实返回 None 走兜底。
+        """
+        return None
+
+    def _account_status(self, instance, acc: dict, alive: bool) -> str:
+        """单账号状态：account_status 钩子优先，回落到「进程存活 + 账号端口可达」。
+
+        ⚠️ 语义必须说清，否则就是把猜测当事实：端口可达只证明**该账号的服务在监听**，
+        不等于 QQ 一定在线 —— 掉线时进程往往还在、端口也仍在监听。但反过来
+        「端口不通 → 一定不在线」是可靠的否定判据，进程都没跑更是确定离线。故兜底口径：
+          进程未运行 → stopped；无端口信息 → unknown；端口可达 → running；否则 stopped。
+        """
+        port = acc.get("port")
+        try:
+            custom = self.account_status(instance, str(acc.get("qq") or ""), port)
+        except Exception:
+            custom = None                       # 钩子异常不得让账号/节点从总览消失
+        if custom in ("running", "stopped", "unknown"):
+            return custom
+        if not alive:
+            return "stopped"
+        if not port:
+            return "unknown"
+        try:
+            # 回环探测 0.5s 足够；超时按不通处理，不因此卡住 2s 推送周期
+            return "running" if self.tcp_probe("127.0.0.1", port, timeout=0.5) else "stopped"
+        except Exception:
+            return "unknown"
+
+    def stamp_accounts(self, instance, accounts, alive: bool) -> list[dict]:
+        """给已登录账号打上在线状态。**只用于输出，不落盘**。
+
+        状态每 2s 重算：写进 registry 会与 _backfill_from_logs 的「变化才写盘」签名
+        比对打架（无谓写放大），且进程重启前的旧状态留在盘上毫无意义。故 WS 总览与
+        REST 实例列表都在**推送/响应时**调用本方法，盘上恒为 unknown。
+        """
+        out = []
+        for a in (accounts or []):
+            if not isinstance(a, dict):         # 历史数据/第三方适配器可能写成裸 QQ 号
+                continue
+            out.append({**a, "status": self._account_status(instance, a, alive)})
+        return out
 
     @staticmethod
     def tcp_probe(host: str, port, timeout: float = 2.0) -> bool:

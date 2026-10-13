@@ -66,6 +66,18 @@
               :class="{dead: !n.process_alive}"/>
         <text y="-6">{{ n.dice }}{{ n.arch === 'allinone' ? '（整合包）' : '' }}</text>
         <text y="14" class="sub">{{ n.state }} : {{ n.port || '-' }}{{ n.mem_mb ? ' · ' + n.mem_mb + 'MB' : '' }}</text>
+        <!-- 账号在线状态（登录端专属：应用端没有 QQ 账号这个概念）：方框左上角一点
+             + 一行小字，多账号显示「在线数/总数」，逐号明细放 <title> 悬停与侧栏列表。
+             ⚠️ 图标铁律：**不带 class、只用内联 fill** —— CSS 规则优先级高于 SVG
+             呈现属性，走 class 会被 .topo 下的通用选择器把颜色盖掉。
+             这里**不设** pointer-events:none：要靠 <title> 悬停看到每个号的状态。 -->
+        <template v-if="acctDot(n)">
+          <circle cx="-60" cy="-15" r="4.5" :style="{fill: acctDot(n).color}">
+            <title>{{ acctDot(n).title }}</title>
+          </circle>
+          <text x="-51" y="-11"
+                :style="{fill: acctDot(n).color, fontSize: '11px'}">{{ acctDot(n).text }}</text>
+        </template>
         <text v-if="n.crash_looped" y="40" class="warn">反复崩溃，已停止自动重启</text>
         <text v-for="(w, i) in n.warnings" :key="i" :y="n.crash_looped ? 54 : 40" class="warn">{{ w }}</text>
         <!-- 高频操作内联到节点上：启停/重启在方框正下方，管理应用在方框右侧。
@@ -130,6 +142,11 @@
       <span><i class="lg-line lg-green"/>已连接</span>
       <span><i class="lg-line lg-gray"/>已配置未连接</span>
       <span><i class="lg-line lg-red"/>连接失败</span>
+      <!-- 连线颜色讲「两端连没连上」，圆点讲「登录端这个 QQ 号在不在线」——
+           两回事：连上了但号掉线，线是绿的、点是红的。 -->
+      <span><i class="lg-dot" style="background:var(--ok)"/>账号在线</span>
+      <span><i class="lg-dot" style="background:var(--danger)"/>账号离线</span>
+      <span><i class="lg-dot" style="background:var(--muted)"/>状态未知</span>
     </div>
     <!-- 缓存/备份管理（自 Wizard 移入）：程序包与备份产物都长期驻留，集中在拓扑下方展示占用
          与是否仍被实例使用；有死缓存/超龄备份时默认展开提醒 -->
@@ -312,7 +329,7 @@
                       @change="e => updateLinkAccount(row.loginRef, row.accountQq, e.target.value || null)">
                 <option value="">默认账号（自动分配）</option>
                 <option v-for="a in row.accounts" :key="a.qq" :value="String(a.qq)">
-                  QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+                  QQ {{ a.qq }}（{{ acctStateText(a.status) }}）</option>
               </select>
             </div>
             <div class="ops">
@@ -335,7 +352,7 @@
               <select v-model="newAccountQq">
                 <option value="">默认账号（自动分配）</option>
                 <option v-for="a in newLoginAccounts" :key="a.qq" :value="String(a.qq)">
-                  QQ {{ a.qq }}{{ a.status ? '（' + a.status + '）' : '' }}</option>
+                  QQ {{ a.qq }}（{{ acctStateText(a.status) }}）</option>
               </select>
             </div>
             <div class="ops">
@@ -349,8 +366,11 @@
           <p class="hint">已登录账号：</p>
           <div v-for="a in (selLive.accounts || [])" :key="a.qq" class="link-row">
             <div class="link-main"><b>QQ {{ a.qq }}</b>
-              <span :class="['link-state', a.status === 'running' ? 'solid-green' : 'dashed-gray']">
-                {{ a.status || 'unknown' }}</span>
+              <!-- 三态：在线绿 / 离线红 / 未知灰。未知**不并入离线** ——
+                   端口探不到与「判据缺失」是两回事，混在一起会让人以为号掉了。 -->
+              <span :class="['link-state', a.status === 'running' ? 'solid-green'
+                              : (a.status === 'stopped' ? 'solid-red' : 'dashed-gray')]">
+                {{ acctStateText(a.status) }}</span>
               <span v-if="a.port" class="hint"> · 端口 {{ a.port }}</span>
             </div>
           </div>
@@ -592,6 +612,23 @@ const loginSet = computed(() => {
   return s
 })
 const isLogin = n => loginSet.value.has(n.dice)
+// 拓扑图节点上的账号在线概览：一点 + 一行小字。
+// 判据由后端给出（进程存活 + 该账号端口可达，登录端适配器可覆写为更准的判据）；
+// unknown **不计入在线也不计入离线** —— 没判据就不装作知道，这是与「报成在线」
+// 的区别：宁可显示灰点，也不让掉线的号显示成绿的。
+const acctStateText = s => (s === 'running' ? '在线' : (s === 'stopped' ? '离线' : '未知'))
+const acctDot = n => {
+  const list = (n.accounts || []).filter(a => a && a.qq)
+  if (!list.length) return null                    // 没登过号 → 不画，免得凭空一个灰点
+  const on = list.filter(a => a.status === 'running').length
+  const unk = list.filter(a => a.status !== 'running' && a.status !== 'stopped').length
+  return {
+    color: on ? 'var(--ok)' : (unk ? 'var(--muted)' : 'var(--danger)'),
+    text: list.length > 1 ? `${on}/${list.length} 在线`
+        : (on ? '在线' : (unk ? '未知' : '离线')),
+    title: '账号状态：' + list.map(a => `QQ ${a.qq} ${acctStateText(a.status)}`).join('；'),
+  }
+}
 // 该登录端能否挂多个 QQ。只有多账号端（sealdice/snowluma）关联时才需要问
 // 「绑哪个号」；单账号端（llbot/napcat/lagrange 系）选谁都只有一个结果，
 // 那个下拉框是纯噪音，还会让人以为绑定方式有得选。
@@ -1361,6 +1398,8 @@ text.edge-label.solid-red   { fill: #e5484d; }
 .lg-green { border-color: #42b883; }
 .lg-gray  { border-color: #bbb; border-top-style: dashed; }
 .lg-red   { border-color: #e5484d; }
+/* 账号在线状态点（与连线图例区分：线=连通性，点=QQ 号在线与否） */
+.lg-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 rect.dead { fill: var(--code-bg); opacity: .6; }
 text.warn { fill: #d97706; font-size: 10px; }
 /* 节点旁的符号按钮样式全在 style.css（全局）。svg 元素同样会被打上
