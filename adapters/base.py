@@ -793,32 +793,107 @@ class BaseAdapter(ABC):
         不参与这里的签名比对（否则 2s 周期会因端口抖动反复写盘）。"""
         return []
 
-    # ---------- 账号在线状态 ----------
+    # ---------- 账号在线状态（读日志判据）----------
     # status 取值沿用 core/registry.py 对 accounts 的约定：running / stopped / unknown
-    def account_status(self, instance, qq: str, port=None) -> str | None:
-        """该 QQ 账号**当前**是否在线。返回 running/stopped，或 None = 没有更准的判据。
+    #
+    # 判据来源：**读程序日志**，不再只靠「端口可达」。端口可达只证明服务在监听，QQ
+    # 掉线（被踢/网络断）时登录端进程往往还在、OneBot 端口也仍在监听，会把离线误报
+    # 成在线。故改为从日志里的「上线/掉线」锚点判定（用户 2026-10-13 要求）。
+    #
+    # 各登录端按家族把锚点填进下面两个类属性；未核实过就不填（保持默认 None/[]），
+    # account_status 回落到端口兜底——**没核实的绝不照抄别家正则**。
+    #   LOGIN_ANCHOR_ONLINE : 上线锚点（re.Pattern），命中即「最近一次状态变更是上线」
+    #   LOGIN_ANCHOR_OFFLINE: 掉线锚点（list[re.Pattern]），命中即「最近一次是掉线」
+    LOGIN_ANCHOR_ONLINE: "re.Pattern | None" = None
+    LOGIN_ANCHOR_OFFLINE: "list[re.Pattern]" = []
 
-        为什么默认返回 None 而不是猜：QQ 掉线（被踢/网络断）时登录端进程往往还在、
-        OneBot 端口也仍在监听，只有日志原文或 OneBot API 才分得出来。没核实过该程序
-        的日志锚点就一律给 None，由 stamp_accounts 回落到通用兜底。
+    @staticmethod
+    def _instance_log_path(instance) -> "Path | None":
+        """实例磁盘日志文件（<LOG_DIR>/<id>.log）。取不到（无 ctx / 无进程 / 测试桩）返回 None。"""
+        iid = getattr(instance, "id", None)
+        if not iid:
+            return None
+        try:
+            from api.context import ctx
+            proc = ctx.pm.get(iid)
+            return Path(proc.log_path)
+        except Exception:
+            return None
 
-        各登录端核实过「登录成功 / 掉线」的日志锚点或 API 后覆写本方法即可升级为
-        精确判定——**没核实的不要照抄别家的正则**，不命中等于永远 unknown，既没
-        用也不误导，反而不如老实返回 None 走兜底。
+    def _read_log_tail(self, instance, log_path=None, max_bytes: int = 256 * 1024) -> list[str]:
+        """读实例日志文件末尾（默认 256KB）。状态只看「最近一次变更」，早期历史无关；
+        LOG_MAX_BYTES=50MB 才轮转，末尾 256KB 足以覆盖最近一次上线/掉线事件，无需全量扫描。
+
+        log_path 由调用方（WS/REST 握有 proc.log_path）传入，避免在此惰性 import api；
+        缺省时回落到按实例 id 查 pm 取日志路径（测试桩 / 无进程返回 None）。"""
+        p = log_path or self._instance_log_path(instance)
+        if p is None or not p.exists():
+            return []
+        try:
+            size = p.stat().st_size
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                if size > max_bytes:
+                    f.seek(size - max_bytes)
+                    f.readline()                 # 丢弃半行
+                return [ln.rstrip("\n") for ln in f]
+        except OSError:
+            return []
+
+    def _login_state_from_log(self, instance, log_path=None) -> str | None:
+        """从日志推断最近一次登录状态：running / stopped / None（无锚点或日志无可判据）。
+
+        扫日志尾部，取「最近一次上线锚点」与「最近一次掉线锚点」的更晚者：
+          - 掉线比上线更晚 → stopped（即便端口仍通，这正是要修的误报）
+          - 上线比掉线更晚（且定义了上线锚点） → running
+          - 只定义了掉线锚点且没命中 → None（交端口兜底，不瞎判）
         """
+        online = self.LOGIN_ANCHOR_ONLINE
+        offline = self.LOGIN_ANCHOR_OFFLINE
+        if online is None and not offline:
+            return None
+        lines = self._read_log_tail(instance, log_path)
+        if not lines:
+            return None
+        last_online = last_offline = -1
+        for i, ln in enumerate(lines):
+            if online is not None and online.search(ln):
+                last_online = i
+            for rx in offline:
+                if rx.search(ln):
+                    last_offline = i
+                    break
+        if last_offline >= 0 and last_offline > last_online:
+            return "stopped"
+        if online is not None and last_online >= 0 and last_online > last_offline:
+            return "running"
+        # 只定义了掉线锚点且未命中：不判（端口兜底）
+        if online is None and last_offline < 0:
+            return None
         return None
 
-    def _account_status(self, instance, acc: dict, alive: bool) -> str:
-        """单账号状态：account_status 钩子优先，回落到「进程存活 + 账号端口可达」。
+    def account_status(self, instance, qq: str, port=None, log_path=None) -> str | None:
+        """该 QQ 账号**当前**是否在线。返回 running/stopped，或 None = 没有更准的判据。
 
-        ⚠️ 语义必须说清，否则就是把猜测当事实：端口可达只证明**该账号的服务在监听**，
-        不等于 QQ 一定在线 —— 掉线时进程往往还在、端口也仍在监听。但反过来
-        「端口不通 → 一定不在线」是可靠的否定判据，进程都没跑更是确定离线。故兜底口径：
-          进程未运行 → stopped；无端口信息 → unknown；端口可达 → running；否则 stopped。
+        默认读日志（`_login_state_from_log`）：各登录端把核实过的「上线/掉线」锚点填进
+        LOGIN_ANCHOR_ONLINE / LOGIN_ANCHOR_OFFLINE，命中即给出明确结论；日志无锚点
+        （未核实过该程序格式 / 实例刚启动还没打印 / 日志已轮转出去）则返回 None，交给
+        stamp_accounts 的端口兜底——**不把「没证据」说成在线或离线**。
+        """
+        return self._login_state_from_log(instance, log_path)
+
+    def _account_status(self, instance, acc: dict, alive: bool, log_path=None) -> str:
+        """单账号状态：**日志判据优先**，回落到「进程存活 + 账号端口可达」。
+
+        ⚠️ 语义：日志里的掉线锚点一旦命中即判 offline，并**覆盖**端口探测——
+        这正修掉了「端口还通却已掉线」的误报。日志无锚点（没核实过该程序格式 /
+        实例刚启动还没打印 / 日志已轮转）时，端口仍是可靠的弱信号：正常在线的实例
+        本来就是端口通，不能因「端口≠在线」就把健康实例硬判成 unknown/stopped。
+        兜底口径：进程未运行 → stopped；无端口信息 → unknown；
+        端口可达 → running；端口不通 → stopped（确定离线）。
         """
         port = acc.get("port")
         try:
-            custom = self.account_status(instance, str(acc.get("qq") or ""), port)
+            custom = self.account_status(instance, str(acc.get("qq") or ""), port, log_path)
         except Exception:
             custom = None                       # 钩子异常不得让账号/节点从总览消失
         if custom in ("running", "stopped", "unknown"):
@@ -833,7 +908,7 @@ class BaseAdapter(ABC):
         except Exception:
             return "unknown"
 
-    def stamp_accounts(self, instance, accounts, alive: bool) -> list[dict]:
+    def stamp_accounts(self, instance, accounts, alive: bool, log_path=None) -> list[dict]:
         """给已登录账号打上在线状态。**只用于输出，不落盘**。
 
         状态每 2s 重算：写进 registry 会与 _backfill_from_logs 的「变化才写盘」签名
@@ -844,7 +919,7 @@ class BaseAdapter(ABC):
         for a in (accounts or []):
             if not isinstance(a, dict):         # 历史数据/第三方适配器可能写成裸 QQ 号
                 continue
-            out.append({**a, "status": self._account_status(instance, a, alive)})
+            out.append({**a, "status": self._account_status(instance, a, alive, log_path)})
         return out
 
     @staticmethod

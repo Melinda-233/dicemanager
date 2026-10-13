@@ -315,7 +315,8 @@ def list_instances(user: Annotated[CurrentUser | None, Depends(current_user)] = 
         # 否则总览页显示「在线」、向导/实例列表显示「unknown」，两处自相矛盾。
         try:
             rec["accounts"] = ctx.get_adapter(r["dice"]).stamp_accounts(
-                SimpleNamespace(**r), r.get("accounts") or [], bool(p.get("alive")))
+                SimpleNamespace(**r), r.get("accounts") or [], bool(p.get("alive")),
+                proc.log_path)
         except Exception:
             pass                               # 取适配器失败时保留盘上原值
         out.append(rec)

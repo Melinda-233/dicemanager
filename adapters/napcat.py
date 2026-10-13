@@ -36,6 +36,18 @@ ACCOUNT_RE = re.compile(r"(?:登录成功|账号|uin)\D{0,10}(\d{5,12})", re.I)
 
 
 class NapCatAdapter(BaseAdapter):
+    # 账号在线判据：读日志（端口可达≠在线）。
+    # 上线：NapCat 登录成功会打印（ACCOUNT_RE 已含「登录成功」）；
+    # 掉线：上游明确会打 `[KickedOffline]`（issue #1728 实测频繁被踢下线）。
+    LOGIN_ANCHOR_ONLINE = re.compile(
+        r"登录成功|Login\s*Success|Logged\s*in|Bot\s*Online", re.I)
+    LOGIN_ANCHOR_OFFLINE = [
+        re.compile(r"KickedOffline", re.I),
+        re.compile(r"下线通知"),
+        re.compile(r"登录已失效"),
+        re.compile(r"请重新登录"),
+    ]
+
     # ---------- 路径 ----------
     def _config_dir(self, instance) -> Path:
         return Path(instance.dir) / "config"

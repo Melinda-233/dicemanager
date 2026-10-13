@@ -49,6 +49,18 @@ class YogurtAdapter(BaseAdapter):
     HEALTH_PORT_KEYS = ["milky"]
     HEALTH_USE_ACTUAL_PORT = False
 
+    # 账号在线判据：读日志（端口可达≠在线）。
+    # ⚠️ best-effort：Yogurt 属 LLOneBot 家族，掉线日志大概率沿用 `[Kick]` / 「下线通知」
+    # 这类格式，但**未经真机日志核实**，先按 llbot 同款锚点试；若误报请贴日志修正。
+    # 上线锚点未核实，留空 → 上线态由端口兜底。
+    LOGIN_ANCHOR_OFFLINE = [
+        re.compile(r"\[Kick\]"),
+        re.compile(r"下线通知"),
+        re.compile(r"登录已失效"),
+        re.compile(r"KickedOffline", re.I),
+        re.compile(r"请重新登录"),
+    ]
+
     # ---------- 路径 ----------
     def _config(self, instance) -> Path:
         return Path(instance.dir) / self.m.get("config_path", "config.json")

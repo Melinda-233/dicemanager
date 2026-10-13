@@ -2,16 +2,19 @@
 
 背景：accounts[].status 字段与前端渲染（拓扑图圆点 / 侧栏徽章）早就有了，
 但六个登录端适配器的 list_accounts 全都硬编码 status="unknown" —— 字段存在却
-永远是同一个值，等于没有。本文件钉住新加的判定口径：
+永远是同一个值，等于没有。本文件钉住判定口径：
 
-  ① 适配器 account_status() 钩子优先（有更准证据的程序用它）
-  ② 否则回落「进程存活 + 账号端口可达」
-  ③ 进程都没跑 → 确定离线；拿不到端口 → 未知（**不**并进离线）
+  ① **日志锚点优先**（用户 2026-10-13 要求「端口可达≠在线，改读日志」）：
+     各登录端把核实过的「上线/掉线」锚点填进 LOGIN_ANCHOR_ONLINE /
+     LOGIN_ANCHOR_OFFLINE，命中即给出明确结论，并**覆盖**端口探测——
+     这正修掉「端口还通却已掉线」的误报。
+  ② 日志无锚点（没核实过该程序格式 / 实例刚启动还没打印 / 日志已轮转）时，
+     回落「进程存活 + 账号端口可达」这一可靠弱信号。
+  ③ 进程都没跑 → 确定离线；拿不到端口 → 未知（**不**并进离线）。
 
-⚠️ 判据的语义边界必须钉死：端口可达 ≠ QQ 一定在线（掉线时端口常常还在监听），
-所以「端口通 → running」只是可靠的下限，**反向**（端口不通 → 不在线）才是硬结论。
-将来某程序核实了「登录成功/掉线」的日志锚点，应覆写 account_status 升级为精确
-判定，而不是放宽这里的兜底口径。
+⚠️ 语义边界：端口可达 ≠ QQ 在线（掉线时 OneBot 端口常在监听），故「端口通」只是
+下限；日志里的掉线锚点才是能精确判定离线的硬证据。未核实过日志格式的程序，绝不
+照抄别家锚点，宁可回落端口兜底，不瞎判。
 """
 import sys
 from pathlib import Path
@@ -22,11 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pytest  # noqa: E402
 
 from adapters.base import BaseAdapter  # noqa: E402
+from adapters.llbot import LLBotAdapter  # noqa: E402
+from adapters.napcat import NapCatAdapter  # noqa: E402
 from adapters.yogurt import YogurtAdapter  # noqa: E402
 
 
 def _inst():
-    return SimpleNamespace(id="t1", dice="yogurt", dir="/tmp/none", qq=None)
+    # id=None：避免 _instance_log_path 在 log_path 缺省时惰性 import api
+    # （触发 auth.json 副作用，污染后续鉴权测试）。本文件统一显式传 log_path。
+    return SimpleNamespace(id=None, dice="yogurt", dir="/tmp/none", qq=None)
 
 
 @pytest.fixture
@@ -78,7 +85,7 @@ def test_hook_overrides_fallback(probe):
     probe.add(3001)
 
     class Sharp(YogurtAdapter):
-        def account_status(self, instance, qq, port=None):
+        def account_status(self, instance, qq, port=None, log_path=None):
             return "stopped"              # 例如已从日志确认该号掉线
 
     out = Sharp({}).stamp_accounts(
@@ -91,7 +98,7 @@ def test_hook_exception_falls_back(probe):
     probe.add(3001)
 
     class Boom(YogurtAdapter):
-        def account_status(self, instance, qq, port=None):
+        def account_status(self, instance, qq, port=None, log_path=None):
             raise RuntimeError("日志解析炸了")
 
     out = Boom({}).stamp_accounts(
@@ -125,6 +132,72 @@ def test_multi_account_stamped_independently(probe):
         _inst(), [{"qq": "10001", "port": 3001}, {"qq": "10002", "port": 3002}],
         alive=True)
     assert [a["status"] for a in out] == ["running", "stopped"]
+
+
+# ---- 日志锚点判定（用户 2026-10-13：端口可达≠在线，改读日志）----
+
+def test_llbot_kick_anchor_overrides_port(probe, tmp_path):
+    """llbot 用户真机验证的掉线日志：进程在跑、端口通，也必须判离线。"""
+    probe.add(3001)
+    log = tmp_path / "llbot.log"
+    log.write_text(
+        '[W] core [Kick] code=1001 title="下线通知" '
+        'desc="你的账号当前登录已失效，请重新登录。"\n', encoding="utf-8")
+    out = LLBotAdapter({}).stamp_accounts(
+        _inst(), [{"qq": "10001", "port": 3001}], alive=True, log_path=log)
+    assert out[0]["status"] == "stopped"
+
+
+def test_account_status_hook_reads_log(tmp_path):
+    """account_status 钩子本身从日志锚点返回结论，不依赖端口。"""
+    log = tmp_path / "llbot.log"
+    log.write_text('[W] core [Kick] code=1001 title="下线通知"\n', encoding="utf-8")
+    assert LLBotAdapter({}).account_status(
+        _inst(), "10001", 3001, log_path=log) == "stopped"
+
+
+def test_napcat_online_anchor_running(probe, tmp_path):
+    """napcat 上线锚点（登录成功）且未命中掉线 → running。"""
+    probe.add(3001)
+    log = tmp_path / "napcat.log"
+    log.write_text("[INFO] 登录成功 (qq=10001)\n", encoding="utf-8")
+    out = NapCatAdapter({}).stamp_accounts(
+        _inst(), [{"qq": "10001", "port": 3001}], alive=True, log_path=log)
+    assert out[0]["status"] == "running"
+
+
+def test_napcat_offline_later_than_online(probe, tmp_path):
+    """同一日志先上线后掉线 → 取更晚者，判离线（覆盖端口）。"""
+    probe.add(3001)
+    log = tmp_path / "napcat.log"
+    log.write_text(
+        "[INFO] 登录成功 (qq=10001)\n"
+        "[WARN] KickedOffline qq=10001\n", encoding="utf-8")
+    out = NapCatAdapter({}).stamp_accounts(
+        _inst(), [{"qq": "10001", "port": 3001}], alive=True, log_path=log)
+    assert out[0]["status"] == "stopped"
+
+
+def test_napcat_online_later_than_offline(probe, tmp_path):
+    """先掉线后重新上线 → 取更晚者，判在线。"""
+    log = tmp_path / "napcat.log"
+    log.write_text(
+        "[WARN] KickedOffline qq=10001\n"
+        "[INFO] 登录成功 (qq=10001)\n", encoding="utf-8")
+    out = NapCatAdapter({}).stamp_accounts(
+        _inst(), [{"qq": "10001", "port": 3001}], alive=True, log_path=log)
+    assert out[0]["status"] == "running"
+
+
+def test_log_without_anchor_falls_back_to_port(probe, tmp_path):
+    """日志无任一侧锚点 → 不瞎判，回落端口兜底（这里 3001 不通 → stopped）。"""
+    log = tmp_path / "llbot.log"
+    log.write_text("some unrelated info line\n", encoding="utf-8")
+    out = LLBotAdapter({}).stamp_accounts(
+        _inst(), [{"qq": "10001", "port": 3001}], alive=True, log_path=log)
+    assert out[0]["status"] == "stopped"
+
+
 # ⚠️ 本文件**不要 import api.* **：api.auth 在导入时就会创建模块级单例并立即
 # 写 auth.json，而本文件按字母序排得很靠前——一旦在这里导入，后面所有依赖鉴权
 # 状态的测试（test_webui_expose / test_yogurt / tests/win/*）会在 setup 阶段

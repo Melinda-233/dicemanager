@@ -15,6 +15,16 @@ from adapters.base import BaseAdapter, WriteResult
 
 
 class SnowLumaAdapter(BaseAdapter):
+    # 账号在线判据：读日志（端口可达≠在线）。
+    # ⚠️ best-effort：SnowLuma 基于 NapCat 生态，掉线大概率打 `[KickedOffline]`；
+    # **未经真机日志核实**，先按 NapCat 同款锚点试；误报请贴日志修正。上线态由端口兜底。
+    LOGIN_ANCHOR_OFFLINE = [
+        re.compile(r"KickedOffline", re.I),
+        re.compile(r"下线通知"),
+        re.compile(r"登录已失效"),
+        re.compile(r"请重新登录"),
+    ]
+
     def build_start_cmd(self, instance) -> list[str]:
         return [str(Path(instance.dir) / self.m["exe"])]      # launcher.sh
 

@@ -128,7 +128,7 @@ def _service_reachable(rec: dict) -> bool:
         return False
 
 
-def _stamped_accounts(rec: dict, alive: bool) -> list[dict]:
+def _stamped_accounts(rec: dict, alive: bool, log_path=None) -> list[dict]:
     """给已登录账号打上在线状态（判据在 BaseAdapter.stamp_accounts，此处只做兜底）。
 
     拿不到适配器时原样返回盘上的 accounts（status 恒 unknown）—— 少一项增强信息
@@ -139,7 +139,7 @@ def _stamped_accounts(rec: dict, alive: bool) -> list[dict]:
     except Exception:
         return list(rec.get("accounts") or [])
     return adapter.stamp_accounts(SimpleNamespace(**rec),
-                                  rec.get("accounts") or [], alive)
+                                  rec.get("accounts") or [], alive, log_path)
 
 
 async def overview_loop(ws: WebSocket, user=None):
@@ -184,7 +184,7 @@ async def overview_loop(ws: WebSocket, user=None):
                               "login_ref": rec.get("login_ref"),
                               # 在线状态在此打标（不落盘）：同一份 accounts 在
                               # 侧栏/拓扑图按 status 上色，落盘时仍是 unknown
-                              "accounts": _stamped_accounts(rec, alive),
+                              "accounts": _stamped_accounts(rec, alive, proc.log_path),
                               "links": rec.get("links") or (
                                   [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else []),
                               "qq": rec.get("qq"),

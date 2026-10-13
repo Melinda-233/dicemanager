@@ -21,6 +21,14 @@ KEYSTORE_UIN_RE = re.compile(r'"Uin"\s*:\s*(\d{5,12})')
 
 
 class LagrangeBase(BaseAdapter):
+    # 账号在线判据：读日志（端口可达≠在线）。
+    # 上线锚点「Bot Uin:」/「Bot Online:」是 Lagrange.Core 登录成功的确凿日志
+    # （account_from_logs 已用 BOT_UIN_RE 回读）。掉线锚点上游控制台未给出明确的
+    # 「被踢下线」字样（重连是临时断线、不算下线），故 OFFLINE 留空，离线判定暂由端口兜底。
+    LOGIN_ANCHOR_ONLINE = re.compile(
+        r"Bot\s*Uin:?|Bot\s*Online|Login\s*Success|register\s+success", re.I)
+    LOGIN_ANCHOR_OFFLINE: "list[re.Pattern]" = []
+
     # ---------- 路径 ----------
     def _config(self, instance) -> Path:
         return Path(instance.dir) / self.m.get("config_path", "appsettings.json")

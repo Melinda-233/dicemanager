@@ -53,6 +53,19 @@ class LLBotAdapter(BaseAdapter):
     HEALTH_USE_ACTUAL_PORT = False
     HEALTH_NO_PORT = "down"
 
+    # 账号在线判据：读日志（端口可达≠在线，掉线时端口常还在监听）。
+    # 掉线锚点已由用户 2026-10-13 验证：`[W] core [Kick] code=1001 title="下线通知"
+    # desc="你的账号当前登录已失效，请重新登录。"` —— 命中即判离线，覆盖「端口还通
+    # 却已掉线」的误报。上线态由端口兜底（正常在线实例就是端口通，无需日志强行判定）。
+    LOGIN_ANCHOR_OFFLINE = [
+        re.compile(r"\[Kick\]"),
+        re.compile(r"下线通知"),
+        re.compile(r"登录已失效"),
+        re.compile(r"KickedOffline", re.I),
+        re.compile(r"请重新登录"),
+        re.compile(r"当前登录已失效"),
+    ]
+
     @staticmethod
     def _parse_ver(v) -> tuple:
         try:
