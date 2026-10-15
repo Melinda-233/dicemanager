@@ -596,11 +596,11 @@ def test_pip_install_raises_with_tail_on_failure(tmp_path, monkeypatch):
     d = _ready_dir(tmp_path / "nb-pipfail", with_deps=False)
     ad = _ad()
     monkeypatch.setattr(ad, "_instance_python", lambda i: Path(sys.executable))
-    monkeypatch.setattr(
-        subprocess, "run",
-        lambda cmd, **kw: SimpleNamespace(
-            returncode=1, stdout="", stderr="\n".join(
-                f"line{i}" for i in range(20)) + "\nNo matching distribution"))
+    # _pip_install 走 Popen + 逐行读（stderr=STDOUT 合入 stdout），必须桩 Popen；
+    # 若仍桩 subprocess.run，适配器会真去跑 pip——CI 有网会超时/返回异码，
+    # 报错信息不含 rc=1，断言必挂（2026-10-15 CI 连挂的最后一个真实失败）。
+    _stub_popen(monkeypatch, returncode=1,
+                out="\n".join(f"line{i}" for i in range(20)) + "\nNo matching distribution\n")
     with pytest.raises(RuntimeError) as e:
         ad._pip_install(_inst(d), "nonebot2")
     msg = str(e.value)
