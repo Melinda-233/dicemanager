@@ -159,9 +159,16 @@ async def overview_loop(ws: WebSocket, user=None):
                 handle_alive = proc.is_alive()
                 # 句柄失效但端口仍通（launcher 重启 / 面板重启后 worker reparent）→ 视为存活
                 alive = handle_alive or _service_reachable(rec)
-                # 日志回读（端口/token/qq）只是增强信息：失败绝不能让节点从总览消失，
-                # 独立兜底，异常时保留原 rec（节点照常渲染，仅少回读几项字段）。
-                if handle_alive:
+                # 回读（端口/token/qq + **登录账号** list_accounts）只是增强信息：
+                # 失败绝不能让节点从总览消失，独立兜底，异常时保留原 rec。
+                # ⚠️ 门槛用 alive 而非 handle_alive：list_accounts / get_conn_token /
+                # detect_account 读的是**磁盘配置文件**，不需要面板持有活进程句柄。
+                # 面板重启/重部署后 worker 仍在跑（_service_reachable 兜住 alive），但
+                # 句柄已丢（handle_alive=False）——若只用 handle_alive 兜底，账号清单
+                # 永不回读，拓扑图「在线状态圆点」因 accounts 为空而不显示。
+                # _consume_new_lines 对死句柄读空 ring 返回 []，日志类回读自然跳过，
+                # 文件类回读（账号）照常执行，两者互不影响。
+                if alive:
                     try:
                         rec = _backfill_from_logs(rec, _consume_new_lines(proc))
                     except Exception as e:
