@@ -770,6 +770,24 @@ def test_dotenv_new_file_is_written_with_trailing_newline(tmp_path):
     assert p.read_text("utf-8").endswith("\n")
 
 
+def test_dotenv_none_value_deletes_key_but_keeps_other_lines(tmp_path):
+    """None = 删除该键（连同那一行）。
+
+    为什么需要：从 OneBot 切到官方通道时要清掉 ONEBOT_V11_*，否则实例会一直去连
+    一个已经不存在的登录端；而「不在返回值里给出它」不够——旧行会被原样写回。
+    """
+    p = tmp_path / ".env"
+    p.write_text('# OneBot 配置\nONEBOT_V11_WS_URLS=["ws://127.0.0.1:3002/"]\n'
+                 "LOG_LEVEL=INFO\n", "utf-8")
+    out = atomic_write_dotenv(p, lambda c: {**c, "ONEBOT_V11_WS_URLS": None,
+                                            "QQ_BOTS": "[]"})
+    text = p.read_text("utf-8")
+    assert "ONEBOT_V11_WS_URLS" not in text
+    assert "# OneBot 配置" in text and "LOG_LEVEL=INFO" in text   # 注释与别的键原样保留
+    assert "QQ_BOTS=[]" in text
+    assert "ONEBOT_V11_WS_URLS" not in out                         # 返回值里也不含
+
+
 # ---------- pyproject.toml 文本级合并 ----------
 
 _TOML_MULTI = """[project]

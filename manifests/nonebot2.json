@@ -11,6 +11,26 @@
   "compatible_login": ["napcat", "llbot", "snowluma", "lagrange"],
   "protocol": "ob11",
 
+  // 两种接入通道：
+  //   onebot   —— 老路：登录端（NapCat/LLBot…）承载 QQ 登录，本端连它的 WS。
+  //   official —— 直连 QQ 开放平台官方网关，走 nonebot-adapter-qq，无需登录端。
+  // ⚠️ 官方通道的 DRIVER 必须带 HTTPClient（~aiohttp），且适配器要先装进 libs/：
+  //    这些由 adapters/nonebot2.py 的 configure_official() 负责，见 docs/notes/nonebot2-qq-official-server.md。
+  "bot_modes": [
+    { "id": "onebot", "label": "OneBot 协议（需登录端）", "needs_login": true },
+    {
+      "id": "official",
+      "label": "QQ 官方机器人（程序内置适配器，无需登录端）",
+      "needs_login": false,
+      "guide_url": "https://bot.q.qq.com/wiki/",
+      "credentials": [
+        { "key": "app_id", "label": "机器人 AppID", "secret": false },
+        { "key": "app_secret", "label": "机器人 AppSecret", "secret": true }
+      ],
+      "credential_hint": "开放平台 → 你的机器人 → 开发设置，复制 AppID 与 AppSecret（Secret 只显示一次）。首次保存面板会自动把 QQ 官方适配器装进实例的 libs/（需要联网）。"
+    }
+  ],
+
   "delete_keeps_save": true,
   "save_keep_dir": ["plugins", ".env"],
   "data_paths": ["plugins", ".env", "data"],

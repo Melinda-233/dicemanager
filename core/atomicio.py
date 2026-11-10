@@ -104,6 +104,7 @@ def atomic_write_dotenv(path, mutate) -> dict:
 
         lines = text.splitlines()
         seen: set[str] = set()
+        drop: list[int] = []
         for i, raw in enumerate(lines):
             kv = _split_key(raw)
             if not kv:
@@ -112,11 +113,17 @@ def atomic_write_dotenv(path, mutate) -> dict:
             if key in seen:
                 continue                            # 重复键：原样保留（后者胜出语义）
             seen.add(key)
-            if key in after and after[key] != val:  # 值真的变了才重写该行
-                new = after[key]
+            if key not in after:
+                continue
+            new = after[key]
+            if new is None:                         # None = 删除该键（连行一起抹掉）
+                drop.append(i)
+            elif new != val:                        # 值真的变了才重写该行
                 lines[i] = f"{key}={new}" if new != "" else f"{key}="
+        for i in reversed(drop):
+            del lines[i]
         for key, val in after.items():              # mutate 新增的键追加到末尾
-            if key not in seen:
+            if key not in seen and val is not None:
                 lines.append(f"{key}={val}" if val != "" else f"{key}=")
         while lines and not lines[-1].strip():
             lines.pop()                              # 去掉尾部空行，避免追加键后多出空行
@@ -124,4 +131,4 @@ def atomic_write_dotenv(path, mutate) -> dict:
         if body:
             body += "\n"
         write_atomic(p, body.encode("utf-8"))
-    return after
+    return {k: v for k, v in after.items() if v is not None}

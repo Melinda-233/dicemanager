@@ -248,11 +248,15 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 **两种官方通道形态**（2026-11-10 新增第二种）：
 
 - **程序自身 WebUI 收凭据**（海豹 `sealdice`）：step3 直接 `skipped=True`，面板一个字都不写，只把人送进程序 WebUI。
-- **面板写配置**（Dice-Next `dicenext`）：清单在 `bot_modes[official]` 里声明 `credentials`（`[{key, label, secret}]`）与可选 `credential_hint`，适配器实现 `requires_official_credentials()` / `configure_official()` / `official_status()`。step3 收到 `payload.credentials` 后写进程序配置（Dice-Next 是 `config/adapters.json` 的一条 `type=qq_official`，AppSecret 落盘后 `chmod 0600`，接口不回显），并把实例推到 `CONFIGURED`；缺凭据时返回 `{result:"error"}` 而**不是**假装成功（否则实例起来只是个连不上官方网关的空壳）。断点续跑/重入时若文件里已有配置且本次未传凭据，返回 `saved=False` 沿用旧配置，不逼用户重填 secret。
+- **面板写配置**（Dice-Next `dicenext`、NoneBot2 `nonebot2`）：清单在 `bot_modes[official]` 里声明 `credentials`（`[{key, label, secret}]`）与可选 `credential_hint`，适配器实现 `requires_official_credentials()` / `configure_official()` / `official_status()`。step3 收到 `payload.credentials` 后写进程序配置，并把实例推到 `CONFIGURED`；缺凭据时返回 `{result:"error"}` 而**不是**假装成功（否则实例起来只是个连不上官方网关的空壳）。断点续跑/重入时若文件里已有配置且本次未传凭据，返回 `saved=False` 沿用旧配置，不逼用户重填 secret。两边落盘形态不同：
+  - Dice-Next：`config/adapters.json` 里一条 `type=qq_official`；
+  - NoneBot2：`.env` 里的 `QQ_BOTS`（JSON 数组，含 `id`/`secret`/`use_websocket`/`intent`）+ `DRIVER` 补 `~aiohttp` + 清掉 `ONEBOT_V11_*` + 生成 `plugins/qq_official_boot.py` 注册适配器；首次保存还会把 `nonebot-adapter-qq` 精确解包进 `libs/`（**不能**用 `pip install --target --upgrade`，会把 `libs/nonebot/adapters/onebot` 一起替换掉）。
+
+  两者都把 AppSecret 落盘后 `chmod 0600`，接口与日志一律不回显。
 
 向导第 3 步另有「测试连通性」按钮，打 `POST /api/official/verify`（`core/qqofficial.py`）：拿 AppID/AppSecret 去官方 `getAppAccessToken` 换一次 token，把 100016/100007/10004/100001 翻成人话。它不落盘、不推进状态机，失败也返回 HTTP 200（凭证错是业务结果，不是接口故障）。
 
-目前声明 `official` 的是海豹与 Dice-Next（两者都无风控封号风险，代价是官方接口能力受限：默认只收 @机器人 的消息、被动回复有窗口、主动消息与群管受限）。
+目前声明 `official` 的是海豹、Dice-Next 与 NoneBot2（三者都无风控封号风险，代价是官方接口能力受限：默认只收 @机器人 的消息、被动回复有窗口、主动消息与群管受限）。
 
 ### 4.3 登录页
 

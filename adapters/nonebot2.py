@@ -53,6 +53,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 from adapters.base import (
@@ -839,6 +841,210 @@ class NoneBot2Adapter(BaseAdapter):
             manual=f"已写入 {path}：{kind} → {url}\n"
                    f"Token：{token}\n"
                    "⚠️ NoneBot2 不支持配置热加载，**需重启该实例**互联才会生效。")
+
+    # ---------- QQ 官方机器人通道 ----------
+    #
+    # NoneBot2 侧用的是 `nonebot-adapter-qq`（官方 SDK 的 NoneBot 封装），
+    # 与 Dice-Next 内置的 qq_official 是两套实现，但面板侧的形态完全一致：
+    # 清单声明 bot_modes[official].credentials → 向导第 3 步把凭据交给这里落盘。
+
+    OFFICIAL_ADAPTER_PKG = "nonebot-adapter-qq>=1.7.3"
+    # 只开「群聊/单聊 @ 消息」这一个 intent（1<<25）。其余 13 个默认关：
+    # 1<<30 公域频道、1<<26 交互等需要企业主体或单独申请，开了反而可能被网关
+    # 以 4013/4014 拒掉整条连接。要更多能力时改这里即可（键名同 Intents 字段）。
+    _OFFICIAL_INTENTS = {
+        "guilds": False, "guild_members": False, "guild_messages": False,
+        "guild_message_reactions": False, "direct_message": False,
+        "open_forum_event": False, "audio_live_member": False,
+        "group_members": False, "c2c_group_at_messages": True,
+        "interaction": False, "message_audit": False, "forum_event": False,
+        "audio_action": False, "at_messages": False,
+    }
+    _QQ_BOOT_PLUGIN = "qq_official_boot.py"
+    _QQ_BOOT_SOURCE = (
+        '"""DiceManager: 注册 QQ 官方机器人适配器（由面板生成，勿手改）。\n'
+        "\n"
+        "写在这里而不是 bot.py：bot.py 由面板重新生成会覆盖手改；\n"
+        "而 load_plugins('plugins') 一定在 nonebot.run() 之前执行。\n"
+        '"""\n'
+        "import nonebot\n"
+        "from nonebot.adapters.qq import Adapter as QQAdapter\n"
+        "\n"
+        "nonebot.get_driver().register_adapter(QQAdapter)\n"
+    )
+
+    def official_mode(self) -> dict:
+        """清单里 official 通道那条声明（没有则空 dict）。"""
+        for b in self.m.get("bot_modes") or []:
+            if isinstance(b, dict) and b.get("id") == "official":
+                return dict(b)
+        return {}
+
+    def requires_official_credentials(self) -> bool:
+        """清单声明了 credentials 就代表凭据由面板收（否则让程序自己收）。"""
+        return bool(self.official_mode().get("credentials"))
+
+    def _qq_adapter_installed(self, instance) -> bool:
+        try:
+            return (self._libs_dir(instance) / "nonebot" / "adapters" / "qq").is_dir()
+        except OSError:
+            return False
+
+    def _ensure_qq_adapter(self, instance) -> bool:
+        """把 nonebot-adapter-qq 解包进 libs/，返回这次是否真的装了。
+
+        ⚠️ **不能用 `pip install --target`**（2026-11-10 服务器实测）：
+          · 不带 --upgrade：`libs/nonebot` 已存在时 pip 只打印
+            「Target directory ... already exists. Specify --upgrade」然后什么都不装；
+          · 带 --upgrade：会把整个 `libs/nonebot` 目录替换掉，实测连带删掉了
+            `libs/nonebot/adapters/onebot/`，实例随即
+            `ModuleNotFoundError: No module named 'nonebot.adapters.onebot'` 起不来。
+        故只下载 wheel，再按目录精确解包：只新增本包的文件，已有依赖一个不动。
+        """
+        if self._qq_adapter_installed(instance):
+            return False
+        libs = self._ensure_libs(instance)
+        key = getattr(instance, "id", "") or ""
+        with tempfile.TemporaryDirectory(prefix="dm-qq-adapter-") as tmp:
+            tmpdir = Path(tmp)
+            cmd = [*self._pip(instance), "download", "--no-deps",
+                   "--disable-pip-version-check", "--dest", str(tmpdir)]
+            if DEFAULT_PIP_INDEX:
+                cmd += ["--index-url", DEFAULT_PIP_INDEX]
+            cmd.append(self.OFFICIAL_ADAPTER_PKG)
+            plugin_op_log(key, "$ " + " ".join(cmd))
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      stdin=subprocess.DEVNULL,
+                                      env=self._clean_env(), timeout=PIP_TIMEOUT)
+            except subprocess.TimeoutExpired as e:
+                raise RuntimeError(
+                    f"下载 QQ 官方适配器超时（>{PIP_TIMEOUT}s），请检查网络后重试") from e
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+                raise RuntimeError("下载 QQ 官方适配器失败（该步骤需要联网）："
+                                   + " / ".join(tail[-3:] or ["pip 无输出"]))
+            wheels = sorted(tmpdir.glob("*.whl"))
+            if not wheels:
+                raise RuntimeError("pip download 没拿到 wheel，无法安装 QQ 官方适配器")
+            extract = tmpdir / "x"
+            with zipfile.ZipFile(wheels[0]) as zf:
+                zf.extractall(extract)
+            src = extract / "nonebot" / "adapters" / "qq"
+            if not src.is_dir():
+                raise RuntimeError("QQ 官方适配器 wheel 结构异常（缺 nonebot/adapters/qq）")
+            dst = libs / "nonebot" / "adapters" / "qq"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if dst.exists():
+                shutil.rmtree(dst)
+            shutil.copytree(src, dst)
+            for dist in extract.glob("nonebot_adapter_qq-*.dist-info"):
+                tgt = libs / dist.name
+                if tgt.exists():
+                    shutil.rmtree(tgt)
+                shutil.copytree(dist, tgt)
+        plugin_op_log(key, f"已把 nonebot-adapter-qq 装进 {libs}（未触碰已有依赖）")
+        return True
+
+    @staticmethod
+    def _driver_with_http_client(driver: str | None) -> str:
+        """确保 DRIVER 带 HTTPClient。
+
+        QQ 适配器 setup() 会检查驱动器是否支持 HTTP 请求，`~fastapi+~websockets`
+        不满足，直接抛 `RuntimeError: Current driver ... does not support http
+        client requests!`（2026-11-10 实测），故必须补 `~aiohttp`（`~httpx` 亦可）。
+        """
+        parts = [p.strip() for p in str(driver or "").split("+") if p.strip()]
+        if not parts:
+            return "~fastapi+~aiohttp+~websockets"
+        if any(p.lstrip("~") in ("aiohttp", "httpx") for p in parts):
+            return "+".join(parts)
+        return "+".join([*parts, "~aiohttp"])
+
+    def _write_qq_boot_plugin(self, instance) -> Path:
+        """生成 plugins/ 下的适配器注册插件，返回路径。
+
+        不写进 bot.py：bot.py 由面板在部署/补装时重新生成（_write_entrypoint），
+        手改会被覆盖；`nonebot.load_plugins('plugins')` 必在 `nonebot.run()` 之前跑。
+        """
+        path = Path(instance.dir) / "plugins" / self._QQ_BOOT_PLUGIN
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self._QQ_BOOT_SOURCE.encode("utf-8")
+        try:
+            same = path.read_bytes() == data
+        except OSError:
+            same = False
+        if not same:
+            write_atomic(path, data)
+        return path
+
+    def configure_official(self, instance, credentials) -> dict:
+        """向导第 3 步（official 通道）：写 .env 的 QQ_BOTS 并准备好适配器。
+
+        返回 dict（不是 WriteResult）：向导要拿 app_id/preview/manual 三件套
+        给用户看，且**绝不回显 AppSecret**。
+        """
+        creds = credentials or {}
+        app_id = str(creds.get("app_id") or "").strip()
+        app_secret = str(creds.get("app_secret") or "").strip()
+        if not app_id or not app_secret:
+            return {"ok": False,
+                    "message": "QQ 官方机器人需要 AppID 与 AppSecret（两个都不能空）。"
+                               "请到开放平台 → 你的机器人 → 开发设置里复制。"}
+        installed = self._ensure_qq_adapter(instance)      # 没有适配器时会联网下载
+        path = self._env_path(instance)
+        port = instance.allocated_ports.get("bot") or 8080
+        bots = [{"id": app_id, "secret": app_secret,
+                 "use_websocket": True, "intent": dict(self._OFFICIAL_INTENTS)}]
+        onebot_keys = ("ONEBOT_V11_WS_URLS", "ONEBOT_V11_REVERSE_WS_URLS",
+                       "ONEBOT_V11_ACCESS_TOKEN")
+
+        def _mutate(cur: dict) -> dict:
+            out: dict = dict(cur)
+            for k in onebot_keys:
+                out[k] = None          # None = 让 atomic_write_dotenv 删掉这一行
+            out["DRIVER"] = self._driver_with_http_client(cur.get("DRIVER"))
+            out["HOST"] = cur.get("HOST") or "127.0.0.1"
+            out["PORT"] = cur.get("PORT") or str(port)
+            out["QQ_BOTS"] = json.dumps(bots, ensure_ascii=False)
+            return out
+
+        atomic_write_dotenv(path, _mutate)
+        try:
+            os.chmod(path, 0o600)      # Secret 明文落盘，权限收紧（Windows 上无效，忽略）
+        except OSError:
+            pass
+        boot = self._write_qq_boot_plugin(instance)
+        return {
+            "ok": True,
+            "path": str(path),
+            "app_id": app_id,
+            "installed_adapter": installed,
+            "plugin": str(boot),
+            "preview": f"QQ 官方机器人：AppID {app_id}，网关 WebSocket，群聊/单聊消息已开启",
+            "manual": (f"已写入 {path}：QQ_BOTS（含 AppID/Secret）+ DRIVER 补齐 HTTPClient；"
+                       f"适配器注册代码在 {boot}。\n"
+                       "⚠️ AppSecret 只落盘、不回显；文件权限已收紧到 600。\n"
+                       "⚠️ NoneBot2 不支持配置热加载，**必须重启该实例**才会连上官方网关。\n"
+                       "连不上时先查：开放平台白名单是否放了本机出口 IP、机器人主体是否有"
+                       "群聊/单聊权限（个人主体只能进自己是群主的群）。"),
+        }
+
+    def official_status(self, instance) -> dict:
+        """回读 .env 里的 QQ_BOTS，判断官方通道是否已配置（只回 app_id）。"""
+        path = self._env_path(instance)
+        raw = read_dotenv(path).get("QQ_BOTS") or ""
+        items: list = []
+        try:
+            parsed = json.loads(raw) if raw.strip() else []
+            if isinstance(parsed, list):
+                items = parsed
+        except ValueError:
+            items = []
+        bot = items[0] if items and isinstance(items[0], dict) else {}
+        return {"configured": bool(bot.get("id") and bot.get("secret")),
+                "app_id": str(bot.get("id") or ""),
+                "path": str(path)}
 
     def _ensure_webui_binding(self, instance) -> None:
         """NoneBot2 无自带 WebUI：插件管理由 DiceManager 面板承担（见第二阶段）。"""

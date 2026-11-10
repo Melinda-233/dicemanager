@@ -18,7 +18,7 @@
 | 溯洄 [Dice!](https://github.com/Dice-Developer-Team/Dice) | 独立程序 | 外置登录端（离线上传） | AutoLogin.yml / config.txt 双版本识别 |
 | 青果 [OlivaDice](https://github.com/OlivOS-Team/OlivaDiceCore) | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
 | [Dice!Next](https://github.com/DiceZone/Dice-Next) | 独立程序 | 外置登录端 / QQ 官方机器人 | OneBot v11 适配器写入 config/adapters.json；也支持 **QQ 官方机器人通道**（3.x 程序内置 qq_official 适配器，免登录端，面板直接把 AppID/AppSecret 写进同一份配置） |
-| [NoneBot2](https://github.com/nonebot/nonebot2) | Python 项目 | 外置登录端 | 需 Python ≥3.10；管理器把依赖 `pip install --target` 到实例 `libs/`（`pip_project`），面板里可直接装卸插件；OneBot 连接写入 .env，**改配置需重启生效** |
+| [NoneBot2](https://github.com/nonebot/nonebot2) | Python 项目 | 外置登录端 / QQ 官方机器人 | 需 Python ≥3.10；管理器把依赖 `pip install --target` 到实例 `libs/`（`pip_project`），面板里可直接装卸插件；OneBot 连接写入 .env，**改配置需重启生效**；官方通道走 `nonebot-adapter-qq`，由面板写 `QQ_BOTS` 并自动备好适配器 |
 | [AstrBot](https://github.com/AstrBotDevs/AstrBot) | Python 项目 | 外置登录端 | 需 Python ≥3.12；同为 `pip_project`，但 OneBot 是**反向 WS**（AstrBot 监听 6199，登录端连它），配置写入 `data/cmd_config.json` |
 | [Koishi](https://github.com/koishijs/koishi) | Node.js 项目 | 外置登录端 | 需 Node.js ≥18；`npm_project` 策略（上游 release 无资产，走 `npm create koishi` 官方模板），OneBot 反向 WS 监听 5140/onebot，写入 `koishi.yml` |
 

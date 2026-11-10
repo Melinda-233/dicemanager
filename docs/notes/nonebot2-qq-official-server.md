@@ -2,7 +2,7 @@
 
 > 2026-11-10 在 47.108.190.188 的 `/opt/nonebot2`（实例 `nonebot2-93106f1a`）上完成。
 > 与 [dicenext-qq-official.md](dicenext-qq-official.md) 的区别：Dice-Next 原生支持官方通道，
-> 面板只要写配置；**NoneBot2 官方通道不在面板能力内**，这次是服务端手工接入，见文末「面板缺口」。
+> 面板只要写配置；NoneBot2 要先手工验证可行（本文），再把同一套链路做进面板（见文末「面板支持」）。
 
 ## 结论
 
@@ -82,18 +82,25 @@ QQ_BOTS=[{"id": "102085790", "secret": "<AppSecret>", "use_websocket": true,
 
 要让后两者工作，得改用 `on_message` + 适配器无关的 `Event.get_session_id()` / `UniMessage`，属于独立改动。
 
-## 面板缺口（后续可做）
+## 面板支持（2026-11-10 当晚已补齐）
 
-面板对 NoneBot2 的认识是「Python 源码项目 + OneBot 连登录端」：
-`manifests/nonebot2.json` 没有 `bot_modes`，`adapters/nonebot2.py` 也没有
-`official_mode` / `configure_official` / `requires_official_credentials`。
-因此本次改造**在面板 UI 里不可见、也不可改**：
+首次改造是纯服务器侧手工做的，面板当时对 NoneBot2 的认知只有「Python 源码项目 + OneBot 连登录端」。
+现已按 Dicenext 的同构做法补进仓库：
 
-- 换 AppSecret 只能改服务器 `/opt/nonebot2/.env`（面板不会帮你回填）；
-- 面板若对 NoneBot2 实例重跑部署/互联步骤，会按 OneBot 口径重写 `.env`，
-  把 `QQ_BOTS` 覆盖掉（`write_conn_config` 只合并 OneBot 两键，QQ_BOTS 行会保留，
-  但 `DRIVER` 会被改回 `~fastapi+~websockets`，于是 QQ 适配器 setup 又炸）。
+- `manifests/nonebot2.json` 与 `nonebot2_win.json`：`bot_modes` = `onebot` + `official`，
+  `official.credentials` = `[{app_id, label 机器人 AppID, secret:false}, {app_secret, label 机器人 AppSecret, secret:true}]`；
+- `adapters/nonebot2.py`：`official_mode()` / `requires_official_credentials()` /
+  `configure_official()` / `official_status()`；
+- `configure_official()` 写的东西与本文手工改造一一对应：`QQ_BOTS`（替换而非追加）、
+  `DRIVER` 补 `~aiohttp`、删 `ONEBOT_V11_*`、生成 `plugins/qq_official_boot.py`、`chmod 0600`；
+- 首次保存时若 `libs/nonebot/adapters/qq` 不存在，会 **`pip download` 拿 wheel 再按目录精确解包**
+  （不能用 `pip install --target`：会静默不装或整个替换 `libs/nonebot`）；
+- `services/wizard.py` 与 `web/src/pages/Wizard.vue` 无需改动——官方通道的表单与 step3 契约是清单驱动的。
 
-补齐方式与 Dicenext 同构：清单加 `bot_modes.official`（含 `credentials`），
-适配器加 `configure_official()`（写 `QQ_BOTS` + `DRIVER`）与 `official_status()`，
-并让 `prepare_start` 确保 `nonebot-adapter-qq` 与 `aiohttp` 在 `libs/` 内。
+仍然存在的边界（不是缺陷，是设计）：
+
+- `bot_mode` 在创建实例时确定；已建好的 OneBot 实例不会自己变成官方通道，需要重建或手工改
+  `instances.json`（改文件必须在面板停止时做）；
+- 重启是必须的：NoneBot2 没有配置热加载，向导保存后要重启实例才会连上官方网关；
+- 三个插件里只有 `nonedice` 与适配器无关；`personal_assistant` / `hindsight_mem` 用
+  `isinstance(PrivateMessageEvent)` 过滤，官方通道下不响应（见上文「插件兼容性」）。
