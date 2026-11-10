@@ -46,15 +46,21 @@
     <svg :viewBox="`0 0 ${vbW} ${vbH}`" class="topo" :style="topoStyle">
       <text :x="colX.login" y="24" class="col-title" text-anchor="middle">登录端</text>
       <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
+      <!-- 官方机器人只在有 official 实例时占左侧一列，标题也只在有节点时出现 -->
+      <text v-if="officialNodes.length" :x="officialColX" y="24" class="col-title"
+            text-anchor="middle">官方机器人</text>
       <text v-if="!loginNodes.length" :x="colX.login" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
       <text v-if="!diceNodes.length" :x="colX.dice" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
-      <line v-for="e in allEdges" :key="e.src+e.dst"
-            :x1="pos(e.src).x" :y1="pos(e.src).y"
-            :x2="pos(e.dst).x" :y2="pos(e.dst).y" :class="e.state"/>
-      <!-- 连线中点标注状态，颜色随线；白描边保证压在线上也可读 -->
+      <!-- 官方通道那条线要横跨登录端那一列，直线会从同行的登录端方框底下穿过去，
+           看起来像「登录端连到应用端」。所以它走一条上拱的二次曲线，从两行之间
+           的空隙绕过去（见 edgePath）。其余边仍是直线。 -->
+      <path v-for="e in allEdges" :key="e.src+e.dst" fill="none"
+            :d="edgePath(e)" :class="e.state"/>
+      <!-- 连线中标注状态，颜色随线；白描边保证压在线上也可读。
+           官方通道那条线横跨整张图（最左的官方节点 ↔ 应用端），标注压在正中间
+           会盖住登录端那一列，所以把它挪到靠官方节点的一端（见 edgeLabel）。 -->
       <text v-for="e in allEdges" :key="'t'+e.src+e.dst+(e.account_qq||'')"
-            :x="(pos(e.src).x + pos(e.dst).x) / 2"
-            :y="(pos(e.src).y + pos(e.dst).y) / 2 - 7"
+            :x="edgeLabel(e).x" :y="edgeLabel(e).y"
             :class="['edge-label', e.state]" text-anchor="middle">{{
         e.label || stateText(e.state) }}<tspan v-if="e.account_qq"> · QQ {{ e.account_qq }}</tspan></text>
       <g v-for="n in nodes" :key="n.id"
@@ -137,9 +143,11 @@
         <circle cx="87" cy="0" r="6.2" class="qico" stroke-width="1.7"
                 stroke-dasharray="2.5 2.1" style="fill:none;stroke:var(--text)"/>
       </g>
-      <!-- QQ 官方机器人通道：没有登录端那一端，所以在应用端右侧凭空画一个节点，
+      <!-- QQ 官方机器人通道：没有登录端那一端，所以在最左侧凭空画一个节点，
            并从应用端连过去 —— 否则这类实例在图上就是一个孤零零的方框，用户
            看不出「它在跟谁说话」。节点只是展示，点击等于选中它所属的应用端。
+           放最左而不是最右：右侧是「被连的一方」（登录端在左、应用端在右，
+           数据从左流向右），官方机器人属于「跟谁说话」的左侧对端。
            ⚠️ 与主节点同样用裸坐标（<g> 已 translate），不依赖 class 上色。 -->
       <g v-for="o in officialNodes" :key="o.id"
          :transform="`translate(${pos(o.id).x},${pos(o.id).y})`"
@@ -155,9 +163,9 @@
       <span><i class="lg-line lg-green"/>已连接</span>
       <span><i class="lg-line lg-gray"/>已配置未连接</span>
       <span><i class="lg-line lg-red"/>连接失败</span>
-      <!-- 官方通道没有登录端：右侧会凭空出现一个「QQ 官方机器人」节点，这条线讲
+      <!-- 官方通道没有登录端：最左侧会凭空出现一个「QQ 官方机器人」节点，这条线讲
            程序有没有真连上网关（灰=没配凭据，红=程序没跑）。 -->
-      <span><i class="lg-line lg-gray"/>QQ 官方机器人通道（右侧节点）</span>
+      <span><i class="lg-line lg-gray"/>QQ 官方机器人通道（左侧节点）</span>
       <!-- 连线颜色讲「两端连没连上」，圆点讲「登录端这个 QQ 号在不在线」——
            两回事：连上了但号掉线，线是绿的、点是红的。 -->
       <span><i class="lg-dot" style="background:var(--ok)"/>账号在线</span>
@@ -744,8 +752,8 @@ const topoStyle = computed(() => {
 const narrow = computed(() => wrapW.value < 720)
 // QQ 官方机器人通道：程序自己连 QQ 网关，图上没有「登录端」那一端。
 // 后端的 edges 只描述「应用端 ↔ 登录端」，所以这条线只能由前端补：
-// 在应用端右侧画一个虚拟节点，再从应用端连过去。没有 official 实例时
-// 画布宽度分毫不差（extra=0），不影响原布局。
+// 在最左侧画一个虚拟节点，再从应用端连过去。没有 official 实例时
+// 画布宽度分毫不差（shift=0），两列位置也与改动前完全一致。
 const officialApps = computed(() => nodes.value.filter(n => n.bot_mode === 'official'))
 const OFFICIAL_PREFIX = 'qqo:'
 const officialNodes = computed(() => officialApps.value.map(n => {
@@ -772,13 +780,58 @@ const officialEdges = computed(() => officialApps.value.map(n => {
   return { src: n.id, dst: OFFICIAL_PREFIX + n.id, state, label }
 }))
 const allEdges = computed(() => edges.value.concat(officialEdges.value))
-const vbW = computed(() => {
-  const base = narrow.value ? 560 : 800
-  return base + (officialNodes.value.length ? (narrow.value ? 170 : 235) : 0)
+// 官方节点占左边一列：有 official 实例时把两列整体右移这么多，多出来的宽度
+// 就是左侧那一列的位置。没有 official 实例时 shift=0，布局与原来一模一样。
+const officialShift = computed(() => {
+  if (!officialNodes.value.length) return 0
+  return narrow.value ? 170 : 240
 })
-// 虚拟节点贴右边缘：宽 140 的方框，中心留 85 的右边距
-const officialColX = computed(() => vbW.value - 85)
-const colX = computed(() => narrow.value ? { login: 130, dice: 430 } : { login: 170, dice: 630 })
+const vbW = computed(() => (narrow.value ? 560 : 800) + officialShift.value)
+// 虚拟节点贴左边缘：宽 140 的方框，中心留 85 的左边距
+const officialColX = computed(() => 85)
+const colX = computed(() => {
+  const s = officialShift.value
+  return narrow.value
+    ? { login: 130 + s, dice: 430 + s }
+    : { login: 170 + s, dice: 630 + s }
+})
+// 官方通道的边：从应用端（右）连到最左的虚拟节点，中间要穿过登录端那一列。
+// 直线会贴着同行的登录端方框走，看起来像是「登录端连过去」，所以给它一个
+// 上拱的二次曲线：控制点放在两端水平中点、抬高 BOW —— 弧顶正好落在两行之间
+// 的空隙里（行距 120，方框半高 26，抬 96 后弧顶离方框上沿还有 22）。
+const OFFICIAL_BOW = 96
+const isOfficialEdge = e => !!(e.dst && e.dst.startsWith(OFFICIAL_PREFIX))
+const edgeCurve = e => {
+  if (!isOfficialEdge(e)) return null
+  const a = pos(e.src)
+  const b = pos(e.dst)
+  return { a, b, cx: (a.x + b.x) / 2, cy: Math.min(a.y, b.y) - OFFICIAL_BOW }
+}
+const edgePath = e => {
+  const c = edgeCurve(e)
+  if (!c) {
+    const a = pos(e.src)
+    const b = pos(e.dst)
+    return `M ${a.x} ${a.y} L ${b.x} ${b.y}`
+  }
+  return `M ${c.a.x} ${c.a.y} Q ${c.cx} ${c.cy} ${c.b.x} ${c.b.y}`
+}
+// 连线标注位置：普通边放正中间；官方通道那条放到曲线的 80% 处（靠官方节点一侧），
+// 免得小字正好压在登录端那一列的方框上。
+const edgeLabel = e => {
+  const c = edgeCurve(e)
+  if (!c) {
+    const a = pos(e.src)
+    const b = pos(e.dst)
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 7 }
+  }
+  const t = 0.8
+  const u = 1 - t
+  return {
+    x: u * u * c.a.x + 2 * u * t * c.cx + t * t * c.b.x,
+    y: u * u * c.a.y + 2 * u * t * c.cy + t * t * c.b.y - 7,
+  }
+}
 const pos = id => {
   // 虚拟的官方机器人节点：与它所属的应用端同一行（不参与列内排布）
   if (id && id.startsWith(OFFICIAL_PREFIX)) {
@@ -1585,9 +1638,9 @@ onMounted(() => { loadSchedules() })
 </script>
 
 <style scoped>
-line.solid-green { stroke: #42b883; stroke-width: 3; }
-line.dashed-gray { stroke: #bbb; stroke-dasharray: 6 4; }
-line.solid-red   { stroke: #e5484d; stroke-width: 3; }
+line.solid-green, path.solid-green { stroke: #42b883; stroke-width: 3; }
+line.dashed-gray, path.dashed-gray { stroke: #bbb; stroke-dasharray: 6 4; }
+line.solid-red, path.solid-red     { stroke: #e5484d; stroke-width: 3; }
 /* 连线中点状态标注：填充色与对应线一致，白描边（paint-order 让描边垫底）保证可读 */
 text.edge-label { font-size: 11px; paint-order: stroke; stroke: var(--bg, #fff); stroke-width: 4px; }
 text.edge-label.solid-green { fill: #2f9d6f; }
