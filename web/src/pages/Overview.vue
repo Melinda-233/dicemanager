@@ -48,15 +48,15 @@
       <text :x="colX.dice" y="24" class="col-title" text-anchor="middle">应用端</text>
       <text v-if="!loginNodes.length" :x="colX.login" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
       <text v-if="!diceNodes.length" :x="colX.dice" :y="vbH / 2" class="col-empty" text-anchor="middle">（暂无）</text>
-      <line v-for="e in edges" :key="e.src+e.dst"
+      <line v-for="e in allEdges" :key="e.src+e.dst"
             :x1="pos(e.src).x" :y1="pos(e.src).y"
             :x2="pos(e.dst).x" :y2="pos(e.dst).y" :class="e.state"/>
       <!-- 连线中点标注状态，颜色随线；白描边保证压在线上也可读 -->
-      <text v-for="e in edges" :key="'t'+e.src+e.dst+(e.account_qq||'')"
+      <text v-for="e in allEdges" :key="'t'+e.src+e.dst+(e.account_qq||'')"
             :x="(pos(e.src).x + pos(e.dst).x) / 2"
             :y="(pos(e.src).y + pos(e.dst).y) / 2 - 7"
             :class="['edge-label', e.state]" text-anchor="middle">{{
-        stateText(e.state) }}<tspan v-if="e.account_qq"> · QQ {{ e.account_qq }}</tspan></text>
+        e.label || stateText(e.state) }}<tspan v-if="e.account_qq"> · QQ {{ e.account_qq }}</tspan></text>
       <g v-for="n in nodes" :key="n.id"
          :transform="`translate(${pos(n.id).x},${pos(n.id).y})`" @click="sel = n">
         <!-- class 写全：node-box 恒在，dead 按状态加。
@@ -137,11 +137,27 @@
         <circle cx="87" cy="0" r="6.2" class="qico" stroke-width="1.7"
                 stroke-dasharray="2.5 2.1" style="fill:none;stroke:var(--text)"/>
       </g>
+      <!-- QQ 官方机器人通道：没有登录端那一端，所以在应用端右侧凭空画一个节点，
+           并从应用端连过去 —— 否则这类实例在图上就是一个孤零零的方框，用户
+           看不出「它在跟谁说话」。节点只是展示，点击等于选中它所属的应用端。
+           ⚠️ 与主节点同样用裸坐标（<g> 已 translate），不依赖 class 上色。 -->
+      <g v-for="o in officialNodes" :key="o.id"
+         :transform="`translate(${pos(o.id).x},${pos(o.id).y})`"
+         class="official-node" @click="sel = o.app">
+        <title>{{ o.title }}</title>
+        <rect x="-70" y="-26" width="140" height="52" rx="8" class="node-box"
+              :class="{dead: !o.live}"/>
+        <text y="-6">QQ 官方机器人</text>
+        <text y="14" class="sub">{{ o.sub }}</text>
+      </g>
     </svg>
     <div class="legend">
       <span><i class="lg-line lg-green"/>已连接</span>
       <span><i class="lg-line lg-gray"/>已配置未连接</span>
       <span><i class="lg-line lg-red"/>连接失败</span>
+      <!-- 官方通道没有登录端：右侧会凭空出现一个「QQ 官方机器人」节点，这条线讲
+           程序有没有真连上网关（灰=没配凭据，红=程序没跑）。 -->
+      <span><i class="lg-line lg-gray"/>QQ 官方机器人通道（右侧节点）</span>
       <!-- 连线颜色讲「两端连没连上」，圆点讲「登录端这个 QQ 号在不在线」——
            两回事：连上了但号掉线，线是绿的、点是红的。 -->
       <span><i class="lg-dot" style="background:var(--ok)"/>账号在线</span>
@@ -726,9 +742,49 @@ const topoStyle = computed(() => {
   return { height: Math.round(w * vbH.value / vbW.value) + 'px' }
 })
 const narrow = computed(() => wrapW.value < 720)
-const vbW = computed(() => narrow.value ? 560 : 800)
+// QQ 官方机器人通道：程序自己连 QQ 网关，图上没有「登录端」那一端。
+// 后端的 edges 只描述「应用端 ↔ 登录端」，所以这条线只能由前端补：
+// 在应用端右侧画一个虚拟节点，再从应用端连过去。没有 official 实例时
+// 画布宽度分毫不差（extra=0），不影响原布局。
+const officialApps = computed(() => nodes.value.filter(n => n.bot_mode === 'official'))
+const OFFICIAL_PREFIX = 'qqo:'
+const officialNodes = computed(() => officialApps.value.map(n => {
+  const running = n.state === 'RUNNING' && n.process_alive !== false
+  // official_configured：true/false=适配器读到的真相；null=程序没有该通道或读失败
+  const cfg = n.official_configured
+  const sub = cfg === false ? '未配置凭据'
+    : cfg == null ? (running ? '已连接' : '程序未运行')
+      : (running ? '已连接' : '程序未运行')
+  return {
+    id: OFFICIAL_PREFIX + n.id,
+    app: n,
+    // 「活着」按颜色语义走：没配凭据的节点不该装成亮的
+    live: running && cfg !== false,
+    sub,
+    title: `${n.dice} · QQ 官方机器人通道（${sub}）`,
+  }
+}))
+const officialEdges = computed(() => officialApps.value.map(n => {
+  const running = n.state === 'RUNNING' && n.process_alive !== false
+  const cfg = n.official_configured
+  const state = cfg === false ? 'dashed-gray' : (running ? 'solid-green' : 'solid-red')
+  const label = cfg === false ? '未配置凭据' : (running ? '官方通道' : '程序未运行')
+  return { src: n.id, dst: OFFICIAL_PREFIX + n.id, state, label }
+}))
+const allEdges = computed(() => edges.value.concat(officialEdges.value))
+const vbW = computed(() => {
+  const base = narrow.value ? 560 : 800
+  return base + (officialNodes.value.length ? (narrow.value ? 170 : 235) : 0)
+})
+// 虚拟节点贴右边缘：宽 140 的方框，中心留 85 的右边距
+const officialColX = computed(() => vbW.value - 85)
 const colX = computed(() => narrow.value ? { login: 130, dice: 430 } : { login: 170, dice: 630 })
 const pos = id => {
+  // 虚拟的官方机器人节点：与它所属的应用端同一行（不参与列内排布）
+  if (id && id.startsWith(OFFICIAL_PREFIX)) {
+    const appId = id.slice(OFFICIAL_PREFIX.length)
+    return { x: officialColX.value, y: pos(appId).y }
+  }
   const node = nodes.value.find(n => n.id === id)
   if (!node) return { x: (colX.value.login + colX.value.dice) / 2, y: TOP_PAD }
   const col = isLogin(node) ? loginNodes.value : diceNodes.value

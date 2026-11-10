@@ -128,6 +128,30 @@ def _service_reachable(rec: dict) -> bool:
         return False
 
 
+def _official_configured(rec: dict) -> bool | None:
+    """官方机器人通道的实例「凭据配没配」（None = 该程序没有这个通道）。
+
+    为什么要推给前端：官方通道没有登录端那一端，拓扑图里的连线只能由前端凭空
+    补一个「QQ 官方机器人」节点。这条线该是绿的（已配 + 程序在跑）、灰的（没配
+    凭据）还是红的（配了但程序没起来），前端判不了 —— 凭据落在程序自己的
+    配置文件里（.env / adapters.json），只有适配器知道。
+    读的是磁盘文件，与进程句柄无关；失败一律当「不知道」，不能因此让节点消失。
+    """
+    if (rec.get("bot_mode") or "onebot") != "official":
+        return None
+    try:
+        adapter = ctx.get_adapter(rec["dice"])
+    except Exception:
+        return None
+    fn = getattr(adapter, "official_status", None)
+    if not callable(fn):
+        return None
+    try:
+        return bool((fn(SimpleNamespace(**rec)) or {}).get("configured"))
+    except Exception:
+        return None
+
+
 def _stamped_accounts(rec: dict, alive: bool, log_path=None) -> list[dict]:
     """给已登录账号打上在线状态（判据在 BaseAdapter.stamp_accounts，此处只做兜底）。
 
@@ -195,6 +219,11 @@ async def overview_loop(ws: WebSocket, user=None):
                               "links": rec.get("links") or (
                                   [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else []),
                               "qq": rec.get("qq"),
+                              # 接入通道 + 官方凭据状态：前端据此在拓扑图右侧补一个
+                              # 「QQ 官方机器人」节点并画出这条线（官方通道没有登录端，
+                              # 后端 edges 里天然没有它那一端）。bot_mode 缺省按 onebot。
+                              "bot_mode": rec.get("bot_mode") or "onebot",
+                              "official_configured": _official_configured(rec),
                               "warnings": rec.get("warnings", [])})
                 links = rec.get("links") or (
                     [{"login_ref": rec["login_ref"]}] if rec.get("login_ref") else [])

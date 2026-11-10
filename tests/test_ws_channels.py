@@ -107,6 +107,65 @@ def _clean():
     ctx._adapter_cache.clear()
 
 
+def test_ws_overview_node_carries_bot_mode_and_official_configured(client):
+    """总览节点必须带 bot_mode / official_configured（2026-11-10）。
+
+    为什么：QQ 官方机器人通道没有「登录端」那一端，后端的 edges 天然描述不出
+    「应用端 ↔ QQ 官方平台」这条线，只能由前端按 bot_mode 补一个虚拟节点。
+    而那条线该是绿的（配了凭据且程序在跑）还是灰的（没配凭据），前端判不了 ——
+    凭据落在程序自己的配置文件里，只有适配器知道，所以必须由后端推 official_configured。
+    """
+    _mk("nonebot2-o1", "nonebot2", state=State.RUNNING.value, bot_mode="official")
+
+    class _Official(FakeAdapter):
+        def official_status(self, instance):
+            return {"configured": True, "app_id": "102", "path": "x"}
+
+    ctx._adapter_cache["nonebot2"] = _Official({"name": "nonebot2", "exe": "fake"})
+
+    with client.websocket_connect("/ws/overview", headers=HEADERS) as ws:
+        payload = ws.receive_json()["payload"]
+
+    n = {x["id"]: x for x in payload["nodes"]}["nonebot2-o1"]
+    assert n["bot_mode"] == "official"
+    assert n["official_configured"] is True
+    # 官方通道没有登录端 → 后端不该凭空造边（这条由前端补，带了 label/颜色语义）
+    assert not [e for e in payload["edges"] if e["src"] == "nonebot2-o1"]
+
+
+def test_ws_overview_onebot_instance_has_no_official_flags(client):
+    """反例：普通 OneBot 实例 bot_mode 缺省 onebot、official_configured 为 None。
+
+    None 与 False 必须区分：False 意味着「这程序有官方通道但没配凭据」，
+    前端要画灰线；None 意味着「跟官方通道无关」，前端什么都不画。
+    """
+    _mk("sealdice-o2", "sealdice")
+
+    with client.websocket_connect("/ws/overview", headers=HEADERS) as ws:
+        payload = ws.receive_json()["payload"]
+
+    n = {x["id"]: x for x in payload["nodes"]}["sealdice-o2"]
+    assert n["bot_mode"] == "onebot"
+    assert n["official_configured"] is None
+
+
+def test_ws_overview_official_status_failure_is_none_not_crash(client):
+    """适配器读官方配置失败不能让节点消失：降级为 None（未知），节点照常推送。"""
+    _mk("nonebot2-o3", "nonebot2", bot_mode="official")
+
+    class _Broken(FakeAdapter):
+        def official_status(self, instance):
+            raise RuntimeError("配置文件坏了")
+
+    ctx._adapter_cache["nonebot2"] = _Broken({"name": "nonebot2", "exe": "fake"})
+
+    with client.websocket_connect("/ws/overview", headers=HEADERS) as ws:
+        payload = ws.receive_json()["payload"]
+
+    n = {x["id"]: x for x in payload["nodes"]}["nonebot2-o3"]
+    assert n["official_configured"] is None
+
+
 def test_ws_overview_payload_carries_login_ref_and_qq(client):
     """总览节点必须带 login_ref / qq：连接管理面板靠这两项渲染（旧 payload 缺）。"""
     _mk("sealdice-w1", "sealdice", login_ref="napcat-w1")
