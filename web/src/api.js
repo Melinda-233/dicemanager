@@ -127,6 +127,13 @@ export const wizardStep = (id, step, payload) =>
 // 让调用方把 message 就地展示出来。
 export const verifyOfficialCredentials = b =>
   api('/official/verify', { method: 'POST', body: b })
+// 某个实例的官方机器人通道声明 + 已保存状态（AppID 可回显，AppSecret 永不回传）。
+// 不支持官方通道的程序返回 supported:false —— 前端据此决定是否渲染凭据卡片。
+export const instanceOfficial = id => api(`/instances/${id}/official`)
+// 把 AppID/AppSecret 写进实例配置；后端会顺带把 bot_mode 切到 official、
+// 解除旧的 OneBot 关联并返回 detached_links / restart_required。
+export const saveInstanceOfficial = (id, b) =>
+  api(`/instances/${id}/official`, { method: 'POST', body: b })
 export const opInstance = (id, op) => api(`/instances/${id}/${op}`, { method: 'POST' })
 export const delInstance = (id, confirm, removeDir, keepSave) =>
   api(`/instances/${id}?confirm=${confirm}&remove_dir=${removeDir}&keep_save=${keepSave}`,

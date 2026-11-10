@@ -215,6 +215,47 @@
         <span v-if="live.crash_looped" class="crash-warn"> · ⚠ 反复崩溃已熔断，请查看日志后手动启动</span>
         <span class="iid" title="点击复制实例 ID" @click="copyId">{{ sel.id }} ⧉</span>
       </div>
+      <!-- QQ 官方机器人凭据：仅清单声明支持 official 通道的程序出现。
+           状态在选中实例时按需拉取（不在首屏对每个实例发请求）；
+           requires_credentials=false 表示凭据在程序自己的 WebUI 里填，这里只给说明和手册链接。 -->
+      <div v-if="official?.supported" class="official-card">
+        <div class="official-head">
+          <b>QQ 官方机器人</b>
+          <span v-if="official.requires_credentials && official.status?.configured"
+                class="official-badge">已配置 · AppID {{ official.status.app_id || '-' }}</span>
+        </div>
+        <template v-if="!official.requires_credentials">
+          <p class="hint">{{ official.credential_hint
+            || '该程序的官方机器人凭据在它自己的 WebUI 里填写，面板不代写。' }}</p>
+          <p class="hint" v-if="official.guide_url">
+            <a :href="official.guide_url" target="_blank" rel="noreferrer">官方机器人接入手册</a></p>
+        </template>
+        <template v-else>
+          <p class="hint" v-if="official.credential_hint">{{ official.credential_hint }}</p>
+          <div class="field">
+            <label>机器人 AppID</label>
+            <input v-model="officialForm.app_id" type="text"
+                   placeholder="开放平台机器人 AppID" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>机器人 AppSecret</label>
+            <input v-model="officialForm.app_secret" type="password"
+                   placeholder="已保存的 Secret 不回显，需要修改时重新粘贴" autocomplete="off" />
+          </div>
+          <p class="hint" v-if="official.status?.configured && official.status?.path">
+            配置文件：{{ official.status.path }}</p>
+          <div class="ops">
+            <button :disabled="officialTesting" @click="testOfficialCreds">
+              {{ officialTesting ? '测试中…' : '测试连通性' }}</button>
+            <button :disabled="officialSaving" @click="saveOfficialCreds">
+              {{ officialSaving ? '保存中…' : '保存到实例配置' }}</button>
+          </div>
+          <p v-if="officialMsg" class="hint"
+             :class="officialMsgOk ? 'official-ok' : 'official-bad'">{{ officialMsg }}</p>
+          <p class="hint" v-if="official.guide_url">
+            <a :href="official.guide_url" target="_blank" rel="noreferrer">官方机器人接入手册</a></p>
+        </template>
+      </div>
       <!-- 侧栏按钮分两层：
            ① 面板按钮（可展开/收起）：管理应用 / 连接管理 / 定时任务 / 资源曲线
               —— 点开是一块内容，再点收起来。统一放最前，因为它们是「看信息」的入口。
@@ -568,12 +609,14 @@ import { opInstance, delInstance, listManifests, linkInstance, instanceWebui,
          instanceManage, installPackage, uninstallPackage, syncPyproject, fetchPluginOp,
          searchPlugins,
          instanceMetrics, wizardStep,
+         verifyOfficialCredentials, listInstances,
          scanInstallRoots, deleteOrphanDir, killOrphanProc, uploadBackup,
          exportBackup, diagnoseInstance, listSchedules, addSchedule, delSchedule,
          runSchedule, upgradeCheck, upgradeInstance,
          listPackages, deletePackage, deleteUnusedPackages,
          listExports, deleteExport, pruneExports, restartPanel, getEdition,
-         revealInstance, saveInstanceConfig } from '../api'
+         revealInstance, saveInstanceConfig,
+         instanceOfficial, saveInstanceOfficial } from '../api'
 
 const nodes = ref([]), edges = ref([]), sel = ref(null), resmon = ref({})
 const manifests = ref({})               // 程序清单：删除/关联等行为由 manifest 声明驱动
@@ -731,6 +774,105 @@ const linkCandidates = computed(() => {
     .filter(o => o !== 'builtin')
   return nodes.value.filter(n => opts.includes(n.dice) && n.id !== sel.value.id)
 })
+// ---------- QQ 官方机器人凭据（只属于当前选中实例）----------
+// 按需拉取：选中实例时才请求；换实例用请求序号丢弃迟到的旧响应。
+const official = ref(null)          // {supported,requires_credentials,status,...}
+const officialForm = ref({ app_id: '', app_secret: '' })
+const officialSaving = ref(false), officialTesting = ref(false)
+const officialMsg = ref(''), officialMsgOk = ref(false)
+let officialSeq = 0
+
+const resetOfficial = () => {
+  officialSeq++                     // 让在途请求作废：它回来时已不是当前实例
+  official.value = null
+  officialForm.value = { app_id: '', app_secret: '' }
+  officialMsg.value = ''; officialMsgOk.value = false
+  officialSaving.value = false; officialTesting.value = false
+}
+const loadOfficial = async id => {
+  const seq = ++officialSeq
+  official.value = null
+  officialForm.value = { app_id: '', app_secret: '' }
+  officialMsg.value = ''; officialMsgOk.value = false
+  try {
+    const r = await instanceOfficial(id)
+    if (seq !== officialSeq) return
+    official.value = r || null
+    // AppID 可回显；AppSecret 后端永不返回，输入框保持空白
+    officialForm.value = { app_id: r?.status?.app_id || '', app_secret: '' }
+  } catch {
+    // 旧服务端没有该端点（404）或临时失败：静默不显示卡片，不给详情区添错误条
+    if (seq === officialSeq) official.value = null
+  }
+}
+const officialMissing = () => {
+  const f = officialForm.value
+  if (!String(f.app_id || '').trim()) return 'AppID'
+  if (!String(f.app_secret || '').trim()) return 'AppSecret'
+  return ''
+}
+const testOfficialCreds = async () => {
+  if (!official.value?.supported || !official.value?.requires_credentials) return
+  const miss = officialMissing()
+  officialMsgOk.value = false
+  if (miss) { officialMsg.value = `请先填写${miss}`; return }
+  officialMsg.value = ''
+  officialTesting.value = true
+  try {
+    const r = await verifyOfficialCredentials({
+      app_id: String(officialForm.value.app_id).trim(),
+      app_secret: String(officialForm.value.app_secret).trim(),
+    })
+    officialMsgOk.value = !!r?.ok
+    if (r?.ok) {
+      // expires_in 是 access_token 秒数；用户关心的是「这次测试结果能信多久」
+      const min = r.expires_in ? Math.max(1, Math.round(r.expires_in / 60)) : 0
+      officialMsg.value = min ? `连通正常，有效期约 ${min} 分钟` : '连通正常'
+    } else {
+      officialMsg.value = r?.message || '连通性测试失败'
+    }
+  } catch (e) {
+    officialMsgOk.value = false
+    officialMsg.value = e.message || String(e)
+  } finally { officialTesting.value = false }
+}
+const saveOfficialCreds = async () => {
+  if (!sel.value || !official.value?.supported || !official.value?.requires_credentials) return
+  const miss = officialMissing()
+  officialMsgOk.value = false
+  if (miss) { officialMsg.value = `请先填写${miss}`; return }
+  officialMsg.value = ''
+  officialSaving.value = true
+  const id = sel.value.id
+  try {
+    const r = await saveInstanceOfficial(id, {
+      app_id: String(officialForm.value.app_id).trim(),
+      app_secret: String(officialForm.value.app_secret).trim(),
+    })
+    // 后端已把实例切到 official 并解除旧关联：就地刷新列表，别等 WS 的 2s 心跳
+    const list = await listInstances().catch(() => null)
+    if (Array.isArray(list)) {
+      const byId = new Map(list.map(x => [x.id, x]))
+      nodes.value = nodes.value.map(n => {
+        const f = byId.get(n.id)
+        return f ? { ...n, bot_mode: f.bot_mode, login_ref: f.login_ref || null,
+                     links: f.links || [] } : n
+      })
+      // 旧登录端连线立即撤掉；新拓扑由 WS 下一次推送补齐
+      edges.value = edges.value.filter(ed => ed.src !== id)
+    }
+    // 保存是异步的（NoneBot2 还要装依赖）：期间用户可能已切到别的实例，
+    // 此时旧实例的状态不能写回当前卡片
+    if (sel.value?.id !== id) return
+    await loadOfficial(id)          // 重读状态：徽标/路径要显示刚落盘的 AppID
+    officialMsgOk.value = true
+    officialMsg.value = '已保存；重启该实例后生效'
+      + (r?.detached_links > 0 ? `；已解除 ${r.detached_links} 个旧的登录端关联` : '')
+  } catch (e) {
+    officialMsgOk.value = false
+    officialMsg.value = e.message || String(e)
+  } finally { officialSaving.value = false }
+}
 watch(sel, () => {
   webuiInfo.value = null; connMsg.value = ''
   newLoginRef.value = ''; newAccountQq.value = ''
@@ -742,6 +884,9 @@ watch(sel, () => {
   // 连接管理 / 定时任务 / 资源曲线同理：内容都绑在实例上，换实例必须一并收起
   connOpen.value = false; schedOpen.value = false
   showMetrics.value = false; metrics.value = null
+  // 官方机器人卡片属于实例：切实例先清空，再按需拉新实例的状态
+  resetOfficial()
+  if (sel.value?.id) loadOfficial(sel.value.id)
 })
 
 // 启停操作：后端在启动/重启时会顺带开放 WebUI 端口（绑定修正 + ufw），有提示就展示
@@ -1473,6 +1618,15 @@ button.danger { color: #e5484d; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
 /* 连接管理：多连一 / 一连多 逐条关联卡片 */
 .conn-mgmt { margin: 6px 0; border-top: 1px dashed var(--border); padding-top: 8px; }
+/* QQ 官方机器人凭据卡：侧栏里只保留说明、两个输入与结果，不加新的大块样式 */
+.official-card { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.official-head { display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap; margin-bottom: 6px; font-size: 13px; }
+.official-badge { color: var(--ok); background: #e7f6ee; border-radius: 999px;
+  padding: 1px 8px; font-size: 11px; }
+.official-card .field { margin: 6px 0; }
+.official-card .official-ok { color: var(--ok); }
+.official-card .official-bad { color: var(--danger); }
 .link-row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
   margin-bottom: 8px; background: var(--code-bg); }
 .link-main { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }

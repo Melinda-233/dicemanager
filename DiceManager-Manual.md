@@ -258,6 +258,13 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 
 目前声明 `official` 的是海豹、Dice-Next 与 NoneBot2（三者都无风控封号风险，代价是官方接口能力受限：默认只收 @机器人 的消息、被动回复有窗口、主动消息与群管受限）。
 
+**已建实例改凭据**（2026-11-10 新增）：向导里的官方通道只在建实例时走一次，之后换 AppSecret 原本没有入口（只能改服务器文件）。总览页实例详情加了「QQ 官方机器人」卡片，走两个端点：
+
+- `GET /api/instances/{id}/official`：回 `{supported, bot_mode, requires_credentials, credentials, credential_hint, guide_url, status:{configured, app_id, path}}`。不支持的程序（纯登录端 / 海豹式 WebUI 收凭据）回 `supported=false` 或 `requires_credentials=false`，前端据此只显示说明或不出卡片。**只回 AppID**。
+- `POST /api/instances/{id}/official`：body `{app_id, app_secret}`，复用适配器同一个 `configure_official()`（落盘格式、装依赖、0600 全在适配器里）。成功后把实例 `bot_mode` 切到 `official` 并解除旧的 `login_ref`/`links`/`conn_*`（否则总览页还会画一条指向已不用登录端的连线），返回 `detached_links` 让前端如实提示；`restart_required=true`——配置要重启实例才生效，前端复用已有的 `POST /api/instances/{id}/restart`。
+
+写文件可能触发 `pip download`（NoneBot2 首次要装官方适配器），端点里用 `asyncio.to_thread` 跑，避免把事件循环里其它请求一起卡住。
+
 ### 4.3 登录页
 
 - 三种交互：`qrcode`（二维码图片 + 刷新二维码 + 滑块验证链接）、`account`（QQ + 密码 + 协议）、`webui`（展示指引，等用户自己去程序自带面板登录）。
@@ -345,6 +352,8 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | GET | `/api/pending` | 中间态实例（`DEPLOYING`/`AWAIT_LOGIN`）+ `next_step` |
 | POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}`。官方通道写凭据：`step=3, payload={credentials:{app_id, app_secret}}` → `{result:"ok", official:true, saved:bool, app_id, preview, manual}` |
 | POST | `/api/official/verify` | 官方机器人凭据自检：`{app_id, app_secret}` → `{ok, message, expires_in?, code?}`。恒 HTTP 200，失败靠 `ok` 判读（见 §4.2） |
+| GET | `/api/instances/{id}/official` | 实例详情「QQ 官方机器人」卡片：`{supported, bot_mode, requires_credentials, credentials, credential_hint, guide_url, status:{configured, app_id, path}}`。只回 AppID |
+| POST | `/api/instances/{id}/official` | 给**已建实例**改官方凭据：`{app_id, app_secret}` → `{ok, saved, app_id, path, preview, manual, detached_links, restart_required}`；成功后实例切到 `official` 并清空旧 `links`/`conn_*`。不支持的程序 / 缺字段 / 适配器拒绝 → 400（见 §4.2） |
 | POST | `/api/instances/{id}/{op}` | `op ∈ start / stop / restart`；已在运行返回 409 |
 | DELETE | `/api/instances/{id}` | `?confirm=true&remove_dir=&keep_save=`；缺 confirm 返回 400 |
 | GET | `/api/instances/{id}/manage` | 「管理应用」弹窗的数据源 → `{capabilities, data, config?}`。`config` **仅当适配器 `config_schema` 非 None 时**才出现（见 §6.3） |

@@ -756,6 +756,100 @@ def instance_manage(inst_id: str, user: Annotated[CurrentUser | None, Depends(cu
             "search": bool(getattr(ad, "support_plugin_search", False))}
 
 
+# ---------- QQ 官方机器人凭据（实例详情页卡片）----------
+
+def _official_adapter(inst):
+    """取实例的适配器与它的官方机器人通道声明；不支持时 mode 为 None。
+
+    能力判定在适配器（official_mode 是否 callable），不在这里按程序名分支；
+    海豹的官方通道由它自己的 WebUI 收凭据 → mode 存在但没有 credentials → 前端
+    只显示「去程序 WebUI 配置」，不出输入框。
+    """
+    ad = _manage_adapter(inst)
+    mode = getattr(ad, "official_mode", None)
+    return ad, (mode() if callable(mode) else None)
+
+
+@router.get("/instances/{inst_id}/official")
+def instance_official(inst_id: str,
+                      user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """「QQ 官方机器人」卡片的首屏数据：走哪条通道 + 凭据是否已写进程序配置。
+
+    只回 AppID，**绝不回 AppSecret**：盘上那份是为了让程序能自己连网关，不是
+    拿来给界面回显的；用户要看就回开放平台重新复制（Secret 只显示一次）。
+    """
+    _own(inst_id, user)                  # 越权/不存在 → 404
+    inst = ctx.registry.get(inst_id)
+    ad, mode = _official_adapter(inst)
+    if mode is None:
+        return {"ok": True, "supported": False, "bot_mode": inst.bot_mode}
+    status: dict = {}
+    fn = getattr(ad, "official_status", None)
+    if callable(fn):
+        try:
+            status = fn(inst) or {}
+        except Exception:                # 配置读坏 ≠ 接口 500：按「未配置」展示，用户重填即可
+            status = {}
+    return {"ok": True, "supported": True, "bot_mode": inst.bot_mode,
+            "requires_credentials": bool(mode.get("credentials")),
+            "credentials": mode.get("credentials") or [],
+            "credential_hint": mode.get("credential_hint") or "",
+            "guide_url": mode.get("guide_url") or "",
+            "status": {"configured": bool(status.get("configured")),
+                       "app_id": status.get("app_id") or "",
+                       "path": status.get("path") or ""}}
+
+
+class OfficialCredsReq(BaseModel):
+    app_id: str = ""
+    app_secret: str = ""
+
+
+@router.post("/instances/{inst_id}/official")
+async def instance_official_save(inst_id: str, req: OfficialCredsReq,
+                                 user: Annotated[CurrentUser | None, Depends(current_user)] = None):
+    """把 AppID/AppSecret 写进**已建实例**的程序配置，并把实例通道切到 official。
+
+    与向导第 3 步（wizard.run_step step=3）的区别：那条路只在建实例时走一次，
+    之后想换 Secret 就没有入口了。这里复用适配器同一个 configure_official ——
+    落盘格式、装机（NoneBot2 要装官方适配器）、0600 权限全在适配器里，API 不
+    复制第二套实现。
+
+    为什么顺手改 bot_mode / 清 links：凭据既然写进了程序配置，这条实例就不再
+    经过登录端（OneBot）。留着旧的 login_ref/links 会让总览页继续画一条指向
+    LLBot 的连线、向导也仍按「待关联登录端」推进，与实情相反。解除了几条关联
+    在返回里如实上报，前端可据此提示用户。
+    """
+    user = _u(user)
+    _own(inst_id, user)
+    inst = ctx.registry.get(inst_id)
+    ad, mode = _official_adapter(inst)
+    if mode is None:
+        raise HTTPException(400, "该程序不使用 QQ 官方机器人通道")
+    configure = getattr(ad, "configure_official", None)
+    if not callable(configure):
+        raise HTTPException(400, "该程序的官方机器人凭据在它自己的 WebUI 里填写，面板不代写")
+    creds = {"app_id": (req.app_id or "").strip(),
+             "app_secret": (req.app_secret or "").strip()}
+    if not creds["app_id"] or not creds["app_secret"]:
+        raise HTTPException(400, "AppID 与 AppSecret 都需要填写（两个都不能空）")
+    try:
+        # 会下载/解包依赖（NoneBot2 装官方适配器），必须离开事件循环，
+        # 否则一次 pip 下载能把这个进程里所有请求都卡住。
+        r = await asyncio.to_thread(configure, inst, creds)
+    except Exception as e:
+        raise HTTPException(500, f"写入官方机器人配置失败：{e}") from e
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("message") or "写入官方机器人配置失败")
+    detached = len(inst.links or [])
+    ctx.registry.update(inst_id, bot_mode="official", login_ref=None, links=[],
+                        conn_addr=None, conn_token=None, conn_direction=None)
+    return {"ok": True, "saved": True, "app_id": creds["app_id"],
+            "path": r.get("path") or "", "preview": r.get("preview") or "",
+            "manual": r.get("manual") or "", "detached_links": detached,
+            "restart_required": True}
+
+
 @router.post("/instances/{inst_id}/config")
 async def instance_config_save(inst_id: str, body: dict,
                           user: Annotated[CurrentUser | None, Depends(current_user)] = None):
