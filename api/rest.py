@@ -70,6 +70,24 @@ class StepReq(BaseModel):
     step: int
     payload: dict = {}
 
+class OfficialVerifyReq(BaseModel):
+    app_id: str = ""
+    app_secret: str = ""
+
+@router.post("/official/verify")
+def verify_official_credentials_api(req: OfficialVerifyReq):
+    """向导里的「测试连通性」：用 AppID/AppSecret 换一次官方 access_token。
+
+    为什么不复用 Dice-Next 的日志：凭据错（100016）/机器人被删（100007）/出口 IP
+    不在白名单，这三种最常见的失败在骰子程序里只表现为「连不上」，用户拿不到原因。
+    这里直接问官方鉴权接口，把 code 翻成人话。
+
+    永远返回 HTTP 200 + {"ok": bool, "message": ...}：这是「填错了」不是「面板坏了」，
+    前端按业务结果渲染，不该走异常分支。
+    """
+    from core.qqofficial import verify_official_credentials
+    return verify_official_credentials(req.app_id, req.app_secret)
+
 @public.post("/login")
 def login(req: LoginReq, request: Request):
     """按用户名 + 密码登录，返回 token 与身份信息（前端据此渲染角色化菜单）。"""

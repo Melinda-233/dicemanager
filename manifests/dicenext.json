@@ -9,6 +9,22 @@
   "webui_default_port": 18088, "ob11_default_port": 6700,
   "login_type": "external",
   "compatible_login": ["napcat", "snowluma", "llbot", "lagrange"],
+  // 两条接入通道。official 的依据是上游 3.x 自带 qq_official 适配器
+  // （server/src/adapter/qq_official_adapter.h；字段见 main.cpp:3113-3122）：
+  // 凭据写进它自己的 config/adapters.json 即可，不起登录端、不写互联配置。
+  // credentials 只声明「面板要收哪两个字段」；是否需要填由适配器
+  // requires_official_credentials() 读同一个声明判定（见 adapters/dicenext.py）。
+  "bot_modes": [
+    {"id": "onebot", "label": "OneBot 协议（需登录端）", "needs_login": true},
+    {"id": "official", "label": "QQ 官方机器人（程序内置，无需登录端）",
+     "needs_login": false,
+     "guide_url": "https://bot.q.qq.com/wiki/",
+     "credentials": [
+       {"key": "app_id", "label": "机器人 AppID", "secret": false},
+       {"key": "app_secret", "label": "机器人 AppSecret", "secret": true}
+     ],
+     "credential_hint": "开放平台 → 你的机器人 → 开发设置，复制 AppID 与 AppSecret（Secret 只显示一次）。"}
+  ],
   "config_path": "config/adapters.json",
   "data_paths": ["config"],
   "release_page": "https://github.com/DiceZone/Dice-Next/releases",

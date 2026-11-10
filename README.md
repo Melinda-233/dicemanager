@@ -17,7 +17,7 @@
 | [海豹 SealDice](https://sealdice.com/download) | 独立程序 | 外置登录端 / QQ 官方机器人 | OneBot WS 正向/反向均可，配置自动写入 serve.yaml；也支持 **QQ 官方机器人通道**（v1.4.2+，免登录端） |
 | 溯洄 [Dice!](https://github.com/Dice-Developer-Team/Dice) | 独立程序 | 外置登录端（离线上传） | AutoLogin.yml / config.txt 双版本识别 |
 | 青果 [OlivaDice](https://github.com/OlivOS-Team/OlivaDiceCore) | 整合包（allinone） | 内置 | 内置客户端，OPK 组合部署，缺核阻断启动 |
-| [Dice!Next](https://github.com/DiceZone/Dice-Next) | 独立程序 | 外置登录端 | OneBot v11 适配器写入 config/adapters.json |
+| [Dice!Next](https://github.com/DiceZone/Dice-Next) | 独立程序 | 外置登录端 / QQ 官方机器人 | OneBot v11 适配器写入 config/adapters.json；也支持 **QQ 官方机器人通道**（3.x 程序内置 qq_official 适配器，免登录端，面板直接把 AppID/AppSecret 写进同一份配置） |
 | [NoneBot2](https://github.com/nonebot/nonebot2) | Python 项目 | 外置登录端 | 需 Python ≥3.10；管理器把依赖 `pip install --target` 到实例 `libs/`（`pip_project`），面板里可直接装卸插件；OneBot 连接写入 .env，**改配置需重启生效** |
 | [AstrBot](https://github.com/AstrBotDevs/AstrBot) | Python 项目 | 外置登录端 | 需 Python ≥3.12；同为 `pip_project`，但 OneBot 是**反向 WS**（AstrBot 监听 6199，登录端连它），配置写入 `data/cmd_config.json` |
 | [Koishi](https://github.com/koishijs/koishi) | Node.js 项目 | 外置登录端 | 需 Node.js ≥18；`npm_project` 策略（上游 release 无资产，走 `npm create koishi` 官方模板），OneBot 反向 WS 监听 5140/onebot，写入 `koishi.yml` |
@@ -40,7 +40,7 @@
 ## 功能特性
 
 - **五步向导**：建档分配端口 → 部署（同名冲突弹窗二选一）→ 登录（二维码实时推送 / 滑块验证链接转发）→ 互联配置写入 → 启动。支持断点续跑，进程崩溃后向导自动恢复中间态。
-- **接入通道（bot_mode）**：SealDice 可选「QQ 官方机器人」通道（`official`）——免登录端、免互联，向导简化为「选程序 → 部署 → 启动」三步，连接在海豹自身 WebUI 用 AppID/AppSecret 或扫码完成，规避协议端封号风控（代价是官方接口主动消息/群管能力受限）。默认仍为 OneBot 协议通道。
+- **接入通道（bot_mode）**：SealDice 与 Dice!Next 可选「QQ 官方机器人」通道（`official`）——免登录端、免互联，规避协议端封号风控（代价是官方接口主动消息/群管能力受限）。默认仍为 OneBot 协议通道。凭据归属分两种：海豹在自己 WebUI 里填（向导只跳到「启动」）；Dice!Next 由面板在第 3 步收 AppID/AppSecret 写进 `config/adapters.json`，并可一键「测试连通性」（真的去官方换一次 token，把 100016/100007 这类错误码翻成人话）。
 - **拓扑总览**：独立程序型骰子与其登录端渲染为双节点连线——实线绿已连接、虚线灰已配置未连接、红连接失败；整合包渲染为单节点。2 秒刷新，含全局内存水位告警条。
 - **日志中心**：实时 tail + 历史回放（进程重启不丢日志）、关键字过滤、错误行高亮、暂停跟随、复制与下载。
 - **端口管理**：按角色批量分配（webui/ob11/milky/satori），默认端口占用自动 +1 重试，实例删除时整体释放；文件锁 + 原子写保证多进程安全。

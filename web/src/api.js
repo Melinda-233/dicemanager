@@ -121,6 +121,12 @@ export const authTokenHint = dice => api(`/manifests/${dice}/auth-token-hint`)
 export const createInstance = b => api('/instances', { method: 'POST', body: b })
 export const wizardStep = (id, step, payload) =>
   api(`/instances/${id}/wizard`, { method: 'POST', body: { step, payload } })
+// QQ 官方机器人连通性测试：拿 AppID + AppSecret 去官方接口换一次 access_token，
+// 验证凭证真的能用（而不是等程序启动后从日志里猜）。后端恒返回 HTTP 200，
+// 结果由 ok 字段表达 —— 凭证错也是一种「正常答复」，所以这里不吞 ok=false，
+// 让调用方把 message 就地展示出来。
+export const verifyOfficialCredentials = b =>
+  api('/official/verify', { method: 'POST', body: b })
 export const opInstance = (id, op) => api(`/instances/${id}/${op}`, { method: 'POST' })
 export const delInstance = (id, confirm, removeDir, keepSave) =>
   api(`/instances/${id}?confirm=${confirm}&remove_dir=${removeDir}&keep_save=${keepSave}`,

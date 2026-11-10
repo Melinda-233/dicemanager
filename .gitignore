@@ -40,3 +40,6 @@ dist_pkg/
 # 运行时数据目录（auth.json / instances.json / 日志 / 锁）：本机产物，绝不入库
 # 历史教训：data/ 曾被误提交（含密码哈希），移出需用 `git rm -r --cached data/`
 data/
+
+# 临时侦察/样例目录（上游源码快照、一次性脚本产物），不入库
+.scratch/

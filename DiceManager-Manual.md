@@ -241,9 +241,18 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | 通道 | 是否需要登录端 | 步骤 | 说明 |
 |---|---|---|---|
 | `onebot`（默认） | 是 | 选程序 → 部署 → 登录 → 互联 → 启动 | 常规协议端，由面板写互联配置 |
-| `official` | **否** | 选程序 → 部署 → 启动 | 官方机器人通道，连接动作在程序自身 WebUI 完成 |
+| `official` | **否** | 选程序 → 部署 →（填官方凭据）→ 启动 | 官方机器人通道。凭据由谁收取决于清单有没有声明 `credentials`：声明了 → 面板写进程序配置（Dice-Next）；没声明 → 程序自身 WebUI 收（海豹） |
 
-`official` 通道在后端有三处特判（`services/wizard.py`）：创建时强制 `login_ref=None`；`next_step()` 从 `AWAIT_LOGIN` 直接跳到 5（不进登录步）；step3/step4 幂等返回 `skipped=True` 且**绝不写 onebot 互联配置**（否则会留下一条永远连不上的端点，海豹还会持续报连接错误）。前端据此隐藏登录端选择、步骤条只显示三步，并在启动页给出接入清单（AppID/AppSecret、IP 白名单、指令前缀 `/`、使用场景别勾「消息列表」）。目前仅海豹声明该通道（`QQ 官方机器人`，无风控封号风险，代价是官方接口能力受限）。
+`official` 通道在后端有三处特判（`services/wizard.py`）：创建时强制 `login_ref=None`；`next_step()` 从 `AWAIT_LOGIN` 直接跳到 5（不进登录步）；step4 幂等返回 `skipped=True` 且**绝不写 onebot 互联配置**（否则会留下一条永远连不上的端点，海豹还会持续报连接错误）。前端据此隐藏登录端选择、步骤条只显示三步，并在启动页给出接入清单（AppID/AppSecret、IP 白名单、指令前缀 `/`、使用场景别勾「消息列表」）。
+
+**两种官方通道形态**（2026-11-10 新增第二种）：
+
+- **程序自身 WebUI 收凭据**（海豹 `sealdice`）：step3 直接 `skipped=True`，面板一个字都不写，只把人送进程序 WebUI。
+- **面板写配置**（Dice-Next `dicenext`）：清单在 `bot_modes[official]` 里声明 `credentials`（`[{key, label, secret}]`）与可选 `credential_hint`，适配器实现 `requires_official_credentials()` / `configure_official()` / `official_status()`。step3 收到 `payload.credentials` 后写进程序配置（Dice-Next 是 `config/adapters.json` 的一条 `type=qq_official`，AppSecret 落盘后 `chmod 0600`，接口不回显），并把实例推到 `CONFIGURED`；缺凭据时返回 `{result:"error"}` 而**不是**假装成功（否则实例起来只是个连不上官方网关的空壳）。断点续跑/重入时若文件里已有配置且本次未传凭据，返回 `saved=False` 沿用旧配置，不逼用户重填 secret。
+
+向导第 3 步另有「测试连通性」按钮，打 `POST /api/official/verify`（`core/qqofficial.py`）：拿 AppID/AppSecret 去官方 `getAppAccessToken` 换一次 token，把 100016/100007/10004/100001 翻成人话。它不落盘、不推进状态机，失败也返回 HTTP 200（凭证错是业务结果，不是接口故障）。
+
+目前声明 `official` 的是海豹与 Dice-Next（两者都无风控封号风险，代价是官方接口能力受限：默认只收 @机器人 的消息、被动回复有窗口、主动消息与群管受限）。
 
 ### 4.3 登录页
 
@@ -330,7 +339,8 @@ DiceManager 是一个**自托管的 QQ 骰子（TRPG 骰娘）程序管理器**�
 | GET | `/api/instances/{id}/metrics` | 资源曲线：`?hours=24` → `{interval, points:[[ts,mem_mb,cpu]], latest_mem_mb, peak_mem_mb, avg_cpu}` |
 | GET | `/api/instances` | 列表，每条附 `process` 探针（alive/restarts/pid/uptime） |
 | GET | `/api/pending` | 中间态实例（`DEPLOYING`/`AWAIT_LOGIN`）+ `next_step` |
-| POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}` |
+| POST | `/api/instances/{id}/wizard` | `{step, payload}` → `{result: ok/conflict/error, ...}`。官方通道写凭据：`step=3, payload={credentials:{app_id, app_secret}}` → `{result:"ok", official:true, saved:bool, app_id, preview, manual}` |
+| POST | `/api/official/verify` | 官方机器人凭据自检：`{app_id, app_secret}` → `{ok, message, expires_in?, code?}`。恒 HTTP 200，失败靠 `ok` 判读（见 §4.2） |
 | POST | `/api/instances/{id}/{op}` | `op ∈ start / stop / restart`；已在运行返回 409 |
 | DELETE | `/api/instances/{id}` | `?confirm=true&remove_dir=&keep_save=`；缺 confirm 返回 400 |
 | GET | `/api/instances/{id}/manage` | 「管理应用」弹窗的数据源 → `{capabilities, data, config?}`。`config` **仅当适配器 `config_schema` 非 None 时**才出现（见 §6.3） |
@@ -430,7 +440,7 @@ manifest 是标准 JSON，但**允许整行 `//` 注释**（加载时按行剥�
 |---|---|---|
 | `login_type` | `services/wizard.py` + 前端 | `qrcode` / `account` / `webui` / `external` / `none`。决定第 3 步界面，也作为 `needs_login` 的默认判据（`qrcode`/`account` 默认为需要登录） |
 | `compatible_login` | 前端 | 兼容的登录端程序名列表；`builtin` 表示自带登录（不出现下拉） |
-| `bot_modes` | 前端 + `services/wizard.py` | 接入通道列表 `[{id, label, needs_login, guide_url?}]`。多于一项时向导显示「接入通道」下拉；`official` 通道免登录端、跳过互联步（详见 §4.2）。**须在 `/api/manifests` 白名单登记**才能到前端 |
+| `bot_modes` | 前端 + `services/wizard.py` | 接入通道列表 `[{id, label, needs_login, guide_url?, credentials?, credential_hint?}]`。多于一项时向导显示「接入通道」下拉；`official` 通道免登录端、跳过互联步（详见 §4.2）。`credentials`（`[{key, label, secret}]`）声明后，向导第 3 步会渲染表单由面板写凭据；不声明则由程序自身 WebUI 收。**须在 `/api/manifests` 白名单登记**才能到前端（`bot_modes` 整个列表原样透出，条目内的 `credentials` 不再单独白名单） |
 | `auth_token_conditional` | 前端 | 为真时登录页强制显示 AUTH TOKEN 输入框（LLBot v8.0.9+） |
 | `webui_default_port` / `ob11_default_port` / `milky_default_port` / `satori_default_port` | `wizard.create_instance` | 按角色申请端口。全部可选，缺省则不申请该角色端口 |
 | `config_path` | 适配器 | 程序配置文件的相对路径（适配器自己读，非框架强制） |

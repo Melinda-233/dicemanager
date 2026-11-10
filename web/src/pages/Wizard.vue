@@ -65,8 +65,12 @@
         </select>
         <p class="hint" v-if="officialMode">
           官方通道由 {{ dice }} 自己对接 QQ 官方服务：<b>不需要登录端</b>，面板也不会写入
-          OneBot 互联配置。启动后进 WebUI「添加账号 → 平台 QQ → QQ 官方机器人」，
-          用 AppID + AppSecret 或扫码完成接入（需在开放平台把本机公网 IP 填进白名单）。
+          OneBot 互联配置。<template v-if="needsOfficialCreds">
+            第三步会让你直接填 AppID + AppSecret，面板写进程序配置后启动即用。
+          </template><template v-else>
+            启动后进 WebUI「添加账号 → 平台 QQ → QQ 官方机器人」，
+            用 AppID + AppSecret 或扫码完成接入。
+          </template>（需在开放平台把本机公网 IP 填进白名单。）
           <a v-if="officialGuide" :href="officialGuide" target="_blank" rel="noreferrer">官方接入手册</a>
         </p>
       </div>
@@ -239,6 +243,48 @@
         </ol>
         <p class="hint">优点：不走协议端，无风控封号风险。代价：官方接口能力受限，
           依赖主动消息、群管、本地媒体的功能可能不可用。</p>
+      </div>
+
+      <!-- 官方通道凭证（清单声明了 credentials 的程序，如 Dice-Next）：
+           程序自己对接官方服务，但「用哪个机器人」只有用户知道 —— 面板把 AppID/AppSecret
+           写进程序配置，启动即用；否则程序起来是个没凭证的空壳，用户还得进 WebUI 再填一遍。
+           海豹的 official 模式没有 credentials 字段，这一整块不渲染，行为保持原样。 -->
+      <div v-if="officialMode && needsOfficialCreds" class="official-creds">
+        <h4>官方机器人凭证</h4>
+        <p class="hint" v-if="officialCfg.credential_hint">{{ officialCfg.credential_hint }}</p>
+        <!-- 按清单声明的字段渲染，不在前端按程序名分支；secret 一律 type=password -->
+        <div class="field" v-for="f in officialCredFields" :key="f.key">
+          <label>{{ f.label || f.key }}</label>
+          <input v-model="officialCreds[f.key]" :type="f.secret ? 'password' : 'text'"
+                 :placeholder="f.secret ? '只写不读：保存后不会回显' : (f.label || f.key)"
+                 autocomplete="off"/>
+        </div>
+        <div class="ops">
+          <button class="primary" :disabled="officialSaveBusy || !officialCredsFilled"
+                  @click="saveOfficial">
+            {{ officialSaveBusy ? '保存中…' : '保存官方机器人配置' }}</button>
+          <button :disabled="officialVerifyBusy || !officialCredsFilled" @click="verifyOfficial">
+            {{ officialVerifyBusy ? '测试中…' : '测试连通性' }}</button>
+          <span class="hint official-ok" v-if="officialSaved">✓ 已保存<template
+            v-if="officialSavedAppId">（AppID {{ officialSavedAppId }}）</template></span>
+        </div>
+        <p v-if="officialSaveRes"
+           :class="['hint', officialSaveRes.ok ? 'official-ok' : 'official-bad']">
+          {{ officialSaveRes.ok ? '✓ ' : '✕ ' }}{{ officialSaveRes.message }}</p>
+        <p v-if="officialVerify"
+           :class="['hint', officialVerify.ok ? 'official-ok' : 'official-bad']">
+          {{ officialVerify.ok ? '✓ 连通性正常' : '✕ 连通性测试失败' }}<template
+            v-if="officialVerify.message">：{{ officialVerify.message }}</template><template
+            v-if="officialVerify.ok && officialVerify.expires_in">（access_token 有效期
+            {{ fmtExpires(officialVerify.expires_in) }}）</template>
+        </p>
+        <p class="hint" v-if="officialSaved && !officialDirty">
+          凭证已写入程序配置，启动时自动生效，无需再进 WebUI 手动添加账号。已保存的
+          AppSecret 不会回显（重进本页或断点续跑后输入框为空）—— 要更换请重填后再次保存。
+        </p>
+        <p class="hint" v-if="officialSaved && officialDirty">
+          已修改但尚未保存：点「保存官方机器人配置」写入，或直接点「完成并启动」自动保存。
+        </p>
       </div>
 
       <!-- 登录区：仅登录端与少数自带登录的应用端出现 -->
@@ -455,9 +501,15 @@
       </div>
 
       <div class="ops">
-        <button class="primary" :disabled="busy || (!loggedIn && needLoginHere)" @click="finish">
+        <!-- 需要凭证却还没保存时禁用：直接点继续等于拉起一个没凭证的程序，
+             官方接口必然连不上，还很难查是「没填」还是「填错」 -->
+        <button class="primary"
+                :disabled="busy || (!loggedIn && needLoginHere) || officialNeedsSave"
+                @click="finish">
           完成并启动</button>
         <span class="hint" v-if="busy">正在处理…</span>
+        <span class="hint" v-if="officialNeedsSave">
+          请先填写并保存官方机器人凭证，再启动。</span>
       </div>
     </div>
 
@@ -488,7 +540,8 @@ import { ref, computed, reactive, watch, nextTick, onUnmounted } from 'vue'
 import { connectWS } from '../ws'
 import { listManifests, listInstances, listPending, listPackages, uploadPackage,
          deletePackage, linkInstance, probeManifestPackage, authTokenHint,
-         createInstance, wizardStep, delInstance, deployProgress, instanceWebui } from '../api'
+         createInstance, wizardStep, delInstance, deployProgress, instanceWebui,
+         verifyOfficialCredentials } from '../api'
 
 const ROLES = [
   { id: 'login', label: '登录端', desc: '登录 QQ，向应用端提供协议接入' },
@@ -535,7 +588,8 @@ const pkgProbe = ref(null), probing = ref(false)
 // 用 watch 而不是改 6 处 dice 赋值点：那些点分散在选端/选程序/配对/回退等分支，
 // 逐个加必然漏一处（漏了就是「换个入口进来不探测」的行为不一致）。
 // 两个查询共用 dice 变更时机，但各管各的竞态（换程序时结果即过期）
-watch(dice, () => { loadProbe(); loadTokenHint() }, { immediate: false })
+// 顺带清凭证态：credentials 声明来自具体程序的 manifest，换程序后旧值没有归属
+watch(dice, () => { loadProbe(); loadTokenHint(); resetOfficial() }, { immediate: false })
 // 换程序要清掉上一次的探测结果，否则会显示上一个程序的包（很容易误读）
 const loadProbe = async (force) => {
   const d = dice.value
@@ -628,8 +682,103 @@ const botModes = computed(() => manifest.value.bot_modes || [])
 const botMode = ref('onebot')
 const officialMode = computed(() =>
   botMode.value === 'official' && botModes.value.some(b => b.id === 'official'))
-const officialGuide = computed(() =>
-  (botModes.value.find(b => b.id === 'official') || {}).guide_url || '')
+// official 条目的完整声明（credentials / credential_hint 都在这里）
+const officialCfg = computed(() =>
+  botModes.value.find(b => b.id === 'official') || {})
+const officialGuide = computed(() => officialCfg.value.guide_url || '')
+
+// ---------- 官方通道凭证（仅清单声明了 credentials 的程序才有）----------
+// 这是「程序内置官方机器人」与海豹那种「连接在程序 WebUI 里做」的唯一区别：
+// 前者要面板把 AppID/AppSecret 写进程序配置，后者面板完全不该碰凭证
+// （不能凭空造表单，否则海豹用户会看到一个写了也没人读的输入框）。
+const officialCreds = reactive({})      // 表单值：按清单声明的 key 动态收集
+const officialSaved = ref(false)        // 本实例凭证是否已落盘（续跑已配置时直接为真）
+const officialSavedVals = ref(null)     // 上次保存成功的值：用来判断「保存后又改过」
+const officialSavedAppId = ref('')      // 后端回显的 AppID（确认写给了哪个机器人）
+const officialSaveRes = ref(null)       // {ok,message}：保存结果就地展示
+const officialVerify = ref(null)        // {ok,message,expires_in?}：连通性测试结果
+const officialSaveBusy = ref(false), officialVerifyBusy = ref(false)
+
+const officialCredFields = computed(() =>
+  (officialMode.value ? (officialCfg.value.credentials || []) : []))
+const needsOfficialCreds = computed(() => officialCredFields.value.length > 0)
+const officialCredsFilled = computed(() => officialCredFields.value
+  .every(f => String(officialCreds[f.key] || '').trim()))
+// 保存后又被改过：不据此禁用主按钮（改完直接点继续是合理操作，finish 会先补存一次），
+// 只在界面上提示「还没保存」。
+const officialDirty = computed(() => {
+  const sv = officialSavedVals.value
+  if (!officialSaved.value || !sv) return false
+  return officialCredFields.value.some(f =>
+    String(officialCreds[f.key] || '').trim() !== String(sv[f.key] || '').trim())
+})
+// 主按钮禁用条件：需要凭证却一次都没保存过。海豹（无 credentials）恒为 false → 零变化。
+const officialNeedsSave = computed(() =>
+  officialMode.value && needsOfficialCreds.value && !officialSaved.value)
+// expires_in 单位是秒：给出「大约几小时」即可，token 本来会提前失效，精确到秒没意义
+const fmtExpires = s => (s >= 3600
+  ? `约 ${Math.round(s / 3600)} 小时`
+  : `约 ${Math.max(1, Math.round(s / 60))} 分钟`)
+
+const officialMissing = () => officialCredFields.value
+  .filter(f => !String(officialCreds[f.key] || '').trim())
+  .map(f => f.label || f.key)
+// 换程序 / 换实例 / 续跑都要清掉凭证态：凭证是绑在实例上的，跟着上一个实例的
+// 保存状态走到新实例，会让主按钮在「其实没配」的实例上可点。
+const resetOfficial = () => {
+  for (const k of Object.keys(officialCreds)) delete officialCreds[k]
+  officialSaved.value = false; officialSavedVals.value = null
+  officialSavedAppId.value = ''; officialSaveRes.value = null
+  officialVerify.value = null
+  officialSaveBusy.value = false; officialVerifyBusy.value = false
+}
+
+// 保存官方机器人凭证：复用 step3 端点，payload 换成 credentials（官方通道没有 QQ 号）。
+// 抛错由调用方决定就地显示还是中断流程 —— finish 里必须中断，不能带着未配置状态去启动。
+const saveOfficialCore = async () => {
+  const miss = officialMissing()
+  if (miss.length) throw new Error(`请填写${miss.join('、')}`)
+  const credentials = Object.fromEntries(officialCredFields.value.map(f =>
+    [f.key, String(officialCreds[f.key]).trim()]))
+  const r = await wizardStep(instanceId, 3, { credentials })
+  if (r.result === 'error' || r.result === 'conflict')
+    throw new Error(r.message || r.dir || r.conflict || '官方机器人配置保存失败')
+  officialSaved.value = true
+  officialSavedVals.value = { ...credentials }
+  officialSavedAppId.value = r.app_id || credentials.app_id || ''
+  if (r.manual) manual.value = r.manual
+  if (r.preview) preview.value = r.preview
+  return r
+}
+const saveOfficial = async () => {
+  officialSaveRes.value = null; officialVerify.value = null
+  officialSaveBusy.value = true
+  try {
+    await saveOfficialCore()
+    officialSaveRes.value = { ok: true, message: '官方机器人配置已保存。' }
+  } catch (e) {
+    officialSaveRes.value = { ok: false, message: e.message || String(e) }
+  } finally { officialSaveBusy.value = false }
+}
+// 连通性测试：单独打到 /official/verify，不落盘、不推进状态机。
+// 失败也要把后端 message 原样显示（「AppID 或 AppSecret 错误」比「测试失败」有用得多）。
+const verifyOfficial = async () => {
+  officialVerify.value = null
+  const miss = officialMissing()
+  if (miss.length) {
+    officialVerify.value = { ok: false, message: `请先填写${miss.join('、')}` }
+    return
+  }
+  officialVerifyBusy.value = true
+  try {
+    const body = Object.fromEntries(officialCredFields.value.map(f =>
+      [f.key, String(officialCreds[f.key]).trim()]))
+    officialVerify.value = (await verifyOfficialCredentials(body))
+      || { ok: false, message: '服务端未返回测试结果' }
+  } catch (e) {
+    officialVerify.value = { ok: false, message: e.message || String(e) }
+  } finally { officialVerifyBusy.value = false }
+}
 // 登录端候选 = 已创建且程序类型在兼容矩阵里的实例（login_ref 在后端即实例 id，用于画连线）
 const loginCandidates = computed(() =>
   instances.value.filter(i => loginOptions.value.includes(i.dice)))
@@ -781,6 +930,7 @@ const pickRole = r => {
   if (role.value === r) return
   role.value = r
   botMode.value = 'onebot'
+  resetOfficial()
   dice.value = rolePrograms.value[0] || ''
   loginMode.value = 'qrcode'
 }
@@ -792,6 +942,7 @@ const gotoCreate = target => {
   pairFrom.value = { id: instanceId, dice: dice.value, qq: curQQ.value, target }
   role.value = target
   botMode.value = 'onebot'
+  resetOfficial()
   dice.value = rolePrograms.value[0] || ''
   loginMode.value = 'qrcode'
   pickedApps.value = []; pickedLinks.value = []; addLoginRef.value = ''
@@ -806,6 +957,8 @@ const gotoCreate = target => {
 const cancelPair = () => {
   pairFrom.value = null
   role.value = appPrograms.value.length ? 'app' : 'login'
+  botMode.value = 'onebot'
+  resetOfficial()
   dice.value = rolePrograms.value[0] || ''
   loginMode.value = 'qrcode'
 }
@@ -837,6 +990,7 @@ const reset = () => {
   role.value = appPrograms.value.length ? 'app' : 'login'
   dice.value = rolePrograms.value[0] || ''
   botMode.value = 'onebot'
+  resetOfficial()
   pickedApps.value = []; pickedLinks.value = []; addLoginRef.value = ''
   stopDeployPoll(); deployMsg.value = ''; deployFail.value = ''
   refreshLists()
@@ -849,6 +1003,7 @@ const resume = async p => {
   loggedIn.value = false; tokenSaved.value = false   // 续跑实例的 token 落盘状态未知，重新判定
   pickedApps.value = []; pickedLinks.value = []; addLoginRef.value = ''
   pairFrom.value = null; loginMode.value = 'qrcode'
+  resetOfficial()                                  // 凭证态属于具体实例，续跑前先清空
   botMode.value = p.bot_mode || 'onebot'          // 续跑官方通道实例才能跳过链接
   stopDeployPoll(); deployMsg.value = ''; deployFail.value = ''
   await refreshLists()
@@ -887,6 +1042,7 @@ const guard = async fn => {                    // 统一转圈 + 报错，避免
 }
 
 const create = () => guard(async () => {
+  resetOfficial()                                // 新建实例必须重新填凭证，不能沿用上一个实例的「已保存」
   // 「创建并连接」：来源端是登录端时带上 login_ref，后端据此在实例上直接建好关联
   // （应用端随后经 login_ref 继承该登录端的端口与 token，两端才连得上）
   const body = { dice: dice.value, arch: manifest.value.arch || 'standalone',
@@ -975,7 +1131,12 @@ const enterStep3 = async (alreadyConfigured = false) => {
     .map(l => ({ ...l }))
   // 账密登录不需要二维码通道，也不该预拉进程（进程由 step5 启动，凭据随之生效）
   if (!canPasswordLogin.value) loginMode.value = 'qrcode'
-  if (alreadyConfigured) { loggedIn.value = true; return }
+  if (alreadyConfigured) {
+    loggedIn.value = true
+    // 续跑：实例已过配置态，凭据必然已落盘 —— 不重填、不重发 step3，直接可启动
+    if (needsOfficialCreds.value) officialSaved.value = true
+    return
+  }
   if (needLoginHere.value) {
     if (showQrcode.value) {
       // TOKEN 已在第一步填写：进扫码页前先落盘（进程随后由 WS 自动拉起，天然带上 token）
@@ -984,6 +1145,9 @@ const enterStep3 = async (alreadyConfigured = false) => {
     }
     return
   }
+  // 官方内置通道且要凭证：此时还没填，调用 step3 也没配置可写，
+  // 反而会把状态机推进到 CONFIGURED，让用户误以为配好了。停在第三步等表单保存。
+  if (officialMode.value && needsOfficialCreds.value) return
   // 无登录环节：仍推进一次 step3，让后端把状态机带到 CONFIGURED（幂等）
   await doStep(3, {})
 }
@@ -1091,6 +1255,18 @@ const linkTargets = computed(() => {
 // ---------- 第三步收口：写互联配置 → 启动 → 已启动 ----------
 const finish = () => guard(async () => {
   if (officialMode.value) {
+    // 官方内置通道的凭证是「启动的前置条件」：后端拿不到 AppID/AppSecret 就登不上，
+    // 进程起来也只会反复重连。所以这里先补存一次，失败就中断（不能让用户以为已启动）。
+    if (needsOfficialCreds.value && (!officialSaved.value || officialDirty.value)) {
+      officialSaveRes.value = null
+      try {
+        await saveOfficialCore()
+        officialSaveRes.value = { ok: true, message: '官方机器人配置已保存。' }
+      } catch (e) {
+        officialSaveRes.value = { ok: false, message: e.message || String(e) }
+        throw new Error(`官方机器人配置保存失败，已停止启动：${e.message || e}`)
+      }
+    }
     await doStep(5, {})
     step.value = 4
     afterStart()
@@ -1284,6 +1460,13 @@ onUnmounted(() => { sock.value?.close(); logSock.value?.close(); stopDeployPoll(
   border-radius: 8px; background: var(--code-bg); margin-bottom: 10px; font-size: 13px; }
 .official-tip ol { margin: 6px 0; padding-left: 20px; }
 .official-tip li { margin: 3px 0; }
+/* 官方机器人凭证：与接入清单区分开（清单是「你去开放平台做什么」，
+   这里是「面板现在就写什么」），否则两块说明会糊在一起 */
+.official-creds { padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: 10px; }
+.official-creds h4 { margin: 0 0 8px; font-size: 14px; }
+.official-ok { color: var(--ok); }
+.official-bad { color: var(--danger); }
 .wz-body { display: block; }
 .field { max-width: 420px; margin-bottom: 14px; }
 .field input, .field select { margin-bottom: 8px; }

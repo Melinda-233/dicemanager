@@ -184,6 +184,37 @@ class Wizard:
 
             if step == 3:                                      # 登录（needs_login 以适配器为准）
                 if getattr(inst, "bot_mode", "onebot") == "official":
+                    # 官方通道分两种，判据是「清单有没有声明 credentials」：
+                    # · 没声明（海豹）：凭据由程序自己的 WebUI 收，面板什么都不写，直接推进；
+                    # · 声明了（Dice-Next）：程序内置官方适配器，凭据必须由面板写进
+                    #   它的 config/adapters.json，漏写会让实例起来后连不上官方网关。
+                    creds = payload.get("credentials") or {}
+                    configure = getattr(adapter, "configure_official", None)
+                    requires = getattr(adapter, "requires_official_credentials",
+                                       lambda: False)
+                    if callable(configure) and requires():
+                        # 断点续跑/重入：没传凭据但文件里已经有可用配置，就不要求重填
+                        # （面板不回显 secret，重填等于逼用户再去复制一次）
+                        status: dict = getattr(
+                            adapter, "official_status", lambda _i: {})(inst)
+                        wr = {}
+                        if not creds and status.get("configured"):
+                            wr = {"ok": True, "saved": False, "app_id": status.get("app_id"),
+                                  "path": status.get("path"),
+                                  "preview": "沿用上次保存的官方机器人配置（本次未改凭据）。"}
+                        else:
+                            wr = configure(inst, creds)
+                            if not wr.get("ok"):
+                                return {"result": "error",
+                                        "message": wr.get("message") or "官方机器人配置写入失败"}
+                        try:
+                            self.reg.transition(instance_id, State.CONFIGURED)
+                        except ValueError:
+                            pass
+                        return {"result": "ok", "official": True, "needs_login": False,
+                                "saved": wr.get("saved", True),
+                                "app_id": wr.get("app_id"), "path": wr.get("path"),
+                                "preview": wr.get("preview"), "manual": wr.get("manual")}
                     # 官方通道无需协议登录：直接推进到可启动态（幂等，断点续跑可重入）
                     try:
                         self.reg.transition(instance_id, State.CONFIGURED)
@@ -218,10 +249,11 @@ class Wizard:
 
             if step == 4:                                      # 互联配置写入 + 预览
                 if getattr(inst, "bot_mode", "onebot") == "official":
-                    # 官方通道的连接在程序自身 WebUI 里完成，面板写互联配置反而会留下
-                    # 一条连不上的 onebot 端点（海豹还会因此报连接错误）
+                    # 官方通道的连接在程序自身完成（Dice-Next 内置官方适配器 / 海豹在它
+                    # 自己的 WebUI 里配），面板写互联配置反而会留下一条连不上的 onebot
+                    # 端点（海豹还会因此报连接错误）
                     return {"result": "ok", "skipped": True,
-                            "preview": "官方机器人通道：无需面板侧互联配置"}
+                            "preview": "QQ 官方机器人：连接由骰子程序自己建立，无需面板侧互联配置"}
                 self._refresh_account(instance_id, inst, adapter)  # 可能刚扫码成功
                 # 向导/总览若传入完整 links 数组 = 新的关联全集（含账号绑定/方向变更，
                 # 支持一连多：同登录端不同账号各一条）；否则沿用现有 inst.links 重写配置。
