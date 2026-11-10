@@ -19,7 +19,7 @@ Path(tmp, "auth.json").write_text(json.dumps(legacy), encoding="utf-8")
 
 from api.auth import Auth
 a = Auth(Path(tmp, "auth.json"))
-d = json.loads(Path(tmp, "auth.json").read_text())
+d = json.loads(Path(tmp, "auth.json").read_text(encoding="utf-8"))
 # v2 schema 为嵌套结构：凭据在 users.admin 下，顶层只留 version / sessions。
 # （v1 曾是顶层 password_hash + salt，多用户改造后下移到账号对象）
 u = d.get("users", {}).get("admin", {})
